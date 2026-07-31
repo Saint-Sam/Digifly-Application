@@ -1,0 +1,53 @@
+{
+  "recipe_version": 1,
+  "preset": "latest_gfc2_pairwise",
+  "contact_site_na_multiplier": 2.5,
+  "gj_model": "heterotypic_rectifying",
+  "hetero_g_closed_frac": 0.0,
+  "hetero_vhalf_mV": 0.0,
+  "hetero_vslope_mV": 5.0,
+  "hetero_empirical_residual_frac": 0.2,
+  "hetero_tau_open_ms": 6.0,
+  "hetero_tau_close_ms": 2.0,
+  "separate_gfs": true,
+  "gfc2_ohmic": true,
+  "frequency_hz": 100.0,
+  "max_pulses": 10,
+  "gap_enabled_amp_nA": 1.0,
+  "gap_disabled_amp_nA": 0.46142578125,
+  "stimulus_by_condition": {
+    "gap_enabled": {
+      "13127": 0.9,
+      "13479": 0.9,
+      "13645": 0.9,
+      "13846": 0.9,
+      "14527": 0.9,
+      "14662": 0.9,
+      "15292": 0.9,
+      "15505": 0.9,
+      "15938": 0.9,
+      "16764": 0.9,
+      "17245": 0.9
+    },
+    "gap_disabled": {
+      "13127": 0.9,
+      "13479": 0.9,
+      "13645": 0.9,
+      "13846": 0.9,
+      "14527": 0.9,
+      "14662": 0.9,
+      "15292": 0.9,
+      "15505": 0.9,
+      "15938": 0.9,
+      "16764": 0.9,
+      "17245": 0.9
+    }
+  },
+  "nproc": 1,
+  "force_restart_cache": false,
+  "vmin_mV": -80.0,
+  "vmax_mV": 40.0,
+  "include_extra_target_heatmaps": false,
+  "scientific_label": "GFC2 arbitrary-target diagnostic; not the canonical dual-GF heatmap",
+  "contact_count_policy": "deduplicated_visible_contact_sites_post_xyz"
+}

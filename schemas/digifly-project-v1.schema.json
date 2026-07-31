@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digifly.dev/schemas/digifly-project-v1.schema.json",
+  "title": "Digifly App Project",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "name",
+    "digifly_public_root",
+    "output_root",
+    "selected_engine",
+    "selected_workflow",
+    "experiment"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "digifly_public_root": {"type": "string", "minLength": 1},
+    "output_root": {"type": "string", "minLength": 1},
+    "python_executable": {"type": "string"},
+    "selected_engine": {"enum": ["neuron", "arbor", "bmtk", "phase3"]},
+    "selected_workflow": {"type": "string", "minLength": 1},
+    "experiment": {"type": "object"},
+    "notes": {"type": "string"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}
