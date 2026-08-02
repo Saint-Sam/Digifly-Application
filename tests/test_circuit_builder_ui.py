@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QVector3D
+from PySide6.QtWidgets import QApplication, QLineEdit
+
+from digifly_app.core.circuit import CircuitSpec, ConnectomeRef, NeuronQuery
+from digifly_app.core.connectomes import NeuronRecord
+from digifly_app.core.morphology import Morphology, SwcSegment, load_swc, save_custom_morphology
+from digifly_app.ui.circuit_builder import CircuitBuilderPage
+from digifly_app.ui.circuit_viewport import (
+    CircuitViewport,
+    DEFAULT_PITCH_DEGREES,
+    DEFAULT_YAW_DEGREES,
+    REFERENCE_CAMERA_FOCAL_POINT,
+    REFERENCE_CAMERA_POSITION,
+    REFERENCE_CAMERA_VIEW_UP,
+)
+
+
+class _OverviewStub:
+    def __init__(self, root: Path):
+        self.workspace_edit = QLineEdit(str(root))
+
+
+def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp_path):
+    swc = (
+        tmp_path
+        / "Phase 1"
+        / "manc_v1.2.1"
+        / "export_swc"
+        / "DN"
+        / "DNp01"
+        / "10000"
+        / "10000_axodendro_with_synapses.swc"
+    )
+    swc.parent.mkdir(parents=True)
+    swc.write_text("1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n", encoding="utf-8")
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        assert page.selected_engine_key() == "arbor"
+        page.query_edit.setText("10000")
+        page.assemble_circuit()
+        assert page.viewport.neuron_count == 1
+        assert page.viewport.segment_count == 1
+        assert page.viewport.accessibleName() == "Circuit morphology viewport"
+        assert page.viewport.yaw_degrees == DEFAULT_YAW_DEGREES
+        assert page.viewport.pitch_degrees == DEFAULT_PITCH_DEGREES
+        assert page.circuit_spec().neuron_ids == ("10000",)
+
+        page.viewport.focus_neuron("10000")
+        segment = page.viewport.morphologies["10000"].segments[0]
+        midpoint = tuple((a + b) / 2.0 for a, b in zip(segment.parent, segment.child))
+        projected = page.viewport._project(midpoint, page.viewport._mvp())
+        assert projected is not None
+        picked = page.viewport._pick(QPointF(*projected))
+        assert picked is not None
+        assert (picked[0], picked[1].child_id) == ("10000", 2)
+
+        page.viewport.selected_compartments = {2}
+        page.apply_compartment_overrides()
+        assert "2" in page.circuit_spec().compartment_overrides["10000"]
+
+        page.query_edit.setText("99999")
+        page.query_edit.textEdited.emit("99999")
+        assert page.viewport.neuron_count == 0
+        assert page.circuit_spec().neuron_ids == ()
+
+        with pytest.raises(ValueError, match="Unsupported"):
+            page.set_selected_engine_key("made-up-engine")
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_saved_cell_set_restores_exact_ids_instead_of_replaying_query(tmp_path):
+    swc_root = tmp_path / "Phase 1" / "manc_v1.2.1" / "export_swc" / "DN" / "DNp01"
+    for neuron_id in ("10000", "10001"):
+        path = swc_root / neuron_id / f"{neuron_id}_healed.swc"
+        path.parent.mkdir(parents=True)
+        path.write_text("1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n", encoding="utf-8")
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        spec = CircuitSpec(
+            connectome=ConnectomeRef(
+                "manc:v1.2.1",
+                "MANC v1.2.1",
+                str(tmp_path / "Phase 1" / "manc_v1.2.1" / "export_swc"),
+                "manc_v1.2.1",
+            ),
+            query=NeuronQuery("family:DN", 64),
+            neuron_ids=("10000",),
+        )
+        page.set_circuit_spec(spec)
+        page.load_saved_assets()
+        assert tuple(page.loaded_records) == ("10000",)
+        assert page.query_edit.text() == "family:DN"
+        page.spec.morphology_sha256["10000"] = "0" * 64
+        with pytest.raises(ValueError, match="identity changed"):
+            page.load_saved_assets()
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_saved_source_identity_does_not_substitute_same_key_at_another_root(tmp_path):
+    discovered = tmp_path / "Phase 1" / "manc_v1.2.1" / "export_swc"
+    archived = tmp_path / "archived-export-swc"
+    for root, x in ((discovered, 1), (archived, 9)):
+        path = root / "DN" / "DNp01" / "10000" / "10000_healed.swc"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"1 1 0 0 0 1 -1\n2 2 {x} 0 0 0.5 1\n", encoding="utf-8")
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        spec = CircuitSpec(
+            connectome=ConnectomeRef("manc:v1.2.1", "Archived MANC", str(archived), "manc_v1.2.1"),
+            neuron_ids=("10000",),
+        )
+        page.set_circuit_spec(spec)
+        page.load_saved_assets()
+        assert page._selected_source().root == str(archived)
+        assert page.loaded_morphologies["10000"].nodes[1].x == 9.0
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_overlapping_segment_pick_uses_projected_depth():
+    application = QApplication.instance() or QApplication([])
+
+    def morphology(neuron_id: str, z: float) -> Morphology:
+        record = NeuronRecord(neuron_id, "IN", "test", f"/{neuron_id}.swc", "test")
+        segment = SwcSegment(2, 1, (1.0, 0.0, z), (-1.0, 0.0, z), 0.5, 2)
+        return Morphology(record, (), (segment,), (-1.0, 1.0, 0.0, 0.0, z, z))
+
+    viewport = CircuitViewport()
+    viewport.resize(632, 286)
+    morphologies = (morphology("back", -1.0), morphology("front", 1.0))
+    viewport.set_morphologies(morphologies)
+    mvp = viewport._mvp()
+    projected = {
+        item.record.neuron_id: viewport._project_with_depth((0.0, 0.0, item.center[2]), mvp)
+        for item in morphologies
+    }
+    expected = min(projected, key=lambda key: projected[key][2])
+    point = projected[expected]
+    picked = viewport._pick(QPointF(point[0], point[1]))
+    assert picked is not None
+    assert picked[0] == expected
+    viewport.close()
+    application.processEvents()
+
+
+def test_default_view_uses_ablation_notebook_camera_right_and_up():
+    application = QApplication.instance() or QApplication([])
+    viewport = CircuitViewport()
+    viewport.resize(632, 286)
+    focal = QVector3D(*REFERENCE_CAMERA_FOCAL_POINT)
+    position = QVector3D(*REFERENCE_CAMERA_POSITION)
+    forward = (focal - position).normalized()
+    view_up = QVector3D(*REFERENCE_CAMERA_VIEW_UP)
+    up = (view_up - forward * QVector3D.dotProduct(view_up, forward)).normalized()
+    right = QVector3D.crossProduct(forward, up).normalized()
+    viewport.scene_center = focal
+    viewport.scene_radius = 1.0
+    viewport.distance = 10.0
+    mvp = viewport._mvp()
+    center_screen = viewport._project((focal.x(), focal.y(), focal.z()), mvp)
+    right_point = focal + right
+    up_point = focal + up
+    right_screen = viewport._project((right_point.x(), right_point.y(), right_point.z()), mvp)
+    up_screen = viewport._project((up_point.x(), up_point.y(), up_point.z()), mvp)
+    assert center_screen is not None and right_screen is not None and up_screen is not None
+    assert right_screen[0] > center_screen[0]
+    assert abs(right_screen[1] - center_screen[1]) < 1e-4
+    assert up_screen[1] < center_screen[1]
+    assert abs(up_screen[0] - center_screen[0]) < 1e-4
+    viewport.close()
+    application.processEvents()
+
+
+def test_custom_bundle_discovers_and_restores_verified_hh_draft(tmp_path, monkeypatch):
+    source = tmp_path / "source" / "10000_healed.swc"
+    source.parent.mkdir(parents=True)
+    source.write_text("1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n", encoding="utf-8")
+    record = NeuronRecord("10000", "DN", "DNp01", str(source), "manc:v1.2.1")
+    morphology = load_swc(record)
+    draft = CircuitSpec(connectome=ConnectomeRef("manc:v1.2.1", "MANC", str(source.parent)))
+    draft.apply_compartment_override("10000", (2,), {"branch_gnabar_s_cm2": 0.05})
+    library = tmp_path / "library"
+    save_custom_morphology(
+        morphology,
+        draft,
+        selected_engine="arbor",
+        library_root=library,
+        label="verified",
+    )
+    monkeypatch.setattr("digifly_app.ui.circuit_builder.morphology_library_root", lambda: library)
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path / "empty-workspace"))
+    try:
+        assert page._selected_source().dataset == "custom"
+        page.query_edit.setText("10000")
+        page.assemble_circuit()
+        assert page.viewport.neuron_count == 1
+        assert page.spec.compartment_overrides["10000"]["2"]["branch_gnabar_s_cm2"] == 0.05
+    finally:
+        page.close()
+        application.processEvents()

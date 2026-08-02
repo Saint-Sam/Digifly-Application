@@ -4,8 +4,10 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 deploy_python="$project_dir/.venv/bin/python"
 deploy_tool="$project_dir/.venv/bin/pyside6-deploy"
-generated_bundle="$project_dir/deployment/main.app"
+generated_bundle="$project_dir/Digifly App.app"
 generated_spec="$project_dir/deployment/pysidedeploy.generated.spec"
+source_spec="$project_dir/pysidedeploy.spec"
+source_spec_backup=""
 release_dir="$project_dir/dist"
 release_bundle="$release_dir/Digifly App.app"
 deploy_tmp="$project_dir/deployment/.tmp"
@@ -23,10 +25,23 @@ if [[ -e "$release_bundle" ]]; then
   echo "Refusing to overwrite $release_bundle; move the existing bundle first." >&2
   exit 2
 fi
+if [[ -e "$generated_bundle" ]]; then
+  echo "Refusing to use stale deployment output at $generated_bundle; move it first." >&2
+  exit 2
+fi
 
 cd "$project_dir"
 mkdir -p "$deploy_tmp"
-cp "$project_dir/pysidedeploy.spec" "$generated_spec"
+source_spec_backup="$(mktemp -t digifly-pysidedeploy-spec)"
+cp "$source_spec" "$source_spec_backup"
+restore_source_spec() {
+  if [[ -n "$source_spec_backup" && -f "$source_spec_backup" ]]; then
+    cp "$source_spec_backup" "$source_spec"
+    rm -f "$source_spec_backup"
+  fi
+}
+trap restore_source_spec EXIT
+cp "$source_spec" "$generated_spec"
 "$deploy_tool" -c "$generated_spec" --keep-deployment-files -f main.py
 if [[ ! -f "$generated_bundle/Contents/Info.plist" || ! -x "$generated_bundle/Contents/MacOS/main" ]]; then
   echo "Deployment did not produce a complete bundle at $generated_bundle" >&2

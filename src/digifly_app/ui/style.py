@@ -31,6 +31,15 @@ QFrame#Inset {
     border: 1px solid #22314d;
     border-radius: 8px;
 }
+QWidget#HHSidePanel {
+    background: #0e172b;
+    border-left: 1px solid #253451;
+}
+QOpenGLWidget#CircuitViewport {
+    background: #071021;
+    border: 1px solid #263b5e;
+    border-radius: 8px;
+}
 QLabel#Brand {
     color: #f5f8ff;
     font-size: 22px;

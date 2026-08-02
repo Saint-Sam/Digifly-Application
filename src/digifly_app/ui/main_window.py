@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from digifly_app import __version__
 from digifly_app.core.jobs import JobStore
+from digifly_app.core.circuit import CircuitSpec
 from digifly_app.core.models import CheckState, ExecutionPlan, PreflightReport, ResultRecord
 from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
@@ -51,6 +52,7 @@ from digifly_app.engines.neuron_escape_siz import (
     latest_gfc2_stimulus,
 )
 from .style import APP_STYLE
+from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout
 
 
@@ -943,7 +945,7 @@ class EnginesPage(QWidget):
             _page_header(
                 "Adapters",
                 "Independent scientific runtimes",
-                "Each lane is probed and launched out of process. VND is visualization-only and is never bundled.",
+                "Each lane is probed independently; implemented simulation workers launch out of process. VND is detection/viewer-only and is never bundled.",
             )
         )
         refresh = QPushButton("Refresh engine profiles")
@@ -965,7 +967,7 @@ class EnginesPage(QWidget):
         body = QLabel(
             "• NEURON and Arbor must not share an imported digifly.phase2 namespace in the UI process.\n"
             "• DPointNet, PointNet/NEST, and BioNet are distinct BMTK lanes.\n"
-            "• VND receives prepared activity/SONATA assets; it is not a dynamics backend.\n"
+            "• A future VND handoff will receive prepared activity/SONATA assets; it is not a dynamics backend.\n"
             "• Phase 3/MuJoCo will be added as another worker profile using the same project and result contracts."
         )
         body.setObjectName("Muted")
@@ -1022,6 +1024,7 @@ class MainWindow(QMainWindow):
         for index, (label, icon) in enumerate(
             (
                 ("Workspace", "⌂"),
+                ("Circuit Builder", "⌁"),
                 ("Escape-SIZ", "◉"),
                 ("Results", "▦"),
                 ("Engines", "◇"),
@@ -1061,11 +1064,13 @@ class MainWindow(QMainWindow):
         right.addWidget(topbar)
         self.pages = QStackedWidget()
         self.overview_page = OverviewPage()
+        self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
         self.experiment_page = ExperimentPage(self.overview_page)
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
         self.engines_page = EnginesPage(self.overview_page)
         for page in (
             self.overview_page,
+            self.circuit_builder_page,
             self.experiment_page,
             self.results_page,
             self.engines_page,
@@ -1075,9 +1080,14 @@ class MainWindow(QMainWindow):
         shell.addLayout(right, 1)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
+        self.circuit_builder_page.status_message.connect(self.statusBar().showMessage)
         self.experiment_page.status_message.connect(self.statusBar().showMessage)
         self.results_page.status_message.connect(self.statusBar().showMessage)
-        self.experiment_page.result_ready.connect(lambda _result: self.show_page(2))
+        self.experiment_page.result_ready.connect(
+            lambda _result: self.show_page(self.pages.indexOf(self.results_page))
+        )
+        self._last_editor_page: QWidget = self.circuit_builder_page
+        self._project_workflow: str | None = None
         self._build_menu()
         self._restore_settings()
         self.show_page(0)
@@ -1091,7 +1101,10 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         for button_index, button in enumerate(self.nav_buttons):
             button.setChecked(button_index == index)
-        if index == 3:
+        current = self.pages.widget(index)
+        if current in (self.circuit_builder_page, self.experiment_page):
+            self._last_editor_page = current
+        if current is self.engines_page:
             self.engines_page.refresh()
 
     def _build_menu(self) -> None:
@@ -1132,8 +1145,11 @@ class MainWindow(QMainWindow):
 
     def new_project(self) -> None:
         self.current_project_path = None
+        self._project_workflow = None
         self.project_label.setText("Unsaved project")
+        self.circuit_builder_page.reset()
         self.experiment_page.set_config(EscapeSizConfig())
+        self._last_editor_page = self.circuit_builder_page
         self.show_page(0)
 
     def open_project(self) -> None:
@@ -1147,31 +1163,83 @@ class MainWindow(QMainWindow):
             return
         try:
             project = DigiflyProject.load(selected)
-            config = EscapeSizConfig.from_dict(project.experiment)
         except Exception as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
             return
         self.overview_page.workspace_edit.setText(project.digifly_public_root)
         self.overview_page.output_edit.setText(project.output_root)
         self.overview_page.python_edit.setText(project.python_executable)
-        self.experiment_page.set_config(config)
+        try:
+            if project.selected_workflow == CIRCUIT_BUILDER_WORKFLOW:
+                spec = CircuitSpec.from_dict(project.experiment)
+                self.circuit_builder_page.refresh_connectomes()
+                self.circuit_builder_page.set_selected_engine_key(project.selected_engine)
+                self.circuit_builder_page.set_circuit_spec(spec)
+                self.circuit_builder_page.load_saved_assets()
+                self._last_editor_page = self.circuit_builder_page
+                target_page = self.circuit_builder_page
+            elif project.selected_workflow == "escape_siz_gfc_contact_na":
+                self.experiment_page.set_config(EscapeSizConfig.from_dict(project.experiment))
+                self._last_editor_page = self.experiment_page
+                target_page = self.experiment_page
+            else:
+                raise ValueError(f"Unsupported project workflow: {project.selected_workflow}")
+        except Exception as exc:
+            # The new project has already changed workspace/editor fields.
+            # Detach from any previously opened path so a later Ctrl-S cannot
+            # overwrite that older project with this partial state.
+            self.current_project_path = None
+            self._project_workflow = None
+            self.project_label.setText("Open failed · unsaved state")
+            QMessageBox.critical(self, "Could not open project", str(exc))
+            return
         self.current_project_path = Path(selected).resolve()
+        self._project_workflow = project.selected_workflow
         self.project_label.setText(project.name)
         self.statusBar().showMessage(f"Opened {self.current_project_path}")
-        self.show_page(1)
+        self.show_page(self.pages.indexOf(target_page))
 
     def save_project(self, *, save_as: bool = False) -> None:
-        try:
-            config = self.experiment_page.config()
-        except Exception as exc:
-            QMessageBox.warning(self, "Invalid controls", f"Fix the experiment controls before saving:\n{exc}")
-            return
+        current = self.pages.currentWidget()
+        editor = current if current in (self.circuit_builder_page, self.experiment_page) else self._last_editor_page
+        if editor is self.circuit_builder_page:
+            selected_workflow = CIRCUIT_BUILDER_WORKFLOW
+            selected_engine = self.circuit_builder_page.selected_engine_key()
+            try:
+                experiment = self.circuit_builder_page.circuit_spec().to_dict()
+            except Exception as exc:
+                QMessageBox.warning(self, "Invalid circuit design", str(exc))
+                return
+            suggested_name = "circuit.digifly.json"
+        else:
+            try:
+                config = self.experiment_page.config()
+            except Exception as exc:
+                QMessageBox.warning(self, "Invalid controls", f"Fix the experiment controls before saving:\n{exc}")
+                return
+            selected_workflow = "escape_siz_gfc_contact_na"
+            selected_engine = "neuron"
+            experiment = config.to_dict()
+            suggested_name = "escape-siz.digifly.json"
         destination = self.current_project_path
+        if (
+            destination is not None
+            and not save_as
+            and self._project_workflow is not None
+            and self._project_workflow != selected_workflow
+        ):
+            QMessageBox.information(
+                self,
+                "Save as a new project",
+                "This editor uses a different workflow from the opened project. Choose a new file so the original project is not converted or overwritten.",
+            )
+            self.save_project(save_as=True)
+            return
         if save_as or destination is None:
             selected, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save Digifly project",
-                str(_workspace_home() / "escape-siz.digifly.json"),
+                str(_workspace_home() / suggested_name),
                 "Digifly projects (*.digifly.json)",
             )
             if not selected:
@@ -1184,7 +1252,9 @@ class MainWindow(QMainWindow):
             digifly_public_root=self.overview_page.workspace_edit.text(),
             output_root=self.overview_page.output_edit.text(),
             python_executable=self.overview_page.python_edit.text(),
-            experiment=config.to_dict(),
+            selected_engine=selected_engine,
+            selected_workflow=selected_workflow,
+            experiment=experiment,
         )
         try:
             project.save(destination)
@@ -1192,6 +1262,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not save project", str(exc))
             return
         self.current_project_path = destination.resolve()
+        self._project_workflow = selected_workflow
         self.project_label.setText(project.name)
         self.statusBar().showMessage(f"Saved {self.current_project_path}")
 
