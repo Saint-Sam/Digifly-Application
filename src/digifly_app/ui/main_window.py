@@ -10,6 +10,7 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QUrl, S
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -1015,6 +1016,9 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(subbrand)
         sidebar_layout.addSpacing(23)
         self.nav_buttons: list[QPushButton] = []
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.nav_group.idToggled.connect(self._navigation_toggled)
         for index, (label, icon) in enumerate(
             (
                 ("Workspace", "⌂"),
@@ -1026,7 +1030,7 @@ class MainWindow(QMainWindow):
             button = QPushButton(f"{icon}   {label}")
             button.setObjectName("NavButton")
             button.setCheckable(True)
-            button.clicked.connect(lambda _=False, page=index: self.show_page(page))
+            self.nav_group.addButton(button, index)
             sidebar_layout.addWidget(button)
             self.nav_buttons.append(button)
         sidebar_layout.addStretch(1)
@@ -1077,6 +1081,11 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._restore_settings()
         self.show_page(0)
+
+    def _navigation_toggled(self, index: int, checked: bool) -> None:
+        """Navigate for mouse, keyboard, and accessibility state changes."""
+        if checked and self.pages.currentIndex() != index:
+            self.show_page(index)
 
     def show_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)

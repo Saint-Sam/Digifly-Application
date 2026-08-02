@@ -20,6 +20,16 @@ def test_main_window_constructs_without_importing_simulators():
         assert window.windowTitle() == "Digifly App"
         assert window.experiment_page.run_button.isEnabled() is False
         assert "Digifly App.app" not in str(_workspace_home() / "runs")
+
+        window.nav_buttons[1].setChecked(True)
+        application.processEvents()
+        assert window.pages.currentIndex() == 1
+        assert window.nav_buttons[0].isChecked() is False
+
+        window.nav_buttons[2].click()
+        application.processEvents()
+        assert window.pages.currentIndex() == 2
+        assert window.nav_buttons[1].isChecked() is False
     finally:
         window.close()
         application.processEvents()
