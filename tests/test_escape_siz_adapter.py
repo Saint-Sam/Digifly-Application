@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
+import subprocess
 
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.process_environment import sanitized_external_environment
 from digifly_app.engines.neuron_escape_siz import (
     CANONICAL_VISIBLE_COUNTS,
     EscapeSizConfig,
@@ -30,7 +33,9 @@ def test_versioned_preset_file_stays_in_sync():
     assert config.to_dict() == EscapeSizConfig().to_dict()
 
 
-def test_cache_identity_and_command_are_exact_argument_arrays(tmp_path):
+def test_cache_identity_and_command_are_exact_argument_arrays(tmp_path, monkeypatch):
+    inherited_bundle = tmp_path / "Digifly App.app" / "Contents" / "MacOS"
+    monkeypatch.setenv("PYTHONPATH", f"{inherited_bundle}{os.pathsep}/unrelated/inherited/path")
     workspace = DigiflyWorkspace(tmp_path / "Digifly Public")
     adapter = NeuronEscapeSizAdapter(workspace)
     config = EscapeSizConfig()
@@ -47,9 +52,67 @@ def test_cache_identity_and_command_are_exact_argument_arrays(tmp_path):
     assert json.loads(stimulus_arg)["gap_enabled"]["13127"] == 0.9
     assert plan.output_behavior == "app_owned"
     assert str(output_root.resolve() / "escape_siz") in (plan.expected_summary_path or "")
-    assert "/Applications/NEURON/lib/python" in plan.environment["PYTHONPATH"] or not Path(
+    python_paths = plan.environment["PYTHONPATH"].split(os.pathsep)
+    assert str(workspace.phase2_neuron) in python_paths
+    assert str(workspace.gfc_root) in python_paths
+    assert str(inherited_bundle) not in python_paths
+    assert "/unrelated/inherited/path" not in python_paths
+    assert str(Path(__file__).resolve().parents[1] / "src") not in python_paths
+    assert "/Applications/NEURON/lib/python" in python_paths or not Path(
         "/Applications/NEURON/lib/python"
     ).exists()
+
+
+def test_worker_environment_removes_embedded_python_and_loader_paths():
+    environment = sanitized_external_environment(
+        {"PYTHONPATH": "/controlled/phase2:/controlled/neuron", "PYTHONNOUSERSITE": "1"},
+        inherited={
+            "PATH": "/usr/bin",
+            "PYTHONPATH": "/bundle/Contents/MacOS",
+            "PYTHONHOME": "/bundle/Contents/MacOS",
+            "VIRTUAL_ENV": "/bundle/venv",
+            "DYLD_LIBRARY_PATH": "/bundle/Contents/MacOS",
+        },
+    )
+    assert environment["PATH"] == "/usr/bin"
+    assert environment["PYTHONPATH"] == "/controlled/phase2:/controlled/neuron"
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONHOME" not in environment
+    assert "VIRTUAL_ENV" not in environment
+    assert "DYLD_LIBRARY_PATH" not in environment
+
+
+def test_runtime_preflight_imports_full_native_stack(tmp_path, monkeypatch):
+    executable = tmp_path / "python"
+    executable.write_text("placeholder", encoding="utf-8")
+    workspace = DigiflyWorkspace(tmp_path / "Digifly Public")
+    workspace.gfc_root.mkdir(parents=True)
+    adapter = NeuronEscapeSizAdapter(workspace)
+    config = EscapeSizConfig(python_executable=str(executable))
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        payload = {
+            "neuron_version": "8.2.6",
+            "neuron_path": "/Applications/NEURON/lib/python/neuron/__init__.py",
+            "pandas_version": "2.2.0",
+            "numpy_version": "2.0.0",
+            "runner_path": str(adapter.runner_path),
+            "_ctypes_path": "/opt/anaconda3/lib/python3.12/lib-dynload/_ctypes.cpython-312-darwin.so",
+            "ctypes_path": "/opt/anaconda3/lib/python3.12/ctypes/__init__.py",
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload) + "\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    check = adapter._runtime_check(config)
+    assert check.state.value == "pass"
+    assert "NEURON 8.2.6" in check.detail
+    assert "pandas 2.2.0" in check.detail
+    assert "import _ctypes, ctypes" in captured["command"][-1]
+    assert "run_baseline_with_10002_gfcs_contact_site_na_heatmaps" in captured["command"][-1]
+    assert str(Path(__file__).resolve().parents[1] / "src") not in captured["environment"]["PYTHONPATH"]
 
 
 def test_contact_policy_verifies_canonical_rows(tmp_path):

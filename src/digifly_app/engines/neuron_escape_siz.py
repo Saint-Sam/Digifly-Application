@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from typing import Any, Mapping
 
 from digifly_app.core.models import (
@@ -14,6 +15,10 @@ from digifly_app.core.models import (
     PreflightCheck,
     PreflightReport,
     ResultRecord,
+)
+from digifly_app.core.process_environment import (
+    external_runtime_path,
+    sanitized_external_environment,
 )
 from digifly_app.core.resources import capture_resources
 from digifly_app.core.results import load_escape_siz_result
@@ -412,18 +417,15 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             args.append("--no-extra-stim-target-heatmaps")
 
         output = Path(output_root).expanduser().resolve()
-        app_src = Path(__file__).resolve().parents[2]
-        python_paths = [str(app_src), str(self.workspace.phase2_neuron), str(self.workspace.gfc_root)]
+        python_paths = [str(self.workspace.phase2_neuron), str(self.workspace.gfc_root)]
         # The validated Escape-SIZ environment uses NEURON 8.2.6 from the
         # application bundle. /opt/anaconda3 also contains NEURON 9, so the
         # module path must be explicit and its effective identity is probed.
         neuron_bundle_python = Path("/Applications/NEURON/lib/python")
         if neuron_bundle_python.is_dir():
             python_paths.append(str(neuron_bundle_python))
-        inherited = os.environ.get("PYTHONPATH", "")
-        if inherited:
-            python_paths.extend(path for path in inherited.split(os.pathsep) if path)
         env = {
+            "PATH": external_runtime_path(config.python_executable),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": os.pathsep.join(dict.fromkeys(python_paths)),
             "MPLCONFIGDIR": str(output / "_runtime" / "matplotlib"),
@@ -461,43 +463,57 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
         if not executable.is_file():
             return PreflightCheck(
                 key="neuron_runtime",
-                title="NEURON worker runtime",
+                title="Native NEURON worker stack",
                 state=CheckState.FAIL,
                 detail=f"Python executable does not exist: {executable}",
                 blocking=True,
                 path=str(executable),
             )
-        plan = self.plan(config, output_root=self.workspace.root.parent / "Digifly App" / "workspace")
-        env = os.environ.copy()
-        env.update(plan.environment)
         code = (
-            "import json, neuron; "
-            "print(json.dumps({'version': getattr(neuron, '__version__', 'unknown'), "
-            "'path': getattr(neuron, '__file__', 'unknown')}))"
+            "import _ctypes, ctypes, importlib, json; "
+            "import matplotlib, neuron, numpy, pandas; "
+            f"runner=importlib.import_module({self.RUNNER_NAME.removesuffix('.py')!r}); "
+            "print(json.dumps({"
+            "'neuron_version': getattr(neuron, '__version__', 'unknown'), "
+            "'neuron_path': getattr(neuron, '__file__', 'unknown'), "
+            "'pandas_version': getattr(pandas, '__version__', 'unknown'), "
+            "'numpy_version': getattr(numpy, '__version__', 'unknown'), "
+            "'runner_path': getattr(runner, '__file__', 'unknown'), "
+            "'_ctypes_path': getattr(_ctypes, '__file__', 'unknown'), "
+            "'ctypes_path': getattr(ctypes, '__file__', 'unknown')}))"
         )
         try:
-            completed = subprocess.run(
-                [str(executable), "-c", code],
-                cwd=str(self.workspace.gfc_root),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
+            with tempfile.TemporaryDirectory(prefix="digifly_escape_siz_probe_") as temporary:
+                probe_root = Path(temporary)
+                plan = self.plan(config, output_root=probe_root)
+                environment = sanitized_external_environment(plan.environment)
+                matplotlib_root = probe_root / "matplotlib"
+                matplotlib_root.mkdir(parents=True, exist_ok=True)
+                environment["MPLCONFIGDIR"] = str(matplotlib_root)
+                completed = subprocess.run(
+                    [str(executable), "-c", code],
+                    cwd=str(self.workspace.gfc_root),
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    check=False,
+                )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return PreflightCheck(
                 key="neuron_runtime",
-                title="NEURON worker runtime",
+                title="Native NEURON worker stack",
                 state=CheckState.FAIL,
                 detail=f"Runtime probe failed: {exc}",
                 blocking=True,
             )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
+            if len(detail) > 4000:
+                detail = detail[-4000:]
             return PreflightCheck(
                 key="neuron_runtime",
-                title="NEURON worker runtime",
+                title="Native NEURON worker stack",
                 state=CheckState.FAIL,
                 detail=detail or "The configured interpreter could not import NEURON.",
                 blocking=True,
@@ -505,12 +521,16 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
         try:
             identity = json.loads(completed.stdout.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):
-            identity = {"version": "unknown", "path": completed.stdout.strip()}
+            identity = {"neuron_version": "unknown", "neuron_path": completed.stdout.strip()}
         return PreflightCheck(
             key="neuron_runtime",
-            title="NEURON worker runtime",
+            title="Native NEURON worker stack",
             state=CheckState.PASS,
-            detail=f"NEURON {identity.get('version')} from {identity.get('path')}",
+            detail=(
+                f"NEURON {identity.get('neuron_version')} from {identity.get('neuron_path')}; "
+                f"pandas {identity.get('pandas_version')}; NumPy {identity.get('numpy_version')}; "
+                f"native runner {identity.get('runner_path')}; _ctypes {identity.get('_ctypes_path')}."
+            ),
             path=str(executable),
         )
 

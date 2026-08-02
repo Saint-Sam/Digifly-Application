@@ -42,6 +42,7 @@ from digifly_app import __version__
 from digifly_app.core.jobs import JobStore
 from digifly_app.core.circuit import CircuitSpec
 from digifly_app.core.models import CheckState, ExecutionPlan, PreflightReport, ResultRecord
+from digifly_app.core.process_environment import EXTERNAL_PYTHON_ENV_REMOVE
 from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
@@ -638,6 +639,13 @@ class ExperimentPage(QWidget):
         process = QProcess(self)
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         environment = QProcessEnvironment.systemEnvironment()
+        for key in tuple(environment.keys()):
+            if (
+                key in EXTERNAL_PYTHON_ENV_REMOVE
+                or key.startswith("DYLD_")
+                or key.startswith("CONDA_")
+            ):
+                environment.remove(key)
         for key, value in self._plan.environment.items():
             environment.insert(key, value)
         process.setProcessEnvironment(environment)

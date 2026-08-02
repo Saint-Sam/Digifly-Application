@@ -6,6 +6,7 @@ import subprocess
 from typing import Iterable
 
 from .models import CheckState, EngineProbe, PreflightCheck, PreflightReport
+from .process_environment import sanitized_external_environment
 
 
 class DigiflyWorkspace:
@@ -199,12 +200,8 @@ def _probe_python_module(
         "print(json.dumps({'found': bool(s), 'origin': getattr(s, 'origin', None)}))"
     )
     try:
-        environment = None
+        environment = sanitized_external_environment({})
         if clean_environment:
-            import os
-
-            environment = os.environ.copy()
-            environment.pop("PYTHONPATH", None)
             environment["PYTHONNOUSERSITE"] = "1"
         completed = subprocess.run(
             [str(executable), "-c", snippet],
@@ -243,10 +240,13 @@ def _probe_neuron_runtime(python_executable: str, phase2_root: Path) -> tuple[Ch
         "print(json.dumps({'version': getattr(neuron, '__version__', 'unknown'), "
         "'origin': getattr(neuron, '__file__', 'unknown')}))"
     )
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(paths)
-    environment["PYTHONNOUSERSITE"] = "1"
-    environment["NEURON_MODULE_OPTIONS"] = "-nogui"
+    environment = sanitized_external_environment(
+        {
+            "PYTHONPATH": os.pathsep.join(paths),
+            "PYTHONNOUSERSITE": "1",
+            "NEURON_MODULE_OPTIONS": "-nogui",
+        }
+    )
     try:
         completed = subprocess.run(
             [str(executable), "-c", code],
