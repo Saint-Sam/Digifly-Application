@@ -16,12 +16,12 @@ exec_directory = .
 project_file =
 
 # application icon
-icon = /Users/juanlopez2016/Desktop/Digifly App/.venv/lib/python3.12/site-packages/PySide6/scripts/deploy_lib/pyside_icon.icns
+icon =
 
 [python]
 
 # python path
-python_path = /Users/juanlopez2016/Desktop/Digifly App/.venv/bin/python
+python_path = .venv/bin/python
 
 # python packages to install
 packages = Nuitka==2.7.11

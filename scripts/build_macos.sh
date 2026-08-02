@@ -5,6 +5,7 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 deploy_python="$project_dir/.venv/bin/python"
 deploy_tool="$project_dir/.venv/bin/pyside6-deploy"
 generated_bundle="$project_dir/deployment/main.app"
+generated_spec="$project_dir/deployment/pysidedeploy.generated.spec"
 release_dir="$project_dir/dist"
 release_bundle="$release_dir/Digifly App.app"
 deploy_tmp="$project_dir/deployment/.tmp"
@@ -25,7 +26,8 @@ fi
 
 cd "$project_dir"
 mkdir -p "$deploy_tmp"
-"$deploy_tool" -c pysidedeploy.spec --keep-deployment-files -f main.py
+cp "$project_dir/pysidedeploy.spec" "$generated_spec"
+"$deploy_tool" -c "$generated_spec" --keep-deployment-files -f main.py
 if [[ ! -f "$generated_bundle/Contents/Info.plist" || ! -x "$generated_bundle/Contents/MacOS/main" ]]; then
   echo "Deployment did not produce a complete bundle at $generated_bundle" >&2
   exit 3
