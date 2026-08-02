@@ -53,7 +53,7 @@ from digifly_app.engines.neuron_escape_siz import (
 )
 from .style import APP_STYLE
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
-from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout
+from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_label_copyable
 
 
 def _resource_root() -> Path:
@@ -1090,6 +1090,8 @@ class MainWindow(QMainWindow):
         self._project_workflow: str | None = None
         self._build_menu()
         self._restore_settings()
+        for label in self.findChildren(QLabel):
+            make_label_copyable(label)
         self.show_page(0)
 
     def _navigation_toggled(self, index: int, checked: bool) -> None:
@@ -1346,7 +1348,7 @@ def _muted_label(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("Muted")
     label.setWordWrap(True)
-    return label
+    return make_label_copyable(label)
 
 
 def _display_value(value: Any) -> str:

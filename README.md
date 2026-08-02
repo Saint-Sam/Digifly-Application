@@ -113,9 +113,19 @@ view.
 - Mouse wheel: zoom.
 - Right-click: center the picked neuron; right-double-click: restore all.
 - Left-click a visible skeleton: select and isolate that neuron.
-- Left-click isolated skeleton segments: toggle any number of SWC segments.
+- Left-click isolated skeleton segments: toggle individual SWC compartments;
+  selected compartments are always electric magenta.
+- Cmd/Ctrl+Shift-left-drag on an isolated neuron: draw a box that adds every
+  intersecting compartment to the selection.
 - `Escape` or `I`: restore/isolate; `F`: fit; `R`: reset view; `C`: clear
   segment selection.
+
+Readouts and guidance text wrap within the viewport card and support normal
+mouse text selection plus the native right-click Copy menu. Large multi-neuron
+views use a connected topology-preserving preview only during overview camera
+motion; deep zoom uses the exact morphology with hierarchical off-screen
+culling. Settled rendering, picking, editing, and exports always use the exact
+source geometry.
 
 The editor writes unchanged-SWC + biophysics bundles under
 `~/Digifly App Workspace/morphologies`; it never changes the source SWCs in

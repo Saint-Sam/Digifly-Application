@@ -50,7 +50,7 @@ from digifly_app.core.mechanisms import (
     mechanism_capability_message,
 )
 from .circuit_viewport import CircuitViewport
-from .widgets import Card
+from .widgets import Card, make_label_copyable
 
 
 CIRCUIT_BUILDER_WORKFLOW = "circuit_builder_v1"
@@ -189,14 +189,18 @@ class CircuitBuilderPage(QWidget):
         viewport_layout = QVBoxLayout(viewport_card)
         viewport_layout.setContentsMargins(8, 8, 8, 8)
         viewport_layout.setSpacing(6)
-        viewport_top = QHBoxLayout()
+        viewport_top = QVBoxLayout()
+        viewport_top.setSpacing(2)
         self.viewport_summary = QLabel("No morphology loaded")
         self.viewport_summary.setStyleSheet("font-weight:650; color:#dce8ff;")
+        self.viewport_summary.setWordWrap(True)
+        self.viewport_summary.setMinimumWidth(0)
         viewport_top.addWidget(self.viewport_summary)
-        viewport_top.addStretch()
-        controls_hint = QLabel("Drag rotate · ⇧ drag/middle pan · scroll zoom · right-click center · Esc restore")
-        controls_hint.setObjectName("Muted")
-        viewport_top.addWidget(controls_hint)
+        self.viewport_controls_hint = QLabel()
+        self.viewport_controls_hint.setObjectName("Muted")
+        self.viewport_controls_hint.setWordWrap(True)
+        self.viewport_controls_hint.setMinimumWidth(0)
+        viewport_top.addWidget(self.viewport_controls_hint)
         viewport_layout.addLayout(viewport_top)
         self.viewport = CircuitViewport()
         self.viewport.neuron_selected.connect(self._neuron_selected)
@@ -471,6 +475,9 @@ class CircuitBuilderPage(QWidget):
         self.query_edit.textEdited.connect(self._selection_controls_changed)
         self.limit_spin.valueChanged.connect(self._selection_controls_changed)
         self.connectome_combo.currentIndexChanged.connect(self._selection_controls_changed)
+        for label in self.findChildren(QLabel):
+            make_label_copyable(label)
+        self._update_viewport_guidance()
         self._set_mixed_selection_design(False)
         self._engine_changed()
 
@@ -598,6 +605,7 @@ class CircuitBuilderPage(QWidget):
         self._set_hh(self.spec.hh)
         self._set_membrane(self.spec.membrane)
         self._set_mixed_selection_design(False)
+        self._update_viewport_guidance()
 
     def _selected_source(self) -> ConnectomeRef | None:
         index = self.connectome_combo.currentIndex()
@@ -750,8 +758,10 @@ class CircuitBuilderPage(QWidget):
                 suffixes.append(f"{len(failures)} failed SWC(s)")
             suffix = f" · {' · '.join(suffixes)}" if suffixes else ""
             self.viewport_summary.setText(
-                f"{len(morphologies)} neuron(s) · {self.viewport.segment_count:,} SWC segments{suffix}"
+                f"{len(morphologies)} neuron(s) · {self.viewport.segment_count:,} "
+                f"editable compartment(s) (SWC segments){suffix}"
             )
+            self._update_viewport_guidance()
             self.status_message.emit(f"Loaded morphology cell set from {source.label}{suffix}")
             self.circuit_changed.emit(self.spec)
         except Exception as exc:
@@ -780,7 +790,11 @@ class CircuitBuilderPage(QWidget):
         record = self.loaded_records.get(neuron_id)
         if record is None:
             return
-        self.selection_label.setText(f"{record.neuron_type} · {neuron_id}\nWhole neuron selected; other neurons hidden")
+        self.selection_label.setText(
+            f"{record.neuron_type} · {neuron_id}\n"
+            "Whole neuron isolated; left-click a skeleton segment or "
+            "Cmd/Ctrl+Shift+left-drag a box to select compartments"
+        )
         for row in range(self.neuron_table.rowCount()):
             item = self.neuron_table.item(row, 0)
             if item is not None and str(item.data(Qt.ItemDataRole.UserRole)) == neuron_id:
@@ -788,6 +802,7 @@ class CircuitBuilderPage(QWidget):
                 break
         self._load_effective_selection_design(neuron_id, ())
         self._update_override_summary()
+        self._update_viewport_guidance()
 
     def _compartments_changed(self, neuron_id: str, node_ids: object) -> None:
         ids = tuple(node_ids) if isinstance(node_ids, (tuple, list, set)) else ()
@@ -795,15 +810,44 @@ class CircuitBuilderPage(QWidget):
         label = record.neuron_type if record else "Neuron"
         view_state = "Whole neuron isolated" if self.viewport.isolated else "All loaded neurons visible"
         self.selection_label.setText(
-            f"{label} · {neuron_id}\n{view_state} · {len(ids)} SWC segment(s) selected by child-node ID"
+            f"{label} · {neuron_id}\n{view_state} · {len(ids)} compartment(s) selected "
+            "in electric magenta (stored by SWC child-node ID)"
         )
         self._load_effective_selection_design(neuron_id, ids)
         self._update_override_summary()
+        self._update_viewport_guidance()
 
     def _isolation_changed(self, _isolated: bool) -> None:
         neuron_id = self.viewport.selected_neuron_id
         if neuron_id is not None:
             self._compartments_changed(neuron_id, tuple(sorted(self.viewport.selected_compartments)))
+
+    def _update_viewport_guidance(self) -> None:
+        neuron_id = self.viewport.selected_neuron_id
+        selected_count = len(self.viewport.selected_compartments)
+        if self.viewport.neuron_count == 0:
+            selection_state = "Selection: load a cell set to begin."
+        elif self.viewport.isolated and neuron_id is not None:
+            selection_state = (
+                f"Selection: neuron {neuron_id} isolated · {selected_count} compartment(s) "
+                "selected in electric magenta. Left-click a skeleton segment to toggle it; "
+                "Cmd/Ctrl+Shift+left-drag a box to add intersecting compartments."
+            )
+        elif neuron_id is not None:
+            selection_state = (
+                f"Selection: neuron {neuron_id} focused · {selected_count} compartment(s) "
+                "selected. Left-click it to isolate it for compartment editing."
+            )
+        else:
+            selection_state = (
+                "Selection: no neuron isolated. Left-click a neuron to isolate it; then "
+                "left-click segments or Cmd/Ctrl+Shift+left-drag a box to select compartments."
+            )
+        self.viewport_controls_hint.setText(
+            f"{selection_state}\n"
+            "Navigate: left-drag rotate · Shift-left-drag or middle-drag pan · scroll zoom · "
+            "right-click center · Esc restore all · C clear selected compartments."
+        )
 
     def _load_effective_selection_design(
         self,
@@ -1140,6 +1184,7 @@ class CircuitBuilderPage(QWidget):
         self.neuron_table.setRowCount(0)
         self.viewport_summary.setText("Saved cell set not loaded yet")
         self.selection_label.setText("No neuron selected")
+        self._update_viewport_guidance()
         self._update_override_summary()
         self._update_mechanism_capability()
 
@@ -1169,8 +1214,10 @@ class CircuitBuilderPage(QWidget):
         self._set_mixed_selection_design(False)
         self._populate_table(morphologies)
         self.viewport_summary.setText(
-            f"{len(morphologies)} saved neuron(s) · {self.viewport.segment_count:,} SWC segments"
+            f"{len(morphologies)} saved neuron(s) · {self.viewport.segment_count:,} "
+            "editable compartment(s) (SWC segments)"
         )
+        self._update_viewport_guidance()
         self.status_message.emit(f"Restored exact saved cell set from {source.label}")
 
     def reset(self) -> None:

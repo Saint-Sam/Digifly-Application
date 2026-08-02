@@ -6,7 +6,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import QApplication, QLineEdit
 
@@ -31,7 +31,10 @@ from digifly_app.ui.circuit_viewport import (
     REFERENCE_CAMERA_FOCAL_POINT,
     REFERENCE_CAMERA_POSITION,
     REFERENCE_CAMERA_VIEW_UP,
+    SELECTED_COMPARTMENT_COLOR,
+    SELECTED_NEURON_COLOR,
 )
+from digifly_app.ui import circuit_viewport as circuit_viewport_module
 
 
 class _OverviewStub:
@@ -63,6 +66,11 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         assert page.viewport.accessibleName() == "Circuit morphology viewport"
         assert page.viewport.yaw_degrees == DEFAULT_YAW_DEGREES
         assert page.viewport.pitch_degrees == DEFAULT_PITCH_DEGREES
+        assert page.viewport_summary.wordWrap() is True
+        assert "Ctrl+Shift+left-drag" in page.viewport_controls_hint.text()
+        assert page.viewport_controls_hint.textInteractionFlags() & (
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         assert page.circuit_spec().neuron_ids == ("10000",)
         assert page.circuit_spec().membrane.active_channels == ()
 
@@ -89,6 +97,9 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         assert (picked[0], picked[1].child_id) == ("10000", 2)
 
         page.viewport.selected_compartments = {2}
+        page._compartments_changed("10000", (2,))
+        assert "electric magenta" in page.viewport_controls_hint.text()
+        assert "1 compartment(s)" in page.viewport_controls_hint.text()
         page.apply_compartment_overrides()
         assert "2" in page.circuit_spec().compartment_overrides["10000"]
         assert (
@@ -311,6 +322,73 @@ def test_default_view_uses_ablation_notebook_camera_right_and_up():
     assert abs(right_screen[1] - center_screen[1]) < 1e-4
     assert up_screen[1] < center_screen[1]
     assert abs(up_screen[0] - center_screen[0]) < 1e-4
+    viewport.close()
+    application.processEvents()
+
+
+def test_box_selection_adds_projected_compartments_and_magenta_is_reserved():
+    application = QApplication.instance() or QApplication([])
+    record = NeuronRecord("box", "IN", "box-test", "/box.swc", "test")
+    segments = (
+        SwcSegment(2, 1, (-8.0, 0.0, 0.0), (-2.0, 0.0, 0.0), 0.5, 2),
+        SwcSegment(3, 1, (8.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.5, 2),
+    )
+    morphology = Morphology(record, (), segments, (-8.0, 8.0, 0.0, 0.0, 0.0, 0.0))
+    viewport = CircuitViewport()
+    viewport.resize(632, 286)
+    viewport.set_morphologies((morphology,))
+    viewport.focus_neuron("box", isolate=True)
+    midpoint = tuple(
+        (a + b) / 2.0 for a, b in zip(segments[0].parent, segments[0].child)
+    )
+    projected = viewport._project(midpoint, viewport._mvp())
+    assert projected is not None
+    viewport.selected_compartments = {3}
+    added = viewport._select_compartments_in_rect(
+        QRectF(projected[0] - 3.0, projected[1] - 3.0, 6.0, 6.0)
+    )
+    assert added == 1
+    assert viewport.selected_compartments == {2, 3}
+    assert SELECTED_COMPARTMENT_COLOR not in viewport._palette
+    assert SELECTED_COMPARTMENT_COLOR != SELECTED_NEURON_COLOR
+    assert viewport._box_selection_requested(
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+    )
+    assert not viewport._box_selection_requested(Qt.KeyboardModifier.ShiftModifier)
+    viewport.close()
+    application.processEvents()
+
+
+def test_large_multi_neuron_navigation_uses_smaller_connected_preview(monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(circuit_viewport_module, "INTERACTION_PREVIEW_THRESHOLD", 10)
+    monkeypatch.setattr(circuit_viewport_module, "INTERACTION_PREVIEW_SEGMENT_BUDGET", 12)
+    record = NeuronRecord("lod", "IN", "lod-test", "/lod.swc", "test")
+    segments = tuple(
+        SwcSegment(
+            index + 2,
+            index + 1,
+            (float(index + 1), 0.0, 0.0),
+            (float(index), 0.0, 0.0),
+            0.5,
+            2,
+        )
+        for index in range(600)
+    )
+    morphology = Morphology(record, (), segments, (0.0, 600.0, 0.0, 0.0, 0.0, 0.0))
+    viewport = CircuitViewport()
+    viewport.set_morphologies((morphology,))
+    assert 0 < viewport.interaction_preview_segment_count < viewport.segment_count
+    viewport._begin_interaction_preview()
+    assert viewport._interaction_preview is True
+    viewport.distance = viewport.scene_radius * 0.1
+    viewport._begin_interaction_preview()
+    assert viewport._interaction_preview is False
+    visible_at_deep_zoom = viewport.exact_visible_segment_count()
+    assert 0 < visible_at_deep_zoom < viewport.segment_count
+    viewport.focus_neuron("lod", isolate=True)
+    assert viewport._interaction_preview is False
+    assert viewport.interaction_preview_segment_count <= 256
     viewport.close()
     application.processEvents()
 

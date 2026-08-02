@@ -88,13 +88,16 @@ source hashes, and per-set policies.
 
 ## Visualization boundary
 
-The Circuit Builder uses one immutable OpenGL vertex buffer for all loaded SWC
-segments and a small dynamic buffer for highlighted selections. Camera state
-and CPU-assisted picking stay in the GUI layer; circuit and morphology models
-have no Qt dependency. The initial orthographic camera basis reproduces the
-saved VIP GLIA anatomy orientation used by the Escape-SIZ Ablation comparison
-notebook. Isolation changes only which vertex ranges are drawn, so hidden
-neurons and their saved settings remain in the loaded cell set.
+The Circuit Builder stores exact SWC geometry in a spatially ordered immutable
+OpenGL vertex buffer, a connected coarse preview for large overview navigation,
+and a small dynamic buffer for electric-magenta compartment highlights. A
+hierarchical spatial index serves exact deep-zoom culling, point picking, and
+box selection. Camera state and CPU-assisted selection stay in the GUI layer;
+circuit and morphology models have no Qt dependency. The initial orthographic
+camera basis reproduces the saved VIP GLIA anatomy orientation used by the
+Escape-SIZ Ablation comparison notebook. Isolation and culling change only
+which exact vertex ranges are drawn, so hidden neurons, source geometry, and
+saved settings remain in the loaded cell set.
 
 ## Project format
 

@@ -28,6 +28,7 @@ class StatusPill(QLabel):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.set_state(state, text=text)
+        make_label_copyable(self)
 
     def set_state(self, state: CheckState | str, *, text: str | None = None) -> None:
         key = state.value if isinstance(state, CheckState) else str(state)
@@ -37,6 +38,16 @@ class StatusPill(QLabel):
             f"background:{background}; color:{foreground}; border:1px solid {foreground}55; "
             "border-radius:9px; padding:2px 8px; font-size:10px; font-weight:700;"
         )
+
+
+def make_label_copyable(label: QLabel) -> QLabel:
+    """Enable native drag selection and right-click Copy without adding a tab stop."""
+
+    label.setTextInteractionFlags(
+        label.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    label.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+    return label
 
 
 class CheckRow(Card):
@@ -55,6 +66,8 @@ class CheckRow(Card):
         detail = QLabel(check.detail)
         detail.setObjectName("Muted")
         detail.setWordWrap(True)
+        make_label_copyable(title)
+        make_label_copyable(detail)
         copy.addWidget(title)
         copy.addWidget(detail)
         layout.addLayout(copy, 1)
@@ -84,6 +97,7 @@ class EngineCard(Card):
         top = QHBoxLayout()
         name = QLabel(probe.name)
         name.setObjectName("SectionTitle")
+        make_label_copyable(name)
         top.addWidget(name, 1)
         combined = (
             CheckState.PASS
@@ -97,15 +111,17 @@ class EngineCard(Card):
         summary = QLabel(probe.summary)
         summary.setObjectName("Muted")
         summary.setWordWrap(True)
+        make_label_copyable(summary)
         layout.addWidget(summary)
         source = QLabel(f"Source: {probe.source_state.value}  ·  Runtime: {probe.runtime_state.value}")
         source.setStyleSheet("color:#7faaf0; font-size:11px; font-weight:600;")
+        make_label_copyable(source)
         layout.addWidget(source)
         if probe.details:
             detail = QLabel("\n".join(probe.details))
             detail.setObjectName("Muted")
             detail.setWordWrap(True)
-            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            make_label_copyable(detail)
             layout.addWidget(detail)
 
 
