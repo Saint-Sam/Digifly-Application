@@ -12,8 +12,10 @@ by `ESCAPE_SIZ_AGENT_HANDOFF.md`. The app now also
 has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders
 SWC segments, and stores a classic-HH draft plus stable SWC child-node
-selections. It does not yet load chemical/gap connectivity or translate the
-design into an executable Arbor, NEURON, or BMTK model.
+selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
+identities, regional conductance densities, and a separate gap-junction edge
+policy. It does not yet load chemical/gap connectivity or translate the design
+into an executable Arbor, NEURON, or BMTK model.
 
 ## What the first milestone includes
 
@@ -26,8 +28,25 @@ design into an executable Arbor, NEURON, or BMTK model.
   `10000, 10002`, `type:GFC2`, `family:DN`, and `all:IN`.
 - A batched OpenGL SWC renderer with rotate, pan, zoom, right-click centering,
   whole-neuron isolation, and multi-segment selection by SWC child-node ID.
-- Editable cell-set-, neuron-, and SWC-segment classic-HH drafts, which remain
-  capability-gated until an execution adapter validates them.
+- Editable cell-set-, neuron-, and SWC-segment classic-HH drafts, including Na,
+  K, and Ca reversal potentials, which remain capability-gated until an
+  execution adapter validates them.
+- A versioned catalog for all eight native Phase 2 membrane surrogates:
+  `na16a`, `na14a`, `kv14sh`, `kv42shal`, `kv21shab`, `kv31shaw`,
+  `cav21cac`, and `cav31t`. Saved assignments include a stable catalog ID,
+  source-relative path, and SHA-256 of the exact `.mod` source.
+- Named classic-HH, Phase 2 Para+Shab, Phase 2 channel-family, and Escape-SIZ
+  Para+HH-K profiles, plus fully custom multi-channel stacks with separate soma
+  and branch densities. A named profile applies its HH and native-channel values
+  atomically; editing either half marks it Custom.
+- Selected-neuron, selected-SWC-segment, cell-set-default, and explicit
+  all-loaded-neuron mass-apply actions. More-specific saved segment overrides
+  remain intact when a broader neuron assignment is applied.
+- Separate all-electrical-edge policies for native `Gap`, `RectGap`, and
+  `HeteroRectGap` intent, including placement and per-site versus pair-total
+  conductance semantics, exact source hashes, and endpoint-role labels.
+  Pair-total conductance is explicitly divided equally over selected sites;
+  no GJ is attached until a two-endpoint connectivity source is loaded.
 - Non-destructive reusable morphology bundles containing an unchanged SWC,
   biophysics sidecar, provenance manifest, and SHA-256 identity.
 - An Escape-SIZ preset matching the latest documented GFC2 experiment.
@@ -98,9 +117,19 @@ view.
 - `Escape` or `I`: restore/isolate; `F`: fit; `R`: reset view; `C`: clear
   segment selection.
 
-The editor writes unchanged-SWC + HH-draft bundles under
+The editor writes unchanged-SWC + biophysics bundles under
 `~/Digifly App Workspace/morphologies`; it never changes the source SWCs in
-`Digifly Public`.
+`Digifly Public`. The sidecar preserves channel catalog IDs, exact NMODL
+suffixes, regional densities, and SWC-node overrides. Gap junctions remain in
+the circuit project because a single-neuron bundle cannot preserve both edge
+endpoints.
+
+The current Circuit Builder stores one future all-electrical-edge GJ policy.
+That is sufficient for a uniform edge set, but it cannot yet represent the full
+mixed Escape-SIZ topology (heterotypic GF→target contact gaps together with the
+optional 55 GFC2–GFC2 ohmic AIS pairs). Multiple named edge sets and contact-file
+identity are required before the generic Circuit Builder can execute that mixed
+design.
 
 ## Safety model
 
@@ -137,7 +166,11 @@ scientific acceptance run.
 curated scenarios pass archived compact-NEURON comparison baselines using
 built-in HH/passive mechanisms, `exp2syn`, and ohmic `gj`. That evidence does
 not validate arbitrary circuits, biological equivalence, Drosophila MOD-channel
-parity, or true heterotypic rectifying gaps. Translating the Circuit Builder
-design into capability-checked execution plans is the next integration
-boundary. VND remains an optional external viewer rather than a simulator
-dependency.
+parity, or true heterotypic rectifying gaps. The app therefore defaults new
+designs to classic HH while exposing the native profiles explicitly; selecting
+a native NMODL channel under the Arbor target produces an unsupported warning
+instead of a silent approximation. Rectifying GJ choices are explicitly blocked
+for Arbor; `HeteroRectGap` is preserved as the current kinetic NEURON policy and
+is never presented as equivalent to Arbor's built-in ohmic `gj`. Translating the Circuit Builder design into capability-checked
+execution plans is the next integration boundary. VND remains an optional
+external viewer rather than a simulator dependency.

@@ -10,8 +10,18 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from digifly_app.core.circuit import CircuitSpec, ConnectomeRef, NeuronQuery
+from digifly_app.core.circuit import (
+    CircuitSpec,
+    ConnectomeRef,
+    HodgkinHuxleySpec,
+    NeuronQuery,
+)
 from digifly_app.core.connectomes import NeuronRecord
+from digifly_app.core.mechanisms import (
+    ChannelAssignment,
+    MembraneMechanismSpec,
+    membrane_profile,
+)
 from digifly_app.core.morphology import Morphology, SwcSegment, load_swc, save_custom_morphology
 from digifly_app.ui.circuit_builder import CircuitBuilderPage
 from digifly_app.ui.circuit_viewport import (
@@ -54,8 +64,22 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         assert page.viewport.yaw_degrees == DEFAULT_YAW_DEGREES
         assert page.viewport.pitch_degrees == DEFAULT_PITCH_DEGREES
         assert page.circuit_spec().neuron_ids == ("10000",)
+        assert page.circuit_spec().membrane.active_channels == ()
 
         page.viewport.focus_neuron("10000")
+        escape_profile = page.channel_profile_combo.findData("escape_siz_para_hh_k")
+        page.channel_profile_combo.setCurrentIndex(escape_profile)
+        assert page.channel_checks["para"].isChecked()
+        assert page.channel_branch_editors["para"].value() == 0.005
+        assert page.hh_editors["soma_gnabar_s_cm2"].value() == 0.0
+        assert page.hh_editors["soma_gkbar_s_cm2"].value() == 0.036
+        assert page.hh_editors["ena_mV"].value() == 50.0
+        assert page.hh_editors["ek_mV"].value() == -77.0
+        assert page.hh_editors["celsius_C"].value() == 6.3
+        page.apply_neuron_override()
+        assert page.spec.neuron_mechanism_overrides["10000"]["channels"]["para"][
+            "enabled"
+        ]
         segment = page.viewport.morphologies["10000"].segments[0]
         midpoint = tuple((a + b) / 2.0 for a, b in zip(segment.parent, segment.child))
         projected = page.viewport._project(midpoint, page.viewport._mvp())
@@ -67,6 +91,25 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         page.viewport.selected_compartments = {2}
         page.apply_compartment_overrides()
         assert "2" in page.circuit_spec().compartment_overrides["10000"]
+        assert (
+            page.circuit_spec()
+            .compartment_mechanism_overrides["10000"]["2"]["channels"]["para"][
+                "suffix"
+            ]
+            == "na16a"
+        )
+
+        page.mass_apply_to_loaded_neurons()
+        assert page.spec.neuron_mechanism_overrides["10000"]["profile_key"] == (
+            "escape_siz_para_hh_k"
+        )
+
+        page.gap_mode_combo.setCurrentIndex(
+            page.gap_mode_combo.findData("heterotypic_rectifying")
+        )
+        page.apply_gap_policy()
+        assert page.spec.gap_junction_policy.mode == "heterotypic_rectifying"
+        assert "not Arbor-qualified" in page.mechanism_capability_label.text()
 
         page.query_edit.setText("99999")
         page.query_edit.textEdited.emit("99999")
@@ -75,6 +118,90 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
 
         with pytest.raises(ValueError, match="Unsupported"):
             page.set_selected_engine_key("made-up-engine")
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_ui_preserves_advanced_channel_parameters_and_requires_explicit_apply(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        rich = MembraneMechanismSpec(
+            profile_key="custom",
+            channels={
+                "cacophony": ChannelAssignment(
+                    "cacophony",
+                    "cav21cac",
+                    enabled=True,
+                    soma_gbar_s_cm2=0.0002,
+                    branch_gbar_s_cm2=0.0001,
+                    parameters={"q10": 1.5, "celsius_ref": 21.0},
+                )
+            },
+        )
+        page._set_membrane(rich)
+        assert page._read_membrane().channels["cacophony"].parameters == {
+            "q10": 1.5,
+            "celsius_ref": 21.0,
+        }
+
+        page.hh_editors["cm_uF_cm2"].setValue(1.7)
+        assert page.channel_profile_combo.currentData() == "custom"
+        page.gap_mode_combo.setCurrentIndex(
+            page.gap_mode_combo.findData("heterotypic_rectifying")
+        )
+        unapplied = page.circuit_spec()
+        assert unapplied.hh.cm_uF_cm2 == 1.0
+        assert unapplied.gap_junction_policy.mode == "none"
+
+        page.apply_cell_set_defaults()
+        assert page.spec.hh.cm_uF_cm2 == 1.7
+        assert page.spec.gap_junction_policy.mode == "none"
+        page.apply_gap_policy()
+        assert page.spec.gap_junction_policy.mode == "heterotypic_rectifying"
+        assert page.spec.gap_junction_policy.effective_closed_floor == 0.2
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_mixed_segment_design_requires_a_deliberate_edit_before_replacement(tmp_path):
+    swc = (
+        tmp_path
+        / "Phase 1"
+        / "manc_v1.2.1"
+        / "export_swc"
+        / "DN"
+        / "DNp01"
+        / "10000"
+        / "10000_healed.swc"
+    )
+    swc.parent.mkdir(parents=True)
+    swc.write_text(
+        "1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n3 2 2 0 0 0.5 2\n",
+        encoding="utf-8",
+    )
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        page.query_edit.setText("10000")
+        page.assemble_circuit()
+        page.viewport.focus_neuron("10000")
+        page.spec.apply_compartment_override(
+            "10000", (2,), HodgkinHuxleySpec(cm_uF_cm2=1.1).to_dict()
+        )
+        page.spec.apply_compartment_override(
+            "10000", (3,), HodgkinHuxleySpec(cm_uF_cm2=1.2).to_dict()
+        )
+        page.viewport.selected_compartments = {2, 3}
+        page._compartments_changed("10000", (2, 3))
+        assert page._mixed_selection_design is True
+        assert page.apply_compartments_button.isEnabled() is False
+
+        page.hh_editors["cm_uF_cm2"].setValue(1.4)
+        assert page._mixed_selection_design is False
+        assert page.apply_compartments_button.isEnabled() is True
     finally:
         page.close()
         application.processEvents()
@@ -196,6 +323,8 @@ def test_custom_bundle_discovers_and_restores_verified_hh_draft(tmp_path, monkey
     morphology = load_swc(record)
     draft = CircuitSpec(connectome=ConnectomeRef("manc:v1.2.1", "MANC", str(source.parent)))
     draft.apply_compartment_override("10000", (2,), {"branch_gnabar_s_cm2": 0.05})
+    draft.membrane = membrane_profile("phase2_para_shab")
+    draft.apply_compartment_mechanism_override("10000", (2,), draft.membrane)
     library = tmp_path / "library"
     save_custom_morphology(
         morphology,
@@ -213,6 +342,9 @@ def test_custom_bundle_discovers_and_restores_verified_hh_draft(tmp_path, monkey
         page.assemble_circuit()
         assert page.viewport.neuron_count == 1
         assert page.spec.compartment_overrides["10000"]["2"]["branch_gnabar_s_cm2"] == 0.05
+        restored = page.spec.compartment_mechanism_overrides["10000"]["2"]
+        assert restored["channels"]["shab"]["suffix"] == "kv21shab"
+        assert restored["channels"]["shab"]["enabled"] is True
     finally:
         page.close()
         application.processEvents()

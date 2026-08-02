@@ -29,7 +29,18 @@
   SWC child-node selection.
 - [x] Save non-destructive reusable SWC/biophysics/provenance bundles.
 - [x] Preserve SWC variants, validate topology, and restore exact saved IDs.
+- [x] Catalog the eight native Phase 2 Na/K/Ca mechanisms and preserve exact
+  mechanism identity, source hash, advanced parameters, and soma/branch density
+  in circuit and morphology sidecars.
+- [x] Apply HH + membrane profiles to the cell-set default, one neuron,
+  selected SWC segments, or all currently loaded neurons.
+- [x] Store `Gap`/`RectGap`/`HeteroRectGap` as capability-gated electrical-edge
+  policy intent instead of attaching GJs to isolated cells.
 - [ ] Add synapse/contact editing and circuit connectivity overlays.
+- [ ] Import explicit gap endpoint/contact sets and apply saved GJ policies to
+  selected edges with per-site/pair-total validation.
+- [ ] Support multiple named electrical-edge sets so heterotypic GF contact gaps
+  and optional GFC2 ohmic AIS pairs can coexist in one Escape-SIZ design.
 - [ ] Add canonical connectome/neuron/morphology/edge/biophysics manifests.
 - [ ] Move large morphology-source indexing off the GUI thread.
 

@@ -41,9 +41,12 @@ argument arrays rather than shell strings.
 
 ## Backend-unbound circuit-design model
 
-`CircuitSpec` is the proposed boundary between editing and execution. It records a
+`CircuitSpec` is the proposed boundary between editing and execution. Its nested
+schema is version 2; version-1 documents migrate in memory and save back as
+version 2 without changing the outer Digifly project envelope. It records a
 versioned SWC-source reference, neuron query and resolved IDs, a cable-HH draft,
-neuron-level drafts, and per-SWC-node overrides. Engine
+native membrane-mechanism identity, neuron-level drafts, and per-SWC-node
+overrides. Engine
 selection is metadata on the project rather than an assumption embedded in the
 circuit design. Arbor is the default design target because staged Phase 2
 workflows already run and are intended for multicore execution. Default target
@@ -54,6 +57,34 @@ Native SWCs are indexed by `ConnectomeCatalog` and parsed into a compact
 `Morphology` document. Stable selections use `(neuron_id, SWC child node ID)`;
 they do not depend on transient render-actor indices. Custom saves copy the SWC
 without changing it and place biophysics/provenance in JSON sidecars.
+
+Membrane mechanisms and classic HH scalars are deliberately separate. The
+catalog records the two Para sodium, four potassium-family, and two
+calcium-family Phase 2 mechanisms with their exact NMODL suffixes and portable
+source provenance, including a stable catalog ID and exact source SHA-256. A
+design can stack mechanisms, preserve disabled values and unexposed advanced
+parameters,
+and store separate soma/branch densities. Assignment precedence is stable SWC
+segment over neuron over cell-set default. An explicit mass-apply action writes
+the same neuron-level snapshot to every currently loaded neuron while retaining
+narrower segment overrides. Named profiles atomically set both HH and native
+mechanism state; any divergent HH or mechanism edit invalidates the profile name
+and saves as Custom.
+
+Gap junctions are connection mechanisms, not membrane channels. `Gap`,
+`RectGap`, and `HeteroRectGap` therefore live in a separate all-electrical-edge
+policy with direction, placement, conductance basis, and rectification
+parameters. Pair-total conductance carries the explicit
+`equal_split_across_selected_sites` aggregation rule. Kinetic heterotypic policy
+metadata exposes the effective closed floor as the maximum of its closed and
+empirical-residual fractions. The policy remains unapplied until connectivity provides two
+endpoints. It is excluded from single-neuron bundles so a reusable morphology
+can never imply a dangling GJ endpoint.
+
+Version 2 currently has one all-electrical-edge policy. It deliberately does not
+claim to encode Escape-SIZ's mixed optional topology: that requires multiple
+named edge sets (GF→target imported contacts and GFC2↔GFC2 AIS pairs), endpoint
+source hashes, and per-set policies.
 
 ## Visualization boundary
 
@@ -94,7 +125,11 @@ the deduplicated-visible-contact policy, and loads completed summaries read-only
 Four curated staged Phase 2 Arbor scenarios pass archived compact-NEURON
 comparison baselines using built-in HH/passive, `exp2syn`, and ohmic `gj`.
 NEURON remains the reference implementation lane for established Phase 2
-NMODL/Drosophila channels and true heterotypic rectification. BMTK
+NMODL/Drosophila channels and current kinetic heterotypic rectification. The
+active Arbor runner does not provide equation-level `RectGap` or
+`HeteroRectGap` support; the generic design path blocks those requests. A static
+1.0/0.8 ohmic approximation, where explicitly selected by a dedicated workflow,
+is a different non-exact model. BMTK
 PointNet/DPointNet are LIF/GLIF lanes and
 do not consume the current cable-HH draft; a generic BioNet translator is future
 work. VND is a visualization/export consumer, not a simulator.

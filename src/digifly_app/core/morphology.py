@@ -194,13 +194,21 @@ def load_custom_biophysics(
     if len(expected_hash) != 64 or sha256_file(actual_swc) != expected_hash:
         raise ValueError(f"Custom morphology SWC identity check failed: {actual_swc}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or int(payload.get("schema_version", 0)) != 1:
+    if not isinstance(payload, dict) or int(payload.get("schema_version", 0)) not in {1, 2}:
         raise ValueError(f"Unsupported custom biophysics sidecar: {path}")
     if str(payload.get("neuron_id") or "") != str(neuron_id):
         raise ValueError(f"Biophysics sidecar neuron ID does not match {neuron_id}: {path}")
     for key in ("base_hh", "neuron_override", "compartment_overrides"):
         if not isinstance(payload.get(key, {}), dict):
             raise ValueError(f"Biophysics sidecar field {key} must be an object: {path}")
+    if int(payload.get("schema_version", 0)) >= 2:
+        for key in (
+            "base_membrane",
+            "neuron_mechanism_override",
+            "compartment_mechanism_overrides",
+        ):
+            if not isinstance(payload.get(key, {}), dict):
+                raise ValueError(f"Biophysics sidecar field {key} must be an object: {path}")
     return payload
 
 
@@ -232,11 +240,16 @@ def save_custom_morphology(
 
     neuron_id = record.neuron_id
     sidecar = {
-        "schema_version": 1,
+        "schema_version": 2,
         "neuron_id": neuron_id,
         "base_hh": circuit.hh.to_dict(),
+        "base_membrane": circuit.membrane.to_dict(),
         "neuron_override": circuit.neuron_overrides.get(neuron_id, {}),
         "compartment_overrides": circuit.compartment_overrides.get(neuron_id, {}),
+        "neuron_mechanism_override": circuit.neuron_mechanism_overrides.get(neuron_id, {}),
+        "compartment_mechanism_overrides": circuit.compartment_mechanism_overrides.get(
+            neuron_id, {}
+        ),
     }
     sidecar_path = bundle / "digifly-biophysics.json"
     sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
@@ -255,7 +268,10 @@ def save_custom_morphology(
         "custom_sha256": sha256_file(destination),
         "custom_swc": destination.relative_to(bundle).as_posix(),
         "biophysics_sidecar": sidecar_path.relative_to(bundle).as_posix(),
-        "note": "SWC geometry is copied unchanged; HH overrides are stored in the sidecar by SWC node ID.",
+        "note": (
+            "SWC geometry is copied unchanged; HH and membrane-mechanism overrides are stored "
+            "in the sidecar by SWC node ID. Gap junctions remain circuit-edge policies."
+        ),
     }
     (bundle / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return bundle

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digifly.dev/schemas/digifly-circuit-v2.schema.json",
+  "title": "Digifly Circuit Builder Design",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "connectome",
+    "query",
+    "neuron_ids",
+    "hh",
+    "membrane",
+    "gap_junction_policy"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "connectome": {
+      "type": "object",
+      "required": ["key", "label", "root", "dataset"],
+      "properties": {
+        "key": {"type": "string"},
+        "label": {"type": "string"},
+        "root": {"type": "string"},
+        "dataset": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "query": {
+      "type": "object",
+      "required": ["expression", "max_neurons"],
+      "properties": {
+        "expression": {"type": "string"},
+        "max_neurons": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "neuron_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "hh": {"type": "object"},
+    "membrane": {"$ref": "#/$defs/membrane"},
+    "gap_junction_policy": {"$ref": "#/$defs/gapPolicy"},
+    "morphology_sha256": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "neuron_overrides": {"$ref": "#/$defs/neuronMap"},
+    "compartment_overrides": {"$ref": "#/$defs/segmentMap"},
+    "neuron_mechanism_overrides": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/membrane"}
+    },
+    "compartment_mechanism_overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"$ref": "#/$defs/membrane"}
+      }
+    }
+  },
+  "$defs": {
+    "channel": {
+      "type": "object",
+      "required": [
+        "mechanism_key",
+        "suffix",
+        "catalog_id",
+        "source_relpath",
+        "source_sha256",
+        "enabled",
+        "soma_gbar_s_cm2",
+        "branch_gbar_s_cm2",
+        "parameters"
+      ],
+      "properties": {
+        "mechanism_key": {"type": "string", "minLength": 1},
+        "suffix": {"type": "string", "minLength": 1},
+        "catalog_id": {"type": "string", "minLength": 1},
+        "source_relpath": {"type": "string"},
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^$|^[0-9a-f]{64}$"
+        },
+        "enabled": {"type": "boolean"},
+        "soma_gbar_s_cm2": {"type": "number", "minimum": 0, "maximum": 10},
+        "branch_gbar_s_cm2": {"type": "number", "minimum": 0, "maximum": 10},
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {"type": "number"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "membrane": {
+      "type": "object",
+      "required": ["profile_key", "replace_builtin_hh", "channels"],
+      "properties": {
+        "profile_key": {"type": "string", "minLength": 1},
+        "replace_builtin_hh": {"type": "boolean"},
+        "channels": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/channel"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "gapPolicy": {
+      "type": "object",
+      "required": [
+        "mode",
+        "catalog_id",
+        "mechanism_name",
+        "source_relpath",
+        "source_sha256",
+        "g_uS",
+        "preferred_direction",
+        "g_closed_frac",
+        "vhalf_mV",
+        "vslope_mV",
+        "empirical_residual_frac",
+        "tau_open_ms",
+        "tau_close_ms",
+        "placement_policy",
+        "conductance_basis",
+        "aggregation_policy",
+        "endpoint_a_role",
+        "endpoint_b_role",
+        "edge_scope"
+      ],
+      "properties": {
+        "mode": {
+          "enum": ["none", "ohmic", "rectifying", "heterotypic_rectifying"]
+        },
+        "catalog_id": {"type": "string", "minLength": 1},
+        "mechanism_name": {"type": "string"},
+        "source_relpath": {"type": "string"},
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^$|^[0-9a-f]{64}$"
+        },
+        "g_uS": {"type": "number", "minimum": 0, "maximum": 1000},
+        "preferred_direction": {"enum": ["a_to_b", "b_to_a"]},
+        "g_closed_frac": {"type": "number", "minimum": 0, "maximum": 1},
+        "vhalf_mV": {"type": "number"},
+        "vslope_mV": {"type": "number", "exclusiveMinimum": 0},
+        "empirical_residual_frac": {"type": "number", "minimum": 0, "maximum": 1},
+        "tau_open_ms": {"type": "number", "exclusiveMinimum": 0},
+        "tau_close_ms": {"type": "number", "exclusiveMinimum": 0},
+        "placement_policy": {
+          "enum": ["imported_contact_sites", "ais_pair", "soma_pair"]
+        },
+        "conductance_basis": {"enum": ["per_site", "pair_total"]},
+        "aggregation_policy": {
+          "enum": ["per_site_unchanged", "equal_split_across_selected_sites"]
+        },
+        "endpoint_a_role": {"type": "string", "minLength": 1},
+        "endpoint_b_role": {"type": "string", "minLength": 1},
+        "edge_scope": {"const": "all_electrical_edges"}
+      },
+      "additionalProperties": false
+    },
+    "neuronMap": {
+      "type": "object",
+      "additionalProperties": {"type": "object"}
+    },
+    "segmentMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"type": "object"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

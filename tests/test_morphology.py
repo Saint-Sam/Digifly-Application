@@ -6,6 +6,7 @@ import pytest
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.connectomes import NeuronRecord
+from digifly_app.core.mechanisms import membrane_profile
 from digifly_app.core.morphology import load_custom_biophysics, load_swc, save_custom_morphology
 
 
@@ -22,6 +23,8 @@ def test_swc_load_and_non_destructive_custom_save(tmp_path):
 
     circuit = CircuitSpec(connectome=ConnectomeRef("manc", "MANC", str(tmp_path)))
     circuit.apply_compartment_override("10000", (3,), {"branch_gnabar_s_cm2": 0.05})
+    circuit.membrane = membrane_profile("phase2_para_shab")
+    circuit.apply_compartment_mechanism_override("10000", (3,), circuit.membrane)
     bundle = save_custom_morphology(
         morphology,
         circuit,
@@ -32,7 +35,13 @@ def test_swc_load_and_non_destructive_custom_save(tmp_path):
     copied = bundle / "DN" / "DNp01" / "10000" / source.name
     assert copied.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
     sidecar = json.loads((bundle / "digifly-biophysics.json").read_text(encoding="utf-8"))
+    assert sidecar["schema_version"] == 2
     assert sidecar["compartment_overrides"]["3"]["branch_gnabar_s_cm2"] == 0.05
+    assert sidecar["base_membrane"]["channels"]["para"]["suffix"] == "na16a"
+    assert sidecar["compartment_mechanism_overrides"]["3"]["channels"]["shab"][
+        "enabled"
+    ]
+    assert "gap_junction_policy" not in sidecar
     assert load_custom_biophysics(bundle, "10000", swc_path=copied) == sidecar
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["custom_swc"] == f"DN/DNp01/10000/{source.name}"

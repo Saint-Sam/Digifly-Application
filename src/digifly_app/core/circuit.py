@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
+from .mechanisms import (
+    MEMBRANE_PROFILE_BY_KEY,
+    GapJunctionPolicy,
+    MembraneMechanismSpec,
+    membrane_profile,
+)
 
-CIRCUIT_SCHEMA_VERSION = 1
+
+CIRCUIT_SCHEMA_VERSION = 2
+LEGACY_CIRCUIT_SCHEMA_VERSIONS = {1}
 
 
 @dataclass(frozen=True)
@@ -25,6 +34,7 @@ HH_PARAMETER_DEFINITIONS: tuple[HHParameterDefinition, ...] = (
     HHParameterDefinition("e_pas_mV", "Passive reversal", "mV", -200.0, 200.0, 1.0, 3),
     HHParameterDefinition("ena_mV", "Na⁺ reversal", "mV", -200.0, 200.0, 1.0, 3),
     HHParameterDefinition("ek_mV", "K⁺ reversal", "mV", -200.0, 200.0, 1.0, 3),
+    HHParameterDefinition("eca_mV", "Ca²⁺ reversal", "mV", -200.0, 300.0, 1.0, 3),
     HHParameterDefinition("v_init_mV", "Initial voltage", "mV", -200.0, 200.0, 1.0, 3),
     HHParameterDefinition("celsius_C", "Temperature", "°C", -10.0, 60.0, 0.5, 2),
     HHParameterDefinition("soma_gnabar_s_cm2", "Soma Na⁺ ḡ", "S/cm²", 0.0, 10.0, 0.005, 7),
@@ -48,6 +58,7 @@ class HodgkinHuxleySpec:
     e_pas_mV: float = -65.0
     ena_mV: float = 65.0
     ek_mV: float = -74.0
+    eca_mV: float = 120.0
     v_init_mV: float = -65.0
     celsius_C: float = 22.0
     soma_gnabar_s_cm2: float = 0.12
@@ -84,6 +95,48 @@ class HodgkinHuxleySpec:
         allowed = cls().__dict__.keys()
         values = {key: raw[key] for key in allowed if key in raw}
         return cls(**values)
+
+
+def cell_design_profile(key: str) -> tuple[HodgkinHuxleySpec, MembraneMechanismSpec]:
+    """Build both halves of a named HH/native-mechanism profile atomically."""
+
+    definition = MEMBRANE_PROFILE_BY_KEY.get(str(key))
+    if definition is None:
+        raise KeyError(f"Unknown cell-design profile: {key}")
+    return HodgkinHuxleySpec.from_dict(definition.hh_updates), membrane_profile(key)
+
+
+def _profile_matches_design(
+    hh_payload: Mapping[str, Any],
+    membrane: MembraneMechanismSpec,
+) -> bool:
+    definition = MEMBRANE_PROFILE_BY_KEY.get(membrane.profile_key)
+    if definition is None:
+        return membrane.profile_key == "custom"
+    normalized_hh = HodgkinHuxleySpec.from_dict(hh_payload).to_dict()
+    for key, expected in definition.hh_updates.items():
+        actual = normalized_hh.get(key)
+        if isinstance(expected, (float, int)):
+            if abs(float(actual) - float(expected)) > 1e-12:
+                return False
+        elif actual != expected:
+            return False
+    canonical_membrane = membrane_profile(definition.key)
+    return membrane.to_dict() == canonical_membrane.to_dict()
+
+
+def _membrane_for_hh(
+    hh_payload: Mapping[str, Any],
+    membrane_payload: Mapping[str, Any] | MembraneMechanismSpec,
+) -> MembraneMechanismSpec:
+    membrane = (
+        membrane_payload
+        if isinstance(membrane_payload, MembraneMechanismSpec)
+        else MembraneMechanismSpec.from_dict(membrane_payload)
+    )
+    if not _profile_matches_design(hh_payload, membrane):
+        membrane.profile_key = "custom"
+    return membrane
 
 @dataclass(frozen=True)
 class ConnectomeRef:
@@ -135,10 +188,34 @@ class CircuitSpec:
     query: NeuronQuery = field(default_factory=NeuronQuery)
     neuron_ids: tuple[str, ...] = field(default_factory=tuple)
     hh: HodgkinHuxleySpec = field(default_factory=HodgkinHuxleySpec)
+    membrane: MembraneMechanismSpec = field(default_factory=MembraneMechanismSpec)
+    gap_junction_policy: GapJunctionPolicy = field(default_factory=GapJunctionPolicy)
     morphology_sha256: dict[str, str] = field(default_factory=dict)
     neuron_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     compartment_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    neuron_mechanism_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    compartment_mechanism_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     schema_version: int = CIRCUIT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        self._synchronize_profile_identities()
+
+    def _synchronize_profile_identities(self) -> None:
+        base_hh = self.hh.to_dict()
+        self.membrane = _membrane_for_hh(base_hh, self.membrane)
+        for neuron_id, membrane_payload in tuple(self.neuron_mechanism_overrides.items()):
+            hh_payload = self.neuron_overrides.get(neuron_id, base_hh)
+            self.neuron_mechanism_overrides[neuron_id] = _membrane_for_hh(
+                hh_payload, membrane_payload
+            ).to_dict()
+        for neuron_id, node_map in tuple(self.compartment_mechanism_overrides.items()):
+            neuron_hh = self.neuron_overrides.get(neuron_id, base_hh)
+            node_hh_map = self.compartment_overrides.get(neuron_id, {})
+            for node_id, membrane_payload in tuple(node_map.items()):
+                hh_payload = node_hh_map.get(node_id, neuron_hh)
+                node_map[node_id] = _membrane_for_hh(
+                    hh_payload, membrane_payload
+                ).to_dict()
 
     def apply_neuron_override(self, neuron_id: str | int, values: Mapping[str, Any]) -> None:
         self.neuron_overrides[str(neuron_id)] = dict(values)
@@ -153,25 +230,74 @@ class CircuitSpec:
         for node_id in node_ids:
             bucket[str(node_id)] = dict(values)
 
+    def apply_neuron_mechanism_override(
+        self,
+        neuron_id: str | int,
+        value: MembraneMechanismSpec | Mapping[str, Any],
+    ) -> None:
+        normalized = (
+            value if isinstance(value, MembraneMechanismSpec) else MembraneMechanismSpec.from_dict(value)
+        )
+        self.neuron_mechanism_overrides[str(neuron_id)] = normalized.to_dict()
+
+    def apply_compartment_mechanism_override(
+        self,
+        neuron_id: str | int,
+        node_ids: Iterable[str | int],
+        value: MembraneMechanismSpec | Mapping[str, Any],
+    ) -> None:
+        normalized = (
+            value if isinstance(value, MembraneMechanismSpec) else MembraneMechanismSpec.from_dict(value)
+        ).to_dict()
+        bucket = self.compartment_mechanism_overrides.setdefault(str(neuron_id), {})
+        for node_id in node_ids:
+            bucket[str(node_id)] = deepcopy(normalized)
+
+    def mass_apply_cell_design(
+        self,
+        neuron_ids: Iterable[str | int],
+        hh: HodgkinHuxleySpec | Mapping[str, Any],
+        membrane: MembraneMechanismSpec | Mapping[str, Any],
+    ) -> int:
+        hh_payload = (
+            hh if isinstance(hh, HodgkinHuxleySpec) else HodgkinHuxleySpec.from_dict(hh)
+        ).to_dict()
+        membrane_payload = (
+            membrane
+            if isinstance(membrane, MembraneMechanismSpec)
+            else MembraneMechanismSpec.from_dict(membrane)
+        ).to_dict()
+        normalized_ids = tuple(dict.fromkeys(str(neuron_id) for neuron_id in neuron_ids))
+        for neuron_id in normalized_ids:
+            self.neuron_overrides[neuron_id] = dict(hh_payload)
+            self.neuron_mechanism_overrides[neuron_id] = deepcopy(membrane_payload)
+        return len(normalized_ids)
+
     def to_dict(self) -> dict[str, Any]:
+        self._synchronize_profile_identities()
         return {
-            "schema_version": self.schema_version,
+            "schema_version": CIRCUIT_SCHEMA_VERSION,
             "connectome": self.connectome.to_dict(),
             "query": self.query.to_dict(),
             "neuron_ids": list(self.neuron_ids),
             "hh": self.hh.to_dict(),
+            "membrane": self.membrane.to_dict(),
+            "gap_junction_policy": self.gap_junction_policy.to_dict(),
             "morphology_sha256": self.morphology_sha256,
             "neuron_overrides": self.neuron_overrides,
             "compartment_overrides": self.compartment_overrides,
+            "neuron_mechanism_overrides": self.neuron_mechanism_overrides,
+            "compartment_mechanism_overrides": self.compartment_mechanism_overrides,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any] | None) -> "CircuitSpec":
         raw = dict(payload or {})
-        version = int(raw.get("schema_version", CIRCUIT_SCHEMA_VERSION))
-        if version != CIRCUIT_SCHEMA_VERSION:
+        version = int(raw.get("schema_version", 1))
+        if version != CIRCUIT_SCHEMA_VERSION and version not in LEGACY_CIRCUIT_SCHEMA_VERSIONS:
             raise ValueError(
-                f"Unsupported circuit schema {version}; expected {CIRCUIT_SCHEMA_VERSION}."
+                f"Unsupported circuit schema {version}; expected one of "
+                f"{sorted((*LEGACY_CIRCUIT_SCHEMA_VERSIONS, CIRCUIT_SCHEMA_VERSION))}."
             )
         neuron_overrides = {
             key: dict(value or {})
@@ -183,16 +309,34 @@ class CircuitSpec:
                 str(node_id): dict(values or {})
                 for node_id, values in dict(node_map or {}).items()
             }
-        return cls(
+        neuron_mechanism_overrides = {
+            key: MembraneMechanismSpec.from_dict(value).to_dict()
+            for key, value in _string_keyed_nested(raw.get("neuron_mechanism_overrides")).items()
+        }
+        compartment_mechanism_overrides: dict[str, dict[str, dict[str, Any]]] = {}
+        for neuron_id, node_map in _string_keyed_nested(
+            raw.get("compartment_mechanism_overrides")
+        ).items():
+            compartment_mechanism_overrides[neuron_id] = {
+                str(node_id): MembraneMechanismSpec.from_dict(values).to_dict()
+                for node_id, values in dict(node_map or {}).items()
+            }
+        restored = cls(
             connectome=ConnectomeRef.from_dict(raw.get("connectome")),
             query=NeuronQuery.from_dict(raw.get("query")),
             neuron_ids=tuple(str(value) for value in raw.get("neuron_ids") or ()),
             hh=HodgkinHuxleySpec.from_dict(raw.get("hh")),
+            membrane=MembraneMechanismSpec.from_dict(raw.get("membrane")),
+            gap_junction_policy=GapJunctionPolicy.from_dict(raw.get("gap_junction_policy")),
             morphology_sha256={
                 str(neuron_id): str(digest)
                 for neuron_id, digest in dict(raw.get("morphology_sha256") or {}).items()
             },
             neuron_overrides=neuron_overrides,
             compartment_overrides=compartment_overrides,
-            schema_version=version,
+            neuron_mechanism_overrides=neuron_mechanism_overrides,
+            compartment_mechanism_overrides=compartment_mechanism_overrides,
+            schema_version=CIRCUIT_SCHEMA_VERSION,
         )
+        restored._synchronize_profile_identities()
+        return restored
