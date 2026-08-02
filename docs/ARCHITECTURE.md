@@ -88,16 +88,26 @@ source hashes, and per-set policies.
 
 ## Visualization boundary
 
-The Circuit Builder stores exact SWC geometry in a spatially ordered immutable
-OpenGL vertex buffer, a connected coarse preview for large overview navigation,
-and a small dynamic buffer for electric-magenta compartment highlights. A
-hierarchical spatial index serves exact deep-zoom culling, point picking, and
-box selection. Camera state and CPU-assisted selection stay in the GUI layer;
-circuit and morphology models have no Qt dependency. The initial orthographic
-camera basis reproduces the saved VIP GLIA anatomy orientation used by the
-Escape-SIZ Ablation comparison notebook. Isolation and culling change only
-which exact vertex ranges are drawn, so hidden neurons, source geometry, and
-saved settings remain in the loaded cell set.
+The default representation is a GPU-buffered soma-point overview with one
+marker per loaded neuron and an explicit **Soma points** / **Full skeletons**
+toggle. The Qt-free morphology layer derives ordinary markers from SWC type-1
+soma nodes. For MANC DNs, which lack a biological soma in the volume, it honors
+Digifly's rostral maximum-Z type-1 pseudosoma convention; native terminal DN
+caps and safe fallbacks remain distinguishable as pseudosomata.
+
+The full-skeleton representation stores exact SWC geometry in a spatially
+ordered immutable OpenGL vertex buffer, a connected coarse preview for large
+overview navigation, and a small dynamic buffer for electric-magenta
+compartment highlights. A hierarchical spatial index serves exact deep-zoom
+culling, picking, and box selection. Compartment selection and editing remain
+full-skeleton operations; selections survive a temporary switch to the point
+overview. Framing is representation-aware, using soma-point bounds for the
+point view and exact morphology bounds for the skeleton view, whether all cells
+or one isolated cell are visible.
+The initial orthographic camera basis reproduces the saved VIP GLIA anatomy
+orientation used by the Escape-SIZ Ablation comparison notebook. Display mode,
+isolation, and culling change only what is drawn and framed, so source geometry
+and saved settings remain in the loaded cell set.
 
 ## Project format
 

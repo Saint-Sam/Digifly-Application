@@ -7,7 +7,90 @@ import pytest
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.connectomes import NeuronRecord
 from digifly_app.core.mechanisms import membrane_profile
-from digifly_app.core.morphology import load_custom_biophysics, load_swc, save_custom_morphology
+from digifly_app.core.morphology import (
+    load_custom_biophysics,
+    load_swc,
+    locate_soma,
+    save_custom_morphology,
+)
+
+
+def _load_soma_fixture(
+    tmp_path: Path,
+    *,
+    name: str,
+    family: str,
+    connectome_key: str,
+    rows: str,
+):
+    source = tmp_path / f"{name}.swc"
+    source.write_text(rows, encoding="utf-8")
+    record = NeuronRecord(name, family, name, str(source), connectome_key)
+    return load_swc(record)
+
+
+def test_manc_dn_uses_maximum_z_type_one_pseudosoma(tmp_path):
+    morphology = _load_soma_fixture(
+        tmp_path,
+        name="10000",
+        family="DN",
+        connectome_key="manc:v1.2.1",
+        rows=(
+            "1 2 0 0 0 0.5 -1\n"
+            "2 1 0 0 8 3.0 1\n"
+            "3 1 0 0 12 0.5 2\n"
+            "4 1 0 0 12 1.5 3\n"
+        ),
+    )
+
+    location = locate_soma(morphology)
+
+    assert location.node_id == 4
+    assert location.point == (0.0, 0.0, 12.0)
+    assert location.radius == 1.5
+    assert location.kind == "pseudosoma"
+
+
+def test_ordinary_soma_uses_widest_type_one_node(tmp_path):
+    morphology = _load_soma_fixture(
+        tmp_path,
+        name="ordinary",
+        family="IN",
+        connectome_key="manc:v1.2.1",
+        rows=(
+            "1 1 0 0 20 0.4 -1\n"
+            "2 1 0 0 5 3.0 1\n"
+            "3 2 0 0 0 0.5 2\n"
+        ),
+    )
+
+    location = locate_soma(morphology)
+
+    assert location.node_id == 2
+    assert location.point == (0.0, 0.0, 5.0)
+    assert location.radius == 3.0
+    assert location.kind == "soma"
+
+
+def test_manc_dn_without_type_one_uses_maximum_z_leaf(tmp_path):
+    morphology = _load_soma_fixture(
+        tmp_path,
+        name="fallback-dn",
+        family="DN",
+        connectome_key="manc:v1.2.1",
+        rows=(
+            "1 2 0 0 0 0.5 -1\n"
+            "2 2 0 0 10 4.0 1\n"
+            "3 2 0 0 9 3.0 1\n"
+            "4 2 0 0 14 0.25 2\n"
+        ),
+    )
+
+    location = locate_soma(morphology)
+
+    assert location.node_id == 4
+    assert location.point == (0.0, 0.0, 14.0)
+    assert location.kind == "inferred-pseudosoma"
 
 
 def test_swc_load_and_non_destructive_custom_save(tmp_path):

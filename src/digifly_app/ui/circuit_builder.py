@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -49,7 +50,11 @@ from digifly_app.core.mechanisms import (
     MembraneMechanismSpec,
     mechanism_capability_message,
 )
-from .circuit_viewport import CircuitViewport
+from .circuit_viewport import (
+    DISPLAY_MODE_FULL_SKELETONS,
+    DISPLAY_MODE_SOMA_POINTS,
+    CircuitViewport,
+)
 from .widgets import Card, make_label_copyable
 
 
@@ -191,6 +196,34 @@ class CircuitBuilderPage(QWidget):
         viewport_layout.setSpacing(6)
         viewport_top = QVBoxLayout()
         viewport_top.setSpacing(2)
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        mode_label = QLabel("Visualization")
+        mode_label.setStyleSheet("font-weight:650; color:#dce8ff;")
+        mode_row.addWidget(mode_label)
+        self.soma_points_button = QPushButton("●  Soma points")
+        self.soma_points_button.setObjectName("ViewModeButton")
+        self.soma_points_button.setCheckable(True)
+        self.soma_points_button.setChecked(True)
+        self.soma_points_button.setAccessibleName("Show soma points")
+        self.soma_points_button.setToolTip(
+            "Fast overview with one soma or rostral MANC DN pseudosoma point per neuron"
+        )
+        self.full_skeletons_button = QPushButton("Full skeletons")
+        self.full_skeletons_button.setObjectName("ViewModeButton")
+        self.full_skeletons_button.setCheckable(True)
+        self.full_skeletons_button.setAccessibleName("Show full neuron skeletons")
+        self.full_skeletons_button.setToolTip(
+            "Show complete SWC morphologies for compartment selection and editing"
+        )
+        self.view_mode_group = QButtonGroup(self)
+        self.view_mode_group.setExclusive(True)
+        self.view_mode_group.addButton(self.soma_points_button)
+        self.view_mode_group.addButton(self.full_skeletons_button)
+        mode_row.addWidget(self.soma_points_button)
+        mode_row.addWidget(self.full_skeletons_button)
+        mode_row.addStretch(1)
+        viewport_top.addLayout(mode_row)
         self.viewport_summary = QLabel("No morphology loaded")
         self.viewport_summary.setStyleSheet("font-weight:650; color:#dce8ff;")
         self.viewport_summary.setWordWrap(True)
@@ -203,9 +236,16 @@ class CircuitBuilderPage(QWidget):
         viewport_top.addWidget(self.viewport_controls_hint)
         viewport_layout.addLayout(viewport_top)
         self.viewport = CircuitViewport()
+        self.soma_points_button.clicked.connect(
+            lambda: self.viewport.set_display_mode(DISPLAY_MODE_SOMA_POINTS)
+        )
+        self.full_skeletons_button.clicked.connect(
+            lambda: self.viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+        )
         self.viewport.neuron_selected.connect(self._neuron_selected)
         self.viewport.compartments_changed.connect(self._compartments_changed)
         self.viewport.isolation_changed.connect(self._isolation_changed)
+        self.viewport.display_mode_changed.connect(self._display_mode_changed)
         self.viewport.status_message.connect(self.status_message)
         viewport_layout.addWidget(self.viewport, 1)
         left_layout.addWidget(viewport_card, 1)
@@ -790,11 +830,20 @@ class CircuitBuilderPage(QWidget):
         record = self.loaded_records.get(neuron_id)
         if record is None:
             return
-        self.selection_label.setText(
-            f"{record.neuron_type} · {neuron_id}\n"
-            "Whole neuron isolated; left-click a skeleton segment or "
-            "Cmd/Ctrl+Shift+left-drag a box to select compartments"
-        )
+        if self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            location = self.viewport.soma_location(neuron_id)
+            marker = "pseudosoma" if location and location.is_pseudosoma else "soma"
+            self.selection_label.setText(
+                f"{record.neuron_type} · {neuron_id}\n"
+                f"{marker.capitalize()} point isolated; switch to Full skeletons "
+                "to inspect or select compartments"
+            )
+        else:
+            self.selection_label.setText(
+                f"{record.neuron_type} · {neuron_id}\n"
+                "Whole neuron isolated; left-click a skeleton segment or "
+                "Cmd/Ctrl+Shift+left-drag a box to select compartments"
+            )
         for row in range(self.neuron_table.rowCount()):
             item = self.neuron_table.item(row, 0)
             if item is not None and str(item.data(Qt.ItemDataRole.UserRole)) == neuron_id:
@@ -808,11 +857,28 @@ class CircuitBuilderPage(QWidget):
         ids = tuple(node_ids) if isinstance(node_ids, (tuple, list, set)) else ()
         record = self.loaded_records.get(neuron_id)
         label = record.neuron_type if record else "Neuron"
-        view_state = "Whole neuron isolated" if self.viewport.isolated else "All loaded neurons visible"
-        self.selection_label.setText(
-            f"{label} · {neuron_id}\n{view_state} · {len(ids)} compartment(s) selected "
-            "in electric magenta (stored by SWC child-node ID)"
-        )
+        if self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            location = self.viewport.soma_location(neuron_id)
+            marker = "pseudosoma" if location and location.is_pseudosoma else "soma"
+            view_state = (
+                f"{marker.capitalize()} point isolated"
+                if self.viewport.isolated
+                else "All loaded soma points visible"
+            )
+            self.selection_label.setText(
+                f"{label} · {neuron_id}\n{view_state} · {len(ids)} compartment(s) retained; "
+                "switch to Full skeletons to view or edit them"
+            )
+        else:
+            view_state = (
+                "Whole neuron isolated"
+                if self.viewport.isolated
+                else "All loaded neurons visible"
+            )
+            self.selection_label.setText(
+                f"{label} · {neuron_id}\n{view_state} · {len(ids)} compartment(s) selected "
+                "in electric magenta (stored by SWC child-node ID)"
+            )
         self._load_effective_selection_design(neuron_id, ids)
         self._update_override_summary()
         self._update_viewport_guidance()
@@ -822,10 +888,47 @@ class CircuitBuilderPage(QWidget):
         if neuron_id is not None:
             self._compartments_changed(neuron_id, tuple(sorted(self.viewport.selected_compartments)))
 
+    def _display_mode_changed(self, mode: str) -> None:
+        self.soma_points_button.setChecked(mode == DISPLAY_MODE_SOMA_POINTS)
+        self.full_skeletons_button.setChecked(mode == DISPLAY_MODE_FULL_SKELETONS)
+        neuron_id = self.viewport.selected_neuron_id
+        if neuron_id is not None:
+            self._compartments_changed(
+                neuron_id, tuple(sorted(self.viewport.selected_compartments))
+            )
+        else:
+            self._update_viewport_guidance()
+
     def _update_viewport_guidance(self) -> None:
         neuron_id = self.viewport.selected_neuron_id
         selected_count = len(self.viewport.selected_compartments)
-        if self.viewport.neuron_count == 0:
+        if self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            if self.viewport.neuron_count == 0:
+                selection_state = "Soma points (default): load a cell set to begin."
+            elif self.viewport.isolated and neuron_id is not None:
+                location = self.viewport.soma_location(neuron_id)
+                marker = "pseudosoma" if location and location.is_pseudosoma else "soma"
+                retained = (
+                    f" · {selected_count} hidden compartment selection(s) retained"
+                    if selected_count
+                    else ""
+                )
+                selection_state = (
+                    f"Soma points (default): neuron {neuron_id} {marker} isolated{retained}. "
+                    "Switch to Full skeletons for compartment selection and editing."
+                )
+            elif neuron_id is not None:
+                selection_state = (
+                    f"Soma points (default): neuron {neuron_id} focused. Left-click its "
+                    "point to isolate it; switch to Full skeletons for compartment editing."
+                )
+            else:
+                selection_state = (
+                    "Soma points (default): one point per neuron. MANC DNs use the rostral "
+                    "pseudosoma at the northern end. Left-click a point to isolate its neuron; "
+                    "switch to Full skeletons for compartment editing."
+                )
+        elif self.viewport.neuron_count == 0:
             selection_state = "Selection: load a cell set to begin."
         elif self.viewport.isolated and neuron_id is not None:
             selection_state = (

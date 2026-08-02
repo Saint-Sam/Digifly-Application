@@ -7,18 +7,31 @@ from typing import Iterable
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QMatrix4x4, QVector3D, QVector4D
-from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
+from PySide6.QtOpenGL import (
+    QOpenGLBuffer,
+    QOpenGLFunctions_2_0,
+    QOpenGLShader,
+    QOpenGLShaderProgram,
+)
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QRubberBand
 
-from digifly_app.core.morphology import Morphology, SwcSegment
+from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
 
 
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
 GL_FLOAT = 0x1406
+GL_POINTS = 0x0000
 GL_LINES = 0x0001
+
+DISPLAY_MODE_SOMA_POINTS = "soma_points"
+DISPLAY_MODE_FULL_SKELETONS = "full_skeletons"
+DISPLAY_MODES = (DISPLAY_MODE_SOMA_POINTS, DISPLAY_MODE_FULL_SKELETONS)
+SOMA_POINT_SIZE = 13.0
+SELECTED_SOMA_POINT_SIZE = 20.0
+SOMA_POINT_PICK_RADIUS = 15.0
 
 SELECTED_NEURON_COLOR = "#f6c65b"
 # Reserved exclusively for selected SWC compartments in the morphology view.
@@ -217,6 +230,7 @@ class CircuitViewport(QOpenGLWidget):
     neuron_selected = Signal(str)
     compartments_changed = Signal(str, object)
     isolation_changed = Signal(bool)
+    display_mode_changed = Signal(str)
     status_message = Signal(str)
 
     _palette = (
@@ -233,24 +247,24 @@ class CircuitViewport(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CircuitViewport")
-        self.setAccessibleName("Circuit morphology viewport")
-        self.setAccessibleDescription(
-            "Interactive SWC morphology view. Click a neuron to isolate it, then click "
-            "segments to select SWC child-node edges. Command-or-Control-Shift-drag a "
-            "box to add multiple compartments; drag to rotate and use the mouse wheel to zoom."
-        )
+        self.setAccessibleName("Circuit visualization viewport")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(480, 360)
         self.setMouseTracking(True)
 
         self.morphologies: dict[str, Morphology] = {}
         self._ordered_ids: list[str] = []
+        self.display_mode = DISPLAY_MODE_SOMA_POINTS
+        self._soma_locations: dict[str, SomaLocation] = {}
+        self._point_indices: dict[str, int] = {}
+        self._point_data = b""
         self._preview_ranges: dict[str, tuple[int, int]] = {}
         self._spatial_roots: dict[str, _SpatialNode] = {}
         self._vertex_data = b""
         self._preview_data = b""
         self._selection_data = b""
         self._geometry_dirty = True
+        self._point_geometry_dirty = True
         self._preview_dirty = True
         self._selection_dirty = True
 
@@ -285,10 +299,13 @@ class CircuitViewport(QOpenGLWidget):
         self._selected_neuron_rgba = _rgba(SELECTED_NEURON_COLOR)
         self._selected_compartment_rgba = _rgba(SELECTED_COMPARTMENT_COLOR)
         self._gpu_ready = False
+        self._point_functions: QOpenGLFunctions_2_0 | None = None
         self._program: QOpenGLShaderProgram | None = None
         self._vertex_buffer: QOpenGLBuffer | None = None
+        self._point_buffer: QOpenGLBuffer | None = None
         self._preview_buffer: QOpenGLBuffer | None = None
         self._selection_buffer: QOpenGLBuffer | None = None
+        self._update_accessible_description()
 
     @property
     def neuron_count(self) -> int:
@@ -302,10 +319,68 @@ class CircuitViewport(QOpenGLWidget):
     def interaction_preview_segment_count(self) -> int:
         return len(self._preview_data) // 24
 
+    @property
+    def soma_point_count(self) -> int:
+        return len(self._point_data) // 12
+
+    def soma_location(self, neuron_id: str) -> SomaLocation | None:
+        return self._soma_locations.get(str(neuron_id))
+
+    def _update_accessible_description(self) -> None:
+        if self.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            description = (
+                "Interactive soma-point view. MANC descending neurons use Digifly's "
+                "rostral pseudosoma. Click a point to select and isolate its neuron; "
+                "drag to rotate and use the mouse wheel to zoom. Switch to Full "
+                "skeletons for compartment editing."
+            )
+        else:
+            description = (
+                "Interactive full SWC skeleton view. Click a neuron to isolate it, then "
+                "click segments to select SWC child-node edges. Command-or-Control-Shift-"
+                "drag a box to add multiple compartments; drag to rotate and use the "
+                "mouse wheel to zoom."
+            )
+        self.setAccessibleDescription(description)
+
+    def set_display_mode(self, mode: str) -> None:
+        mode = str(mode)
+        if mode not in DISPLAY_MODES:
+            raise ValueError(f"Unknown circuit display mode: {mode}")
+        if mode == self.display_mode:
+            return
+        self.display_mode = mode
+        self._interaction_timer.stop()
+        self._interaction_preview = False
+        if self._box_selecting:
+            self._rubber_band.hide()
+            self._box_selecting = False
+            self._box_origin = None
+            self.unsetCursor()
+        self._update_accessible_description()
+        if self.isolated and self.selected_neuron_id in self.morphologies:
+            self._frame_neuron(str(self.selected_neuron_id))
+        else:
+            self.fit_all()
+        self.display_mode_changed.emit(mode)
+        label = "Soma points" if mode == DISPLAY_MODE_SOMA_POINTS else "Full skeletons"
+        self.status_message.emit(f"Visualization switched to {label}")
+        self.update()
+
     def set_morphologies(self, morphologies: Iterable[Morphology]) -> None:
         items = list(morphologies)
         self.morphologies = {item.record.neuron_id: item for item in items}
         self._ordered_ids = [item.record.neuron_id for item in items]
+        self._soma_locations = {
+            item.record.neuron_id: locate_soma(item) for item in items
+        }
+        self._point_indices = {
+            neuron_id: index for index, neuron_id in enumerate(self._ordered_ids)
+        }
+        point_vertices = array("f")
+        for neuron_id in self._ordered_ids:
+            point_vertices.extend(self._soma_locations[neuron_id].point)
+        self._point_data = point_vertices.tobytes()
         vertices = array("f")
         preview_vertices = array("f")
         self._preview_ranges.clear()
@@ -340,6 +415,7 @@ class CircuitViewport(QOpenGLWidget):
         self._vertex_data = vertices.tobytes()
         self._preview_data = preview_vertices.tobytes()
         self._geometry_dirty = True
+        self._point_geometry_dirty = True
         self._preview_dirty = True
         self._interaction_timer.stop()
         self._interaction_preview = False
@@ -364,6 +440,30 @@ class CircuitViewport(QOpenGLWidget):
             self.scene_center = QVector3D(0.0, 0.0, 0.0)
             self.scene_radius = 1.0
             self.distance = 10.0
+        elif self.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            locations = tuple(self._soma_locations.values())
+            xs = [location.point[0] for location in locations]
+            ys = [location.point[1] for location in locations]
+            zs = [location.point[2] for location in locations]
+            xmin, xmax = min(xs), max(xs)
+            ymin, ymax = min(ys), max(ys)
+            zmin, zmax = min(zs), max(zs)
+            self.scene_center = QVector3D(
+                (xmin + xmax) / 2.0,
+                (ymin + ymax) / 2.0,
+                (zmin + zmax) / 2.0,
+            )
+            spatial_radius = (
+                sqrt(
+                    (xmax - xmin) ** 2
+                    + (ymax - ymin) ** 2
+                    + (zmax - zmin) ** 2
+                )
+                / 2.0
+            )
+            marker_radius = max(location.radius for location in locations)
+            self.scene_radius = max(spatial_radius, marker_radius * 2.0, 0.25)
+            self.distance = max(self.scene_radius * 2.8, 0.1)
         else:
             bounds = [morphology.bounds for morphology in self.morphologies.values()]
             xmin = min(value[0] for value in bounds)
@@ -386,6 +486,19 @@ class CircuitViewport(QOpenGLWidget):
         self.pan_y = 0.0
         self.update()
 
+    def _frame_neuron(self, neuron_id: str) -> None:
+        morphology = self.morphologies[neuron_id]
+        if self.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            location = self._soma_locations[neuron_id]
+            self.scene_center = QVector3D(*location.point)
+            self.scene_radius = max(location.radius * 2.0, 0.25)
+        else:
+            self.scene_center = QVector3D(*morphology.center)
+            self.scene_radius = morphology.radius
+        self.distance = max(self.scene_radius * 2.8, 0.1)
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
     def focus_neuron(self, neuron_id: str, *, isolate: bool = True) -> None:
         morphology = self.morphologies.get(str(neuron_id))
         if morphology is None:
@@ -398,12 +511,7 @@ class CircuitViewport(QOpenGLWidget):
         if changed:
             self.selected_compartments.clear()
             self._rebuild_selection_data()
-        center = morphology.center
-        self.scene_center = QVector3D(*center)
-        self.scene_radius = morphology.radius
-        self.distance = max(morphology.radius * 2.8, 0.1)
-        self.pan_x = 0.0
-        self.pan_y = 0.0
+        self._frame_neuron(str(neuron_id))
         self.neuron_selected.emit(str(neuron_id))
         self.isolation_changed.emit(self.isolated)
         self.compartments_changed.emit(str(neuron_id), tuple(sorted(self.selected_compartments)))
@@ -443,6 +551,10 @@ class CircuitViewport(QOpenGLWidget):
             functions.initializeOpenGLFunctions()
             functions.glEnable(GL_DEPTH_TEST)
 
+            point_functions = QOpenGLFunctions_2_0()
+            if not point_functions.initializeOpenGLFunctions():
+                raise RuntimeError("OpenGL point-size functions could not be initialized")
+
             program = QOpenGLShaderProgram(self)
             vertex_shader = """
                 attribute highp vec3 position;
@@ -462,23 +574,29 @@ class CircuitViewport(QOpenGLWidget):
                 raise RuntimeError(program.log())
 
             vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            point_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             preview_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             selection_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             if (
                 not vertex_buffer.create()
+                or not point_buffer.create()
                 or not preview_buffer.create()
                 or not selection_buffer.create()
             ):
                 raise RuntimeError("OpenGL vertex buffers could not be created")
             vertex_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.StaticDraw)
+            point_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.StaticDraw)
             preview_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.StaticDraw)
             selection_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
             self._program = program
+            self._point_functions = point_functions
             self._vertex_buffer = vertex_buffer
+            self._point_buffer = point_buffer
             self._preview_buffer = preview_buffer
             self._selection_buffer = selection_buffer
             self._gpu_ready = True
             self._geometry_dirty = True
+            self._point_geometry_dirty = True
             self._preview_dirty = True
             self._selection_dirty = True
         except Exception as exc:
@@ -493,6 +611,11 @@ class CircuitViewport(QOpenGLWidget):
             self._vertex_buffer.allocate(self._vertex_data, len(self._vertex_data))
             self._vertex_buffer.release()
             self._geometry_dirty = False
+        if self._point_geometry_dirty and self._point_buffer is not None:
+            self._point_buffer.bind()
+            self._point_buffer.allocate(self._point_data, len(self._point_data))
+            self._point_buffer.release()
+            self._point_geometry_dirty = False
         if self._preview_dirty and self._preview_buffer is not None:
             self._preview_buffer.bind()
             self._preview_buffer.allocate(self._preview_data, len(self._preview_data))
@@ -512,14 +635,53 @@ class CircuitViewport(QOpenGLWidget):
         if not self._gpu_ready or self._program is None or self._vertex_buffer is None:
             return
         self._upload_if_needed()
-        if not self._vertex_data:
-            return
-
         program = self._program
         program.bind()
         mvp = self._mvp()
         matrix = tuple(mvp.data())
         program.setUniformValue("mvp", mvp)
+
+        visible_ids = (
+            [self.selected_neuron_id]
+            if self.isolated and self.selected_neuron_id in self.morphologies
+            else self._ordered_ids
+        )
+        if self.display_mode == DISPLAY_MODE_SOMA_POINTS:
+            if (
+                not self._point_data
+                or self._point_buffer is None
+                or self._point_functions is None
+            ):
+                program.release()
+                return
+            self._point_buffer.bind()
+            program.enableAttributeArray(0)
+            program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
+            for neuron_id in visible_ids:
+                if neuron_id is None:
+                    continue
+                source_index = self._point_indices[neuron_id]
+                selected = neuron_id == self.selected_neuron_id
+                color = (
+                    self._selected_neuron_rgba
+                    if selected
+                    else self._palette_rgba[source_index % len(self._palette_rgba)]
+                )
+                program.setUniformValue("tint", color)
+                self._point_functions.glPointSize(
+                    SELECTED_SOMA_POINT_SIZE if selected else SOMA_POINT_SIZE,
+                )
+                functions.glDrawArrays(GL_POINTS, source_index, 1)
+            self._point_functions.glPointSize(1.0)
+            self._last_submitted_segment_count = 0
+            program.disableAttributeArray(0)
+            self._point_buffer.release()
+            program.release()
+            return
+
+        if not self._vertex_data:
+            program.release()
+            return
         use_preview = bool(
             self._interaction_preview
             and not self.isolated
@@ -531,11 +693,6 @@ class CircuitViewport(QOpenGLWidget):
         program.enableAttributeArray(0)
         program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
 
-        visible_ids = (
-            [self.selected_neuron_id]
-            if self.isolated and self.selected_neuron_id in self.morphologies
-            else self._ordered_ids
-        )
         submitted_segments = 0
         for index, neuron_id in enumerate(visible_ids):
             if neuron_id is None:
@@ -825,6 +982,8 @@ class CircuitViewport(QOpenGLWidget):
     def _select_compartments_in_rect(self, rect: QRectF) -> int:
         """Add isolated-neuron compartments whose projected lines cross *rect*."""
 
+        if self.display_mode != DISPLAY_MODE_FULL_SKELETONS:
+            return 0
         neuron_id = self.selected_neuron_id
         if not self.isolated or neuron_id is None or neuron_id not in self.morphologies:
             return 0
@@ -861,6 +1020,10 @@ class CircuitViewport(QOpenGLWidget):
         )
 
     def _begin_interaction_preview(self) -> None:
+        if self.display_mode != DISPLAY_MODE_FULL_SKELETONS:
+            self._interaction_preview = False
+            self._interaction_timer.stop()
+            return
         overview_scale = (
             self.distance
             >= self.scene_radius * INTERACTION_PREVIEW_MIN_DISTANCE_RATIO
@@ -922,6 +1085,35 @@ class CircuitViewport(QOpenGLWidget):
             return None
         return best[1], best[2]
 
+    def _pick_soma(self, position: QPointF) -> str | None:
+        """Pick the nearest visible soma/pseudosoma marker in screen space."""
+
+        matrix = tuple(self._mvp().data())
+        visible_ids = (
+            [self.selected_neuron_id]
+            if self.isolated and self.selected_neuron_id in self.morphologies
+            else self._ordered_ids
+        )
+        best: tuple[tuple[float, float], str] | None = None
+        for neuron_id in visible_ids:
+            if neuron_id is None:
+                continue
+            projected = self._project_with_matrix(
+                self._soma_locations[neuron_id].point, matrix
+            )
+            if projected is None:
+                continue
+            distance = sqrt(
+                (position.x() - projected[0]) ** 2
+                + (position.y() - projected[1]) ** 2
+            )
+            if distance > SOMA_POINT_PICK_RADIUS:
+                continue
+            score = (distance, projected[2])
+            if best is None or score < best[0]:
+                best = (score, neuron_id)
+        return None if best is None else best[1]
+
     def mousePressEvent(self, event) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         self._press_position = event.position()
@@ -929,6 +1121,7 @@ class CircuitViewport(QOpenGLWidget):
         self._dragged = False
         if (
             event.button() == Qt.MouseButton.LeftButton
+            and self.display_mode == DISPLAY_MODE_FULL_SKELETONS
             and self.isolated
             and self.selected_neuron_id is not None
             and self._box_selection_requested(event.modifiers())
@@ -981,6 +1174,17 @@ class CircuitViewport(QOpenGLWidget):
             event.accept()
             return
         if not self._dragged and event.button() == Qt.MouseButton.LeftButton:
+            if self.display_mode == DISPLAY_MODE_SOMA_POINTS:
+                neuron_id = self._pick_soma(event.position())
+                if neuron_id is not None:
+                    self.focus_neuron(neuron_id, isolate=True)
+                    location = self._soma_locations[neuron_id]
+                    marker = "pseudosoma" if location.is_pseudosoma else "soma"
+                    self.status_message.emit(
+                        f"Selected and isolated {marker} point for neuron {neuron_id}"
+                    )
+                event.accept()
+                return
             picked = self._pick(event.position())
             if picked is not None:
                 neuron_id, segment = picked
@@ -999,10 +1203,14 @@ class CircuitViewport(QOpenGLWidget):
                     self.focus_neuron(neuron_id, isolate=True)
                     self.status_message.emit(f"Selected and isolated neuron {neuron_id}")
         elif not self._dragged and event.button() == Qt.MouseButton.RightButton:
-            picked = self._pick(event.position())
-            if picked is not None:
-                self.focus_neuron(picked[0], isolate=self.isolated)
-                self.status_message.emit(f"Centered camera on neuron {picked[0]}")
+            neuron_id = (
+                self._pick_soma(event.position())
+                if self.display_mode == DISPLAY_MODE_SOMA_POINTS
+                else (picked[0] if (picked := self._pick(event.position())) is not None else None)
+            )
+            if neuron_id is not None:
+                self.focus_neuron(neuron_id, isolate=self.isolated)
+                self.status_message.emit(f"Centered camera on neuron {neuron_id}")
             else:
                 self.restore_all()
                 self.status_message.emit("Camera framed all loaded neurons")

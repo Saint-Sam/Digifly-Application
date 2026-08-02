@@ -108,6 +108,22 @@ QPushButton#NavButton:checked {
     color: #f3f7ff;
     border-left: 3px solid #64a0ff;
 }
+QPushButton#ViewModeButton {
+    min-height: 30px;
+    padding: 0 12px;
+    color: #aebdd5;
+    background: #0d172a;
+    border-color: #30415f;
+}
+QPushButton#ViewModeButton:hover {
+    color: #edf4ff;
+    background: #172744;
+}
+QPushButton#ViewModeButton:checked {
+    color: white;
+    background: #2864d7;
+    border-color: #70a5ff;
+}
 QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget {
     background: #0b1325;
     border: 1px solid #30415f;

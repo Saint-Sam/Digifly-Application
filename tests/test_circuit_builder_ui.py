@@ -22,12 +22,20 @@ from digifly_app.core.mechanisms import (
     MembraneMechanismSpec,
     membrane_profile,
 )
-from digifly_app.core.morphology import Morphology, SwcSegment, load_swc, save_custom_morphology
+from digifly_app.core.morphology import (
+    Morphology,
+    SwcNode,
+    SwcSegment,
+    load_swc,
+    save_custom_morphology,
+)
 from digifly_app.ui.circuit_builder import CircuitBuilderPage
 from digifly_app.ui.circuit_viewport import (
     CircuitViewport,
     DEFAULT_PITCH_DEGREES,
     DEFAULT_YAW_DEGREES,
+    DISPLAY_MODE_FULL_SKELETONS,
+    DISPLAY_MODE_SOMA_POINTS,
     REFERENCE_CAMERA_FOCAL_POINT,
     REFERENCE_CAMERA_POSITION,
     REFERENCE_CAMERA_VIEW_UP,
@@ -59,21 +67,30 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
     page = CircuitBuilderPage(_OverviewStub(tmp_path))
     try:
         assert page.selected_engine_key() == "arbor"
+        assert page.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS
+        assert page.soma_points_button.isChecked() is True
+        assert page.full_skeletons_button.isChecked() is False
         page.query_edit.setText("10000")
         page.assemble_circuit()
         assert page.viewport.neuron_count == 1
         assert page.viewport.segment_count == 1
-        assert page.viewport.accessibleName() == "Circuit morphology viewport"
+        assert page.viewport.accessibleName() == "Circuit visualization viewport"
         assert page.viewport.yaw_degrees == DEFAULT_YAW_DEGREES
         assert page.viewport.pitch_degrees == DEFAULT_PITCH_DEGREES
         assert page.viewport_summary.wordWrap() is True
-        assert "Ctrl+Shift+left-drag" in page.viewport_controls_hint.text()
+        assert "Soma points (default)" in page.viewport_controls_hint.text()
+        assert "Full skeletons" in page.viewport_controls_hint.text()
         assert page.viewport_controls_hint.textInteractionFlags() & (
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         assert page.circuit_spec().neuron_ids == ("10000",)
         assert page.circuit_spec().membrane.active_channels == ()
 
+        page.full_skeletons_button.click()
+        assert page.viewport.display_mode == DISPLAY_MODE_FULL_SKELETONS
+        assert page.full_skeletons_button.isChecked() is True
+        assert page.soma_points_button.isChecked() is False
+        assert "Ctrl+Shift+left-drag" in page.viewport_controls_hint.text()
         page.viewport.focus_neuron("10000")
         escape_profile = page.channel_profile_combo.findData("escape_siz_para_hh_k")
         page.channel_profile_combo.setCurrentIndex(escape_profile)
@@ -284,6 +301,7 @@ def test_overlapping_segment_pick_uses_projected_depth():
     viewport.resize(632, 286)
     morphologies = (morphology("back", -1.0), morphology("front", 1.0))
     viewport.set_morphologies(morphologies)
+    viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
     mvp = viewport._mvp()
     projected = {
         item.record.neuron_id: viewport._project_with_depth((0.0, 0.0, item.center[2]), mvp)
@@ -326,6 +344,50 @@ def test_default_view_uses_ablation_notebook_camera_right_and_up():
     application.processEvents()
 
 
+def test_soma_point_mode_is_default_counts_points_picks_and_preserves_compartments():
+    application = QApplication.instance() or QApplication([])
+
+    def morphology(neuron_id: str, x: float) -> Morphology:
+        record = NeuronRecord(neuron_id, "IN", "point-test", f"/{neuron_id}.swc", "test")
+        nodes = (
+            SwcNode(1, 1, x, 0.0, 0.0, 1.0, -1),
+            SwcNode(2, 2, x + 1.0, 0.0, 0.0, 0.5, 1),
+        )
+        segment = SwcSegment(
+            2,
+            1,
+            (x + 1.0, 0.0, 0.0),
+            (x, 0.0, 0.0),
+            0.5,
+            2,
+        )
+        return Morphology(record, nodes, (segment,), (x, x + 1.0, 0.0, 0.0, 0.0, 0.0))
+
+    viewport = CircuitViewport()
+    viewport.resize(632, 286)
+    viewport.set_morphologies((morphology("left", -10.0), morphology("right", 10.0)))
+    assert viewport.display_mode == DISPLAY_MODE_SOMA_POINTS
+    assert viewport.soma_point_count == 2
+    assert "soma-point view" in viewport.accessibleDescription()
+
+    right_location = viewport.soma_location("right")
+    assert right_location is not None
+    projected = viewport._project(right_location.point, viewport._mvp())
+    assert projected is not None
+    assert viewport._pick_soma(QPointF(*projected)) == "right"
+
+    viewport.focus_neuron("right", isolate=True)
+    viewport.selected_compartments = {2}
+    viewport._rebuild_selection_data()
+    viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+    assert viewport.selected_neuron_id == "right"
+    assert viewport.isolated is True
+    assert viewport.selected_compartments == {2}
+    assert "full SWC skeleton view" in viewport.accessibleDescription()
+    viewport.close()
+    application.processEvents()
+
+
 def test_box_selection_adds_projected_compartments_and_magenta_is_reserved():
     application = QApplication.instance() or QApplication([])
     record = NeuronRecord("box", "IN", "box-test", "/box.swc", "test")
@@ -344,6 +406,13 @@ def test_box_selection_adds_projected_compartments_and_magenta_is_reserved():
     projected = viewport._project(midpoint, viewport._mvp())
     assert projected is not None
     viewport.selected_compartments = {3}
+    assert viewport._select_compartments_in_rect(
+        QRectF(projected[0] - 3.0, projected[1] - 3.0, 6.0, 6.0)
+    ) == 0
+    assert viewport.selected_compartments == {3}
+    viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+    projected = viewport._project(midpoint, viewport._mvp())
+    assert projected is not None
     added = viewport._select_compartments_in_rect(
         QRectF(projected[0] - 3.0, projected[1] - 3.0, 6.0, 6.0)
     )
@@ -378,6 +447,7 @@ def test_large_multi_neuron_navigation_uses_smaller_connected_preview(monkeypatc
     morphology = Morphology(record, (), segments, (0.0, 600.0, 0.0, 0.0, 0.0, 0.0))
     viewport = CircuitViewport()
     viewport.set_morphologies((morphology,))
+    viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
     assert 0 < viewport.interaction_preview_segment_count < viewport.segment_count
     viewport._begin_interaction_preview()
     assert viewport._interaction_preview is True

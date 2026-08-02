@@ -54,6 +54,107 @@ class Morphology:
         return max((dx * dx + dy * dy + dz * dz) ** 0.5 / 2.0, 0.01)
 
 
+@dataclass(frozen=True)
+class SomaLocation:
+    """A display location for a cell body or an intentional DN pseudosoma."""
+
+    node_id: int | None
+    point: tuple[float, float, float]
+    radius: float
+    kind: str
+
+    @property
+    def is_pseudosoma(self) -> bool:
+        return self.kind in {"pseudosoma", "inferred-pseudosoma"}
+
+
+def locate_soma(morphology: Morphology) -> SomaLocation:
+    """Locate the soma marker using Digifly's validated rostral convention.
+
+    Phase 1 appends a type-1 cap beyond the rostral-most (maximum-Z) leaf for
+    MANC DNs that have no biological soma in the volume. Phase 2 subsequently
+    identifies that DN cap as the maximum-Z type-1 node, breaking a Z tie by
+    radius. Ordinary somata use the widest type-1 node, matching Digifly's
+    normal SWC/NEURON soma binding instead of placing their marker on a soma's
+    northern surface.
+
+    Custom SWCs need not contain a type-1 node. For those, DNs retain the
+    north-end intent via a maximum-Z fallback; other cells use the widest
+    root, then the widest node. Synthetic/test morphologies with segment-only
+    geometry fall back to an endpoint or the morphology center.
+    """
+
+    nodes = morphology.nodes
+    family = str(morphology.record.family).strip().upper()
+    connectome_key = str(morphology.record.connectome_key).strip().lower()
+    is_dn = family == "DN" or family.startswith("DN")
+    is_manc_dn = is_dn and connectome_key.startswith("manc")
+    parent_ids = {node.parent_id for node in nodes if node.parent_id >= 0}
+    final_node = max(nodes, key=lambda value: value.node_id) if nodes else None
+    has_native_dn_cap = bool(
+        is_dn
+        and final_node is not None
+        and final_node.swc_type == 1
+        and final_node.node_id not in parent_ids
+    )
+    soma_nodes = tuple(node for node in nodes if node.swc_type == 1)
+    if soma_nodes:
+        is_pseudosoma = is_manc_dn or has_native_dn_cap
+        if is_pseudosoma:
+            node = max(soma_nodes, key=lambda value: (value.z, value.radius))
+        else:
+            node = max(soma_nodes, key=lambda value: value.radius)
+        return SomaLocation(
+            node.node_id,
+            (node.x, node.y, node.z),
+            max(node.radius, 0.01),
+            "pseudosoma" if is_pseudosoma else "soma",
+        )
+
+    if nodes:
+        if is_manc_dn:
+            leaves = tuple(node for node in nodes if node.node_id not in parent_ids)
+            node = max(leaves or nodes, key=lambda value: (value.z, value.radius))
+            kind = "inferred-pseudosoma"
+        else:
+            roots = tuple(node for node in nodes if node.parent_id == -1)
+            candidates = roots or nodes
+            node = max(candidates, key=lambda value: value.radius)
+            kind = "inferred-soma"
+        return SomaLocation(
+            node.node_id,
+            (node.x, node.y, node.z),
+            max(node.radius, 0.01),
+            kind,
+        )
+
+    if morphology.segments:
+        parent_ids = {segment.parent_id for segment in morphology.segments}
+        leaf_segments = tuple(
+            segment
+            for segment in morphology.segments
+            if segment.child_id not in parent_ids
+        )
+        segment = (
+            max(
+                leaf_segments or morphology.segments,
+                key=lambda value: (value.child[2], value.radius),
+            )
+            if is_manc_dn
+            else morphology.segments[0]
+        )
+        point = segment.child if is_manc_dn else segment.parent
+        node_id = segment.child_id if is_manc_dn else segment.parent_id
+        return SomaLocation(
+            node_id,
+            point,
+            max(segment.radius, 0.01),
+            "inferred-pseudosoma" if is_manc_dn else "inferred-soma",
+        )
+
+    return SomaLocation(None, morphology.center, 0.01, "inferred-soma")
+
+
 def load_swc(record: NeuronRecord) -> Morphology:
     path = Path(record.swc_path).expanduser().resolve()
     nodes: dict[int, SwcNode] = {}

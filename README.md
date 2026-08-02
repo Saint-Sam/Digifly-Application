@@ -11,8 +11,8 @@ GFC/contact-site sodium recipe and is intended to reproduce the work described
 by `ESCAPE_SIZ_AGENT_HANDOFF.md`. The app now also
 has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders
-SWC segments, and stores a classic-HH draft plus stable SWC child-node
-selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
+soma-point or full-skeleton representations, and stores a classic-HH draft plus
+stable SWC child-node selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
 identities, regional conductance densities, and a separate gap-junction edge
 policy. It does not yet load chemical/gap connectivity or translate the design
 into an executable Arbor, NEURON, or BMTK model.
@@ -26,8 +26,9 @@ into an executable Arbor, NEURON, or BMTK model.
   runnable plan yet.
 - Local SWC-source discovery and neuron queries by ID, type, or family, such as
   `10000, 10002`, `type:GFC2`, `family:DN`, and `all:IN`.
-- A batched OpenGL SWC renderer with rotate, pan, zoom, right-click centering,
-  whole-neuron isolation, and multi-segment selection by SWC child-node ID.
+- A default one-marker-per-neuron soma overview with an obvious **Soma points** /
+  **Full skeletons** toggle. The batched OpenGL skeleton view adds whole-neuron
+  isolation and multi-segment selection by SWC child-node ID.
 - Editable cell-set-, neuron-, and SWC-segment classic-HH drafts, including Na,
   K, and Ca reversal potentials, which remain capability-gated until an
   execution adapter validates them.
@@ -104,15 +105,20 @@ PYTHONPATH=src .venv/bin/python -m pytest
 
 ## Circuit Builder controls
 
-New cell sets open in the orthographic VIP GLIA anatomy orientation used by
-`Ablation Baseline and Na Response Match.ipynb`; `R` returns to that reference
-view.
+New cell sets open in **Soma points** mode in the orthographic VIP GLIA anatomy
+orientation used by `Ablation Baseline and Na Response Match.ipynb`. The
+adjacent **Soma points** / **Full skeletons** buttons switch representations at
+any time. MANC DNs use Digifly's rostral type-1 pseudosoma convention, placing
+their marker at the northern end of the reference view. Switching modes,
+focusing a neuron, and `F` fit the camera to the active point or skeleton
+representation; `R` also restores the reference orientation.
 
 - Left-drag or `W/A/S/D`: rotate.
 - Shift-left-drag, middle-drag, or arrow keys: pan.
 - Mouse wheel: zoom.
 - Right-click: center the picked neuron; right-double-click: restore all.
-- Left-click a visible skeleton: select and isolate that neuron.
+- In **Soma points**, left-click a marker to select and isolate that neuron.
+- In **Full skeletons**, left-click a visible skeleton to select and isolate it.
 - Left-click isolated skeleton segments: toggle individual SWC compartments;
   selected compartments are always electric magenta.
 - Cmd/Ctrl+Shift-left-drag on an isolated neuron: draw a box that adds every
@@ -120,12 +126,17 @@ view.
 - `Escape` or `I`: restore/isolate; `F`: fit; `R`: reset view; `C`: clear
   segment selection.
 
+Compartment selection and editing are available only in **Full skeletons**.
+Existing compartment selections remain stored when switching to **Soma
+points**, where they are hidden until the skeleton view is restored.
+
 Readouts and guidance text wrap within the viewport card and support normal
 mouse text selection plus the native right-click Copy menu. Large multi-neuron
-views use a connected topology-preserving preview only during overview camera
-motion; deep zoom uses the exact morphology with hierarchical off-screen
-culling. Settled rendering, picking, editing, and exports always use the exact
-source geometry.
+views in **Full skeletons** use a connected topology-preserving preview only
+during overview camera motion; deep zoom uses the exact morphology with
+hierarchical off-screen culling. Settled skeleton rendering, picking, editing,
+and exports always use the exact source geometry; the point overview does not
+alter it.
 
 The editor writes unchanged-SWC + biophysics bundles under
 `~/Digifly App Workspace/morphologies`; it never changes the source SWCs in
