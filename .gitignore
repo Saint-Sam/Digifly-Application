@@ -13,3 +13,4 @@ workspace/
 *.digifly.json
 deployment/
 nuitka-crash-report.xml
+release/

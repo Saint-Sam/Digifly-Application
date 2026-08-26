@@ -26,6 +26,7 @@ from digifly_app.core.process_environment import (
     sanitized_external_environment,
 )
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.paths import RESOURCE_ROOT_ENV, resource_path, resource_root, worker_path
 from .base import EngineAdapter
 
 
@@ -126,14 +127,6 @@ EXPECTED_GAP_MECHANISMS = {
         "tau_close_ms",
     },
 }
-
-
-def _resource_root() -> Path:
-    """Return the source checkout or packaged executable's data directory."""
-
-    if "__compiled__" in globals() or getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[3]
 
 
 @dataclass
@@ -303,15 +296,15 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
 
     @property
     def worker_path(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "workers" / "arbor_escape_siz_worker.py"
+        return worker_path("arbor_escape_siz_worker.py")
 
     @property
     def gap_bridge_path(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "workers" / "arbor_gap_bridge.py"
+        return worker_path("arbor_gap_bridge.py")
 
     @property
     def mechanism_source_root(self) -> Path:
-        return _resource_root() / "mechanisms" / "arbor_gap_junctions"
+        return resource_path("mechanisms", "arbor_gap_junctions")
 
     def gap_catalogue_path(self, output_root: str | Path) -> Path:
         override = os.environ.get("DIGIFLY_ARBOR_GAP_CATALOGUE", "").strip()
@@ -525,6 +518,7 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
             "MPLCONFIGDIR": str(output / "_runtime" / "arbor_matplotlib"),
             "DIGIFLY_PHASE2_ARBOR_OUTPUT_ROOT": str(output / "escape_siz" / "arbor"),
             "DIGIFLY_GIANT_FIBER_ARBOR_OUTPUT_ROOT": str(comparison_root),
+            RESOURCE_ROOT_ENV: str(resource_root()),
         }
         return ExecutionPlan(
             engine="arbor",

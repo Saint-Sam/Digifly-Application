@@ -196,7 +196,8 @@ See [Architecture](docs/ARCHITECTURE.md) and
 [Roadmap](docs/ROADMAP.md) for the integration plan. The preserved starting
 point and package/data contract are recorded in
 [Phase 0 baseline](docs/PHASE0_BASELINE.md) and
-[Packaging boundary](docs/PACKAGING_BOUNDARY.md).
+[Packaging boundary](docs/PACKAGING_BOUNDARY.md). The distributable package
+foundation is recorded in [Phase 1 acceptance](docs/PHASE1_ACCEPTANCE.md).
 
 ## Scientific readiness
 

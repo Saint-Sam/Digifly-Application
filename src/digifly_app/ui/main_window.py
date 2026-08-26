@@ -47,6 +47,7 @@ from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.paths import resource_path
 from digifly_app.engines.arbor_escape_siz import (
     ArborAblationComparisonConfig,
     ArborEscapeSizAdapter,
@@ -65,13 +66,6 @@ from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_
 ORGANIZATION_NAME = "Digifly"
 APPLICATION_NAME = "Digifly Workstation"
 LEGACY_APPLICATION_NAME = "Digifly App"
-
-
-def _resource_root() -> Path:
-    """Return the source tree or the packaged bundle's resource directory."""
-    if "__compiled__" in globals() or getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[3]
 
 
 def _workspace_home() -> Path:
@@ -1293,7 +1287,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction(docs_action)
 
     def open_architecture_guide(self) -> None:
-        guide = _resource_root() / "docs" / "ARCHITECTURE.md"
+        guide = resource_path("docs", "ARCHITECTURE.md")
         if guide.is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(guide)))
             return

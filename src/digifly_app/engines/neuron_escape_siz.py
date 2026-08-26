@@ -26,6 +26,7 @@ from digifly_app.core.process_environment import (
 from digifly_app.core.resources import capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.paths import worker_path
 from .base import EngineAdapter
 
 
@@ -219,7 +220,7 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
 
     @property
     def worker_path(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "workers" / "escape_siz_worker.py"
+        return worker_path("escape_siz_worker.py")
 
     @property
     def base_case_path(self) -> Path:

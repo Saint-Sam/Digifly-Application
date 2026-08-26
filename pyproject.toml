@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "A guided desktop workstation for Digifly experiments."
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: MacOS X",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: X11 Applications :: Qt",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
 dependencies = [
   "PySide6>=6.10.3,<6.11",
   "psutil>=6,<8",
@@ -20,17 +33,49 @@ test = [
 deploy = [
   "Nuitka==2.7.11",
 ]
+package = [
+  "build>=1.2,<2",
+]
 
 [project.scripts]
-digifly-workstation = "digifly_app.app:main"
 digifly-app = "digifly_app.app:main"
 digifly-doctor = "digifly_app.cli:doctor_main"
+digifly-package-audit = "digifly_app.packaging.audit:main"
+
+[project.gui-scripts]
+digifly-workstation = "digifly_app.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/digifly-workstation/docs" = ["docs/ARCHITECTURE.md", "docs/PACKAGING_BOUNDARY.md"]
+"share/digifly-workstation/mechanisms/arbor_gap_junctions" = [
+  "mechanisms/arbor_gap_junctions/README.md",
+  "mechanisms/arbor_gap_junctions/build_status.json",
+  "mechanisms/arbor_gap_junctions/gap.mod",
+  "mechanisms/arbor_gap_junctions/hetero_rect_gap.mod",
+  "mechanisms/arbor_gap_junctions/rect_gap.mod",
+  "mechanisms/arbor_gap_junctions/source_manifest.json",
+]
+"share/digifly-workstation/mechanisms/augustin_2019" = [
+  "mechanisms/augustin_2019/k.mod",
+  "mechanisms/augustin_2019/nap.mod",
+  "mechanisms/augustin_2019/nat.mod",
+]
+"share/digifly-workstation/presets/escape_siz" = [
+  "presets/escape_siz/ablation_notebook_active_v1.json",
+  "presets/escape_siz/ablation_notebook_arbor_comparison_v1.json",
+  "presets/escape_siz/latest_gfc2_pairwise_v1.json",
+]
+"share/digifly-workstation/schemas" = [
+  "schemas/digifly-circuit-v2.schema.json",
+  "schemas/digifly-project-v1.schema.json",
+]
+"share/digifly-workstation/scripts" = ["scripts/build_arbor_gap_catalogue.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

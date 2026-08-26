@@ -19,6 +19,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -32,8 +33,21 @@ EXACT_EFFECTIVE_MECHANISM = "digifly_hetero_rect_gap"
 UNPREFIXED_MECHANISM = "hetero_rect_gap"
 CATALOGUE_NAME = "digifly_gap"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-APP_ROOT = Path(__file__).resolve().parents[3]
+RESOURCE_ROOT_ENV = "DIGIFLY_WORKSTATION_RESOURCE_ROOT"
 STIMULUS_SOURCE_SOMA_PASS_FRACTION_MIN = 1.0
+
+
+def _resource_root() -> Path:
+    override = os.environ.get(RESOURCE_ROOT_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    source_root = Path(__file__).resolve().parents[3]
+    if (source_root / "mechanisms" / "arbor_gap_junctions").is_dir():
+        return source_root
+    installed = Path(sys.prefix).resolve() / "share" / "digifly-workstation"
+    if installed.is_dir():
+        return installed
+    return Path(sys.executable).resolve().parent
 
 EXPECTED_PARAMETERS: dict[str, float] = {
     "default_g_uS": 0.001,
@@ -1140,11 +1154,13 @@ def audit_exact_gap_equivalence(
         for row in list(audit_provenance.get("code") or [])
         if stale_staged_port not in str(row.get("path") or "")
     ]
+    resource_root = _resource_root()
+    worker_root = Path(__file__).resolve().parent
     exact_source_paths = (
-        APP_ROOT / "mechanisms" / "arbor_gap_junctions" / "hetero_rect_gap.mod",
-        APP_ROOT / "mechanisms" / "arbor_gap_junctions" / "source_manifest.json",
-        APP_ROOT / "src" / "digifly_app" / "workers" / "arbor_gap_bridge.py",
-        APP_ROOT / "src" / "digifly_app" / "workers" / "arbor_escape_siz_worker.py",
+        resource_root / "mechanisms" / "arbor_gap_junctions" / "hetero_rect_gap.mod",
+        resource_root / "mechanisms" / "arbor_gap_junctions" / "source_manifest.json",
+        worker_root / "arbor_gap_bridge.py",
+        worker_root / "arbor_escape_siz_worker.py",
         Path(__file__).resolve(),
     )
     exact_source_provenance = [_file_provenance(path) for path in exact_source_paths if path.is_file()]

@@ -13,6 +13,8 @@ import math
 from pathlib import Path
 from typing import Any, Callable
 
+from .paths import resource_path
+
 
 PROFILE_KEY = "augustin_2019_gf_exact"
 PROFILE_VERSION = "1.0.0"
@@ -34,8 +36,7 @@ APP_SOURCE_SHA256 = {
     "nap.mod": "582dfd3fad7505554de5742a2f59c01093124ee4fd183440a4a5e7cfa8e31126",
     "k.mod": "73f5d0a0f1baaf575430c9744c6a5e060567831e6b94d1e1add2df6defd30da7",
 }
-APP_ROOT = Path(__file__).resolve().parents[3]
-APP_SOURCE_ROOT = APP_ROOT / "mechanisms" / "augustin_2019"
+APP_SOURCE_ROOT = resource_path("mechanisms", "augustin_2019")
 
 # Table 1 and the exact ModelDB source values, expressed in Digifly units.
 PARAMETERS = {
