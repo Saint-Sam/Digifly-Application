@@ -375,7 +375,7 @@ def test_worker_rejects_output_inside_digifly_public(tmp_path: Path) -> None:
     public = tmp_path / "Digifly Public"
     with pytest.raises(RuntimeError, match="must not be inside Digifly Public"):
         _reject_public_output(public / "app-runs" / "comparison", public)
-    _reject_public_output(tmp_path / "Digifly App Workspace" / "comparison", public)
+    _reject_public_output(tmp_path / "Digifly Workstation Workspace" / "comparison", public)
 
 
 def test_filtered_chemical_copy_removes_only_direct_gf_rows(tmp_path: Path) -> None:

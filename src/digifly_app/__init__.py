@@ -1,4 +1,4 @@
-"""Digifly App public package."""
+"""Compatibility package for the Digifly Workstation desktop application."""
 
 from __future__ import annotations
 

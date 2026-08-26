@@ -497,14 +497,14 @@ def _install_gap_autocompile_guard(execution_root: Path) -> Path:
     bootstrap = execution_root / "_runtime" / "python_bootstrap"
     bootstrap.mkdir(parents=True, exist_ok=True)
     guard = bootstrap / "sitecustomize.py"
-    source = '''"""Digifly App child guard: never compile mechanisms in the input workspace."""
+    source = '''"""Digifly Workstation child guard: never compile mechanisms in the input workspace."""
 import os
 
 if os.environ.get("DIGIFLY_GAP_MECH_DIR"):
     from digifly.phase2.neuron_build import gaps as _digifly_gaps
 
     def _digifly_app_input_only_compile(root):
-        return f"{root}: native auto-compile disabled by Digifly App input-only policy"
+        return f"{root}: native auto-compile disabled by Digifly Workstation input-only policy"
 
     _digifly_app_input_only_compile._digifly_app_input_only_guard = True
     _digifly_gaps._compile_gap_mechanisms = _digifly_app_input_only_compile

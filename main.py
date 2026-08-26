@@ -1,4 +1,4 @@
-"""Deployment entry point for Digifly App."""
+"""Deployment entry point for Digifly Workstation."""
 
 from __future__ import annotations
 

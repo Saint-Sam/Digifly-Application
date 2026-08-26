@@ -250,7 +250,7 @@ def load_swc(record: NeuronRecord) -> Morphology:
 
 
 def morphology_library_root() -> Path:
-    return Path.home() / "Digifly App Workspace" / "morphologies"
+    return Path.home() / "Digifly Workstation Workspace" / "morphologies"
 
 
 def _safe_name(value: str) -> str:

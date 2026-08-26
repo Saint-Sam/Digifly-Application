@@ -1,6 +1,6 @@
-# Digifly App
+# Digifly Workstation
 
-Digifly App is a standalone desktop workbench for configuring, validating,
+Digifly Workstation is a standalone desktop application for configuring, validating,
 running, and reviewing Digifly experiments. It does not modify Digifly's source
 code. Instead, it opens a Digifly workspace; the implemented Escape-SIZ
 workflows delegate execution through explicit NEURON and Arbor adapters, while
@@ -79,7 +79,7 @@ must remain isolated, and the pre-existing base PySide6 build is binary-incompat
 with this Mac. Create the UI environment once:
 
 ```bash
-cd "/path/to/Digifly App"
+cd "/path/to/Digifly Workstation"
 ./scripts/setup_dev.sh
 ./scripts/run_dev.sh
 ```
@@ -90,14 +90,14 @@ The equivalent manual setup is:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[test]"
-digifly-app
+digifly-workstation
 ```
 
 ## Open the macOS build
 
-The locally verified development bundle is `dist/Digifly App.app`.
+The locally verified development bundle is `dist/Digifly Workstation.app`.
 Double-click it in Finder. New projects default to
-`~/Digifly App Workspace`, keeping large caches and simulation recordings
+`~/Digifly Workstation Workspace`, keeping large caches and simulation recordings
 outside both the application bundle and `Digifly Public`.
 
 The current bundle is ad-hoc signed for local testing. A public download still
@@ -153,7 +153,7 @@ and exports always use the exact source geometry; the point overview does not
 alter it.
 
 The editor writes unchanged-SWC + biophysics bundles under
-`~/Digifly App Workspace/morphologies`; it never changes the source SWCs in
+`~/Digifly Workstation Workspace/morphologies`; it never changes the source SWCs in
 `Digifly Public`. The sidecar preserves channel catalog IDs, exact NMODL
 suffixes, regional densities, and SWC-node overrides. Gap junctions remain in
 the circuit project because a single-neuron bundle cannot preserve both edge
@@ -169,11 +169,11 @@ design.
 ## Safety model
 
 Escape-SIZ distinguishes expensive build-time state from runtime-safe state.
-Digifly App makes that distinction visible and blocks a launch when required
+Digifly Workstation makes that distinction visible and blocks a launch when required
 source files, contact-policy evidence, or a compatible cache are absent unless
 the user explicitly permits a cache build.
 
-The native Escape-SIZ runner hardcodes source-tree paths, so Digifly App launches
+The native Escape-SIZ runner hardcodes source-tree paths, so Digifly Workstation launches
 it through an app-owned worker overlay. The worker keeps native code and assets
 as read-only inputs while redirecting caches, requests, simulations, statuses,
 and plots beneath the configured app output root. A new cache build is always an
@@ -189,11 +189,14 @@ Arbor versions or architectures.
 ## Repository status
 
 This folder is deliberately separate from `Digifly Public` and is ready to
-become the `Digifly App` GitHub repository. A license has not been chosen yet;
+become the `Digifly Workstation` repository. A license has not been chosen yet;
 that decision should be made before a public release.
 
 See [Architecture](docs/ARCHITECTURE.md) and
-[Roadmap](docs/ROADMAP.md) for the integration plan.
+[Roadmap](docs/ROADMAP.md) for the integration plan. The preserved starting
+point and package/data contract are recorded in
+[Phase 0 baseline](docs/PHASE0_BASELINE.md) and
+[Packaging boundary](docs/PACKAGING_BOUNDARY.md).
 
 ## Scientific readiness
 
@@ -205,7 +208,7 @@ needs roughly 4 GB for the two legacy recording tables, and is the next
 scientific acceptance run.
 
 `Phase 2_Arbor_staging` is a working Digifly runtime, not a placeholder. In
-addition to its earlier compact-NEURON baselines, Digifly App now implements a
+addition to its earlier compact-NEURON baselines, Digifly Workstation now implements a
 dedicated Arbor 0.12.2 execution path for the active 49-cell Escape-SIZ Ablation
 comparison. It validates the locked inputs, removes the 99 direct-GF chemical
 rows to retain 2,331 rows, preserves the 959 gap-contact rows, and runs paired

@@ -1,4 +1,4 @@
-"""Simulator adapters used by Digifly App."""
+"""Simulator adapters used by Digifly Workstation."""
 
 from .arbor_escape_siz import ArborAblationComparisonConfig, ArborEscapeSizAdapter
 from .neuron_escape_siz import EscapeSizConfig, NeuronEscapeSizAdapter

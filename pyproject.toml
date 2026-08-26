@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "digifly-app"
+name = "digifly-workstation"
 version = "0.1.0"
-description = "A guided desktop workbench for Digifly experiments."
+description = "A guided desktop workstation for Digifly experiments."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,8 +17,12 @@ dependencies = [
 test = [
   "pytest>=8,<9",
 ]
+deploy = [
+  "Nuitka==2.7.11",
+]
 
 [project.scripts]
+digifly-workstation = "digifly_app.app:main"
 digifly-app = "digifly_app.app:main"
 digifly-doctor = "digifly_app.cli:doctor_main"
 

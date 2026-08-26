@@ -33,7 +33,7 @@ def main() -> int:
     ok, detail = _qt_smoke_test()
     if not ok:
         print(
-            "Digifly App could not start its Qt interface.\n"
+            "Digifly Workstation could not start its Qt interface.\n"
             f"Configured Python: {sys.executable}\n"
             f"Qt smoke-test detail: {detail or 'unknown failure'}\n\n"
             "Use the app's isolated .venv or run `python -m digifly_app.cli doctor`.",

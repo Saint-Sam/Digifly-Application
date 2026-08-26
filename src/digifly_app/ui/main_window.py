@@ -62,6 +62,11 @@ from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_label_copyable
 
 
+ORGANIZATION_NAME = "Digifly"
+APPLICATION_NAME = "Digifly Workstation"
+LEGACY_APPLICATION_NAME = "Digifly App"
+
+
 def _resource_root() -> Path:
     """Return the source tree or the packaged bundle's resource directory."""
     if "__compiled__" in globals() or getattr(sys, "frozen", False):
@@ -71,7 +76,7 @@ def _resource_root() -> Path:
 
 def _workspace_home() -> Path:
     """Keep projects and large simulation artifacts outside the app bundle."""
-    return Path.home() / "Digifly App Workspace"
+    return Path.home() / "Digifly Workstation Workspace"
 
 
 def _scroll_page(content: QWidget) -> QScrollArea:
@@ -155,7 +160,7 @@ class OverviewPage(QWidget):
         self.output_edit = QLineEdit(str(_workspace_home() / "runs"))
         self.python_edit = QLineEdit("/opt/anaconda3/bin/python")
         form.addRow("Digifly Public root", _path_row(self.workspace_edit, self, "Choose Digifly Public"))
-        form.addRow("App output root", _path_row(self.output_edit, self, "Choose output root"))
+        form.addRow("Workstation output root", _path_row(self.output_edit, self, "Choose output root"))
         form.addRow("NEURON Python", _path_row(self.python_edit, self, "Choose NEURON Python", file_mode=True))
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
@@ -751,7 +756,7 @@ class ExperimentPage(QWidget):
         choice = QMessageBox.question(
             self,
             "Stop the current run?",
-            "Digifly App will request a graceful process termination and preserve reusable cache files. "
+            "Digifly Workstation will request a graceful process termination and preserve reusable cache files. "
             "It will not delete partial outputs.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1144,10 +1149,11 @@ class EnginesPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Digifly App")
+        self.setWindowTitle(APPLICATION_NAME)
         self.resize(1440, 940)
         self.setMinimumSize(1120, 760)
-        self.settings = QSettings("Digifly", "Digifly App")
+        self.settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
+        self.legacy_settings = QSettings(ORGANIZATION_NAME, LEGACY_APPLICATION_NAME)
         self.current_project_path: Path | None = None
         root = QWidget()
         root.setObjectName("RootWindow")
@@ -1164,7 +1170,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(7)
         brand = QLabel("Digifly")
         brand.setObjectName("Brand")
-        subbrand = QLabel("EXPERIMENT WORKBENCH")
+        subbrand = QLabel("SCIENTIFIC WORKSTATION")
         subbrand.setObjectName("Eyebrow")
         sidebar_layout.addWidget(brand)
         sidebar_layout.addWidget(subbrand)
@@ -1424,6 +1430,14 @@ class MainWindow(QMainWindow):
         workspace = self.settings.value("workspace_root")
         output = self.settings.value("output_root")
         worker_python = self.settings.value("neuron_python")
+        # Import only read-only input/runtime bindings from the legacy app on
+        # first launch. Workstation outputs deliberately remain in their new
+        # default root so the two applications cannot overwrite each other's
+        # jobs, caches, or results.
+        if not workspace:
+            workspace = self.legacy_settings.value("workspace_root")
+        if not worker_python:
+            worker_python = self.legacy_settings.value("neuron_python")
         if workspace:
             self.overview_page.workspace_edit.setText(str(workspace))
         if output:
@@ -1449,8 +1463,8 @@ class MainWindow(QMainWindow):
 
 def launch(argv: list[str] | None = None) -> int:
     application = QApplication(argv or [])
-    application.setApplicationName("Digifly App")
-    application.setOrganizationName("Digifly")
+    application.setApplicationName(APPLICATION_NAME)
+    application.setOrganizationName(ORGANIZATION_NAME)
     application.setApplicationVersion(__version__)
     application.setStyle("Fusion")
     application.setStyleSheet(APP_STYLE)

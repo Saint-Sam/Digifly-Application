@@ -943,7 +943,7 @@ def _condition_config(
     )
     config["metadata"] = metadata
     config["run_notes"] = (
-        "Digifly App active-Ablation Arbor comparison: 11 GFC2 cells at 0.9 nA; direct GF chemical "
+        "Digifly Workstation active-Ablation Arbor comparison: 11 GFC2 cells at 0.9 nA; direct GF chemical "
         "rows removed; 2.5x GF contact-site Na. Each stimulated GFC2 legacy AIS section is "
         "explicitly painted with the same soma HH values used by NEURON. App-owned "
         "HeteroRectGap equation port; production uses the validated Arbor every-segment CV "

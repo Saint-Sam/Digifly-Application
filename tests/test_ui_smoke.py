@@ -11,7 +11,21 @@ from digifly_app.core.models import ResultRecord
 from digifly_app.core.project import DigiflyProject
 from digifly_app.engines.arbor_escape_siz import ArborEscapeSizAdapter
 from digifly_app.ui.circuit_builder import CIRCUIT_BUILDER_WORKFLOW
-from digifly_app.ui.main_window import MainWindow, OverviewPage, _workspace_home
+from digifly_app.ui.main_window import (
+    APPLICATION_NAME,
+    LEGACY_APPLICATION_NAME,
+    MainWindow,
+    ORGANIZATION_NAME,
+    OverviewPage,
+    _workspace_home,
+)
+
+
+def test_workstation_identity_and_writable_root_are_distinct():
+    assert APPLICATION_NAME == "Digifly Workstation"
+    assert LEGACY_APPLICATION_NAME == "Digifly App"
+    assert ORGANIZATION_NAME == "Digifly"
+    assert _workspace_home().name == "Digifly Workstation Workspace"
 
 
 def test_main_window_constructs_without_importing_simulators():
@@ -22,9 +36,9 @@ def test_main_window_constructs_without_importing_simulators():
     window = MainWindow()
     try:
         assert window.pages.count() == 5
-        assert window.windowTitle() == "Digifly App"
+        assert window.windowTitle() == "Digifly Workstation"
         assert window.experiment_page.run_button.isEnabled() is False
-        assert "Digifly App.app" not in str(_workspace_home() / "runs")
+        assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
 
         window.nav_buttons[1].setChecked(True)
         application.processEvents()

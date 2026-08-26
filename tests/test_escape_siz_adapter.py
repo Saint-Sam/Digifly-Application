@@ -100,7 +100,7 @@ def test_latest_result_uses_configured_app_output_root(tmp_path):
 
 
 def test_cache_identity_and_command_are_exact_argument_arrays(tmp_path, monkeypatch):
-    inherited_bundle = tmp_path / "Digifly App.app" / "Contents" / "MacOS"
+    inherited_bundle = tmp_path / "Digifly Workstation.app" / "Contents" / "MacOS"
     monkeypatch.setenv("PYTHONPATH", f"{inherited_bundle}{os.pathsep}/unrelated/inherited/path")
     workspace = DigiflyWorkspace(tmp_path / "Digifly Public")
     adapter = NeuronEscapeSizAdapter(workspace)

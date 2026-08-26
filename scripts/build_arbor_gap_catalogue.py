@@ -99,7 +99,7 @@ def _external_output_dir(requested: str | None) -> Path:
         except ValueError:
             pass
         else:
-            raise RuntimeError("Catalogue build output must stay outside the Digifly App repository.")
+            raise RuntimeError("Catalogue build output must stay outside the Digifly Workstation repository.")
         output.mkdir(parents=True, exist_ok=True)
         if any(output.iterdir()):
             raise RuntimeError(f"Catalogue build directory must be empty: {output}")

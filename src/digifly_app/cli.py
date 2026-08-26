@@ -13,7 +13,7 @@ from digifly_app.engines.neuron_escape_siz import EscapeSizConfig, NeuronEscapeS
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="digifly-doctor", description="Inspect a Digifly App workspace.")
+    parser = argparse.ArgumentParser(prog="digifly-doctor", description="Inspect a Digifly Workstation workspace.")
     subparsers = parser.add_subparsers(dest="command")
     doctor = subparsers.add_parser("doctor", help="Run workspace and runtime checks.")
     doctor.add_argument("--workspace", required=True)

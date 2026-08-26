@@ -1,1 +1,1 @@
-"""Qt user interface for Digifly App."""
+"""Qt user interface for Digifly Workstation."""

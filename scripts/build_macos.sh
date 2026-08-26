@@ -11,17 +11,17 @@ source_python="$project_dir/.venv/bin/python"
 source_spec="$project_dir/pysidedeploy.spec"
 source_deploy_dir="$project_dir/deployment"
 release_dir="$project_dir/dist"
-release_bundle="$release_dir/Digifly App.app"
+release_bundle="$release_dir/Digifly Workstation.app"
 release_archive_dir="$release_dir/previous_builds"
 build_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-stage_root="$(mktemp -d /private/tmp/digifly-app-build.XXXXXX)"
+stage_root="$(mktemp -d /private/tmp/digifly-workstation-build.XXXXXX)"
 stage_python="$stage_root/.venv/bin/python"
 stage_spec="$stage_root/pysidedeploy.spec"
 stage_deploy_dir="$stage_root/deployment"
-stage_bundle="$stage_root/Digifly App.app"
+stage_bundle="$stage_root/Digifly Workstation.app"
 stage_log="$stage_root/build.log"
-candidate_bundle="$release_dir/.Digifly App.candidate.$$.app"
-backup_bundle="$release_archive_dir/Digifly App.pre-$build_stamp-$$.app"
+candidate_bundle="$release_dir/.Digifly Workstation.candidate.$$.app"
+backup_bundle="$release_archive_dir/Digifly Workstation.pre-$build_stamp-$$.app"
 build_succeeded=0
 
 archive_failed_build() {
@@ -47,7 +47,7 @@ cleanup_stage() {
     archive_failed_build || true
   fi
   case "$stage_root" in
-    /private/tmp/digifly-app-build.*)
+    /private/tmp/digifly-workstation-build.*)
       rm -rf -- "$stage_root"
       ;;
     *)
@@ -142,9 +142,9 @@ if [[ ! -f "$stage_bundle/Contents/Info.plist" || ! -x "$stage_bundle/Contents/M
   exit 3
 fi
 
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly App" "$stage_bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly App" "$stage_bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.app" "$stage_bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.0" "$stage_bundle/Contents/Info.plist"
 codesign --force --deep --sign - "$stage_bundle"
 codesign --verify --deep --strict "$stage_bundle"
@@ -167,7 +167,7 @@ if [[ -e "$release_bundle" ]]; then
 fi
 mv "$candidate_bundle" "$release_bundle"
 if ! codesign --verify --deep --strict "$release_bundle"; then
-  failed_release="$source_deploy_dir/failed_bundles/Digifly App.$build_stamp-$$.app"
+  failed_release="$source_deploy_dir/failed_bundles/Digifly Workstation.$build_stamp-$$.app"
   mkdir -p "$source_deploy_dir/failed_bundles"
   mv "$release_bundle" "$failed_release"
   if [[ -e "$backup_bundle" ]]; then

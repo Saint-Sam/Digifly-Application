@@ -1,6 +1,6 @@
 # Contributing
 
-Digifly App separates portable experiment definitions from machine-specific
+Digifly Workstation separates portable experiment definitions from machine-specific
 scientific runtimes. New integrations should implement the adapter boundary and
 run simulator imports in a worker process.
 

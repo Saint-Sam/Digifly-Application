@@ -319,7 +319,7 @@ def build_source_diagnostic_config(
     )
     config["metadata"] = metadata
     config["run_notes"] = (
-        "Digifly App bounded source-baseline diagnostic: exact 49-cell Escape-SIZ gap-off "
+        "Digifly Workstation bounded source-baseline diagnostic: exact 49-cell Escape-SIZ gap-off "
         "circuit, eleven GFC2 cells at 0.9 nA, one 0.4 ms pulse, 5 ms total, named soma "
         "voltage only. The explicit grouped CV policy is a compatibility candidate; no "
         "topology or backend-equivalence claim is made."
