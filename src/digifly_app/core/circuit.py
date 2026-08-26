@@ -37,14 +37,14 @@ HH_PARAMETER_DEFINITIONS: tuple[HHParameterDefinition, ...] = (
     HHParameterDefinition("eca_mV", "Ca²⁺ reversal", "mV", -200.0, 300.0, 1.0, 3),
     HHParameterDefinition("v_init_mV", "Initial voltage", "mV", -200.0, 200.0, 1.0, 3),
     HHParameterDefinition("celsius_C", "Temperature", "°C", -10.0, 60.0, 0.5, 2),
-    HHParameterDefinition("soma_gnabar_s_cm2", "Soma Na⁺ ḡ", "S/cm²", 0.0, 10.0, 0.005, 7),
-    HHParameterDefinition("soma_gkbar_s_cm2", "Soma K⁺ ḡ", "S/cm²", 0.0, 10.0, 0.002, 7),
-    HHParameterDefinition("soma_gl_s_cm2", "Soma leak g", "S/cm²", 0.0, 10.0, 0.00001, 8),
-    HHParameterDefinition("soma_el_mV", "Soma leak reversal", "mV", -200.0, 200.0, 1.0, 3),
-    HHParameterDefinition("branch_gnabar_s_cm2", "Branch Na⁺ ḡ", "S/cm²", 0.0, 10.0, 0.002, 7),
-    HHParameterDefinition("branch_gkbar_s_cm2", "Branch K⁺ ḡ", "S/cm²", 0.0, 10.0, 0.001, 7),
-    HHParameterDefinition("branch_gl_s_cm2", "Branch leak g", "S/cm²", 0.0, 10.0, 0.00001, 8),
-    HHParameterDefinition("branch_el_mV", "Branch leak reversal", "mV", -200.0, 200.0, 1.0, 3),
+    HHParameterDefinition("soma_gnabar_s_cm2", "Built-in HH soma Na⁺ ḡ", "S/cm²", 0.0, 10.0, 0.005, 7),
+    HHParameterDefinition("soma_gkbar_s_cm2", "Built-in HH soma K⁺ ḡ", "S/cm²", 0.0, 10.0, 0.002, 7),
+    HHParameterDefinition("soma_gl_s_cm2", "Built-in HH soma leak g", "S/cm²", 0.0, 10.0, 0.00001, 8),
+    HHParameterDefinition("soma_el_mV", "Built-in HH soma leak reversal", "mV", -200.0, 200.0, 1.0, 3),
+    HHParameterDefinition("branch_gnabar_s_cm2", "Built-in HH branch Na⁺ ḡ", "S/cm²", 0.0, 10.0, 0.002, 7),
+    HHParameterDefinition("branch_gkbar_s_cm2", "Built-in HH branch K⁺ ḡ", "S/cm²", 0.0, 10.0, 0.001, 7),
+    HHParameterDefinition("branch_gl_s_cm2", "Built-in HH branch leak g", "S/cm²", 0.0, 10.0, 0.00001, 8),
+    HHParameterDefinition("branch_el_mV", "Built-in HH branch leak reversal", "mV", -200.0, 200.0, 1.0, 3),
 )
 
 
@@ -176,6 +176,51 @@ class NeuronQuery:
         )
 
 
+@dataclass(frozen=True)
+class ConnectionPairOverride:
+    """User intent for connection classes between an unordered neuron pair.
+
+    ``None`` means to inherit the imported connectivity state. A boolean is an
+    explicit plan override. The source edge table remains read-only; execution
+    adapters consume this record while materializing their app-owned plans.
+    """
+
+    neuron_a: str
+    neuron_b: str
+    chemical_enabled: bool | None = None
+    gap_junction_enabled: bool | None = None
+
+    def __post_init__(self) -> None:
+        first, second = sorted((str(self.neuron_a), str(self.neuron_b)))
+        if not first or not second or first == second:
+            raise ValueError("A connection override requires two different neuron IDs")
+        object.__setattr__(self, "neuron_a", first)
+        object.__setattr__(self, "neuron_b", second)
+        for key in ("chemical_enabled", "gap_junction_enabled"):
+            value = getattr(self, key)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{key} must be true, false, or null")
+
+    @property
+    def key(self) -> str:
+        # Length-prefixing avoids ambiguous keys even if future non-numeric IDs
+        # contain punctuation.
+        return f"{len(self.neuron_a)}:{self.neuron_a}{self.neuron_b}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "ConnectionPairOverride":
+        raw = dict(payload or {})
+        return cls(
+            neuron_a=str(raw.get("neuron_a") or ""),
+            neuron_b=str(raw.get("neuron_b") or ""),
+            chemical_enabled=raw.get("chemical_enabled"),
+            gap_junction_enabled=raw.get("gap_junction_enabled"),
+        )
+
+
 def _string_keyed_nested(payload: Mapping[Any, Any] | None) -> dict[str, Any]:
     return {str(key): value for key, value in dict(payload or {}).items()}
 
@@ -195,9 +240,19 @@ class CircuitSpec:
     compartment_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     neuron_mechanism_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     compartment_mechanism_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    connection_overrides: dict[str, ConnectionPairOverride] = field(default_factory=dict)
     schema_version: int = CIRCUIT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        normalized_connection_overrides: dict[str, ConnectionPairOverride] = {}
+        for value in self.connection_overrides.values():
+            override = (
+                value
+                if isinstance(value, ConnectionPairOverride)
+                else ConnectionPairOverride.from_dict(value)
+            )
+            normalized_connection_overrides[override.key] = override
+        self.connection_overrides = normalized_connection_overrides
         self._synchronize_profile_identities()
 
     def _synchronize_profile_identities(self) -> None:
@@ -273,6 +328,46 @@ class CircuitSpec:
             self.neuron_mechanism_overrides[neuron_id] = deepcopy(membrane_payload)
         return len(normalized_ids)
 
+    def connection_override(
+        self, neuron_a: str | int, neuron_b: str | int
+    ) -> ConnectionPairOverride | None:
+        probe = ConnectionPairOverride(str(neuron_a), str(neuron_b))
+        return self.connection_overrides.get(probe.key)
+
+    def set_connection_class_enabled(
+        self,
+        neuron_a: str | int,
+        neuron_b: str | int,
+        connection_class: str,
+        enabled: bool,
+    ) -> ConnectionPairOverride:
+        probe = ConnectionPairOverride(str(neuron_a), str(neuron_b))
+        current = self.connection_overrides.get(probe.key, probe)
+        if connection_class == "chemical":
+            updated = ConnectionPairOverride(
+                current.neuron_a,
+                current.neuron_b,
+                chemical_enabled=bool(enabled),
+                gap_junction_enabled=current.gap_junction_enabled,
+            )
+        elif connection_class == "gap_junction":
+            updated = ConnectionPairOverride(
+                current.neuron_a,
+                current.neuron_b,
+                chemical_enabled=current.chemical_enabled,
+                gap_junction_enabled=bool(enabled),
+            )
+        else:
+            raise ValueError(f"Unsupported connection class: {connection_class}")
+        self.connection_overrides[updated.key] = updated
+        return updated
+
+    def clear_connection_override(
+        self, neuron_a: str | int, neuron_b: str | int
+    ) -> bool:
+        probe = ConnectionPairOverride(str(neuron_a), str(neuron_b))
+        return self.connection_overrides.pop(probe.key, None) is not None
+
     def to_dict(self) -> dict[str, Any]:
         self._synchronize_profile_identities()
         return {
@@ -288,6 +383,13 @@ class CircuitSpec:
             "compartment_overrides": self.compartment_overrides,
             "neuron_mechanism_overrides": self.neuron_mechanism_overrides,
             "compartment_mechanism_overrides": self.compartment_mechanism_overrides,
+            "connection_overrides": [
+                override.to_dict()
+                for override in sorted(
+                    self.connection_overrides.values(),
+                    key=lambda item: (item.neuron_a, item.neuron_b),
+                )
+            ],
         }
 
     @classmethod
@@ -321,6 +423,16 @@ class CircuitSpec:
                 str(node_id): MembraneMechanismSpec.from_dict(values).to_dict()
                 for node_id, values in dict(node_map or {}).items()
             }
+        connection_overrides: dict[str, ConnectionPairOverride] = {}
+        raw_connection_overrides = raw.get("connection_overrides") or ()
+        values = (
+            raw_connection_overrides.values()
+            if isinstance(raw_connection_overrides, Mapping)
+            else raw_connection_overrides
+        )
+        for value in values:
+            override = ConnectionPairOverride.from_dict(value)
+            connection_overrides[override.key] = override
         restored = cls(
             connectome=ConnectomeRef.from_dict(raw.get("connectome")),
             query=NeuronQuery.from_dict(raw.get("query")),
@@ -336,6 +448,7 @@ class CircuitSpec:
             compartment_overrides=compartment_overrides,
             neuron_mechanism_overrides=neuron_mechanism_overrides,
             compartment_mechanism_overrides=compartment_mechanism_overrides,
+            connection_overrides=connection_overrides,
             schema_version=CIRCUIT_SCHEMA_VERSION,
         )
         restored._synchronize_profile_identities()

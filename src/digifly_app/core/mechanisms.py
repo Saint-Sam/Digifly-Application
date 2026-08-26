@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 import math
 from typing import Any, Mapping
 
+from .augustin_2019 import PARAMETERS as AUGUSTIN_2019_PARAMETERS
+from .augustin_2019 import PROFILE_KEY as AUGUSTIN_2019_PROFILE_KEY
+
 
 @dataclass(frozen=True)
 class MembraneMechanismDefinition:
@@ -25,6 +28,48 @@ class MembraneMechanismDefinition:
 
 
 MEMBRANE_MECHANISMS: tuple[MembraneMechanismDefinition, ...] = (
+    MembraneMechanismDefinition(
+        "augustin_nat",
+        "digifly.augustin2019.gf.nat.modeldb245415.v1",
+        "Augustin GF transient Na⁺",
+        "Augustin · transient Na⁺",
+        "sodium",
+        "Na+",
+        "nat",
+        "mechanisms/augustin_2019/nat.mod",
+        "609f7786edf939ae7ac44f2e06216a99fc3217fd2ee5fbb449982516da1ab925",
+        AUGUSTIN_2019_PARAMETERS["gnatbar_s_cm2"],
+        0.001,
+        "Exact Augustin-2019/ModelDB-245415 transient-Na equations; upstream source hash is locked separately.",
+    ),
+    MembraneMechanismDefinition(
+        "augustin_nap",
+        "digifly.augustin2019.gf.nap.modeldb245415.v1",
+        "Augustin GF persistent Na⁺",
+        "Augustin · persistent Na⁺",
+        "sodium",
+        "Na+",
+        "nap",
+        "mechanisms/augustin_2019/nap.mod",
+        "582dfd3fad7505554de5742a2f59c01093124ee4fd183440a4a5e7cfa8e31126",
+        AUGUSTIN_2019_PARAMETERS["gnapbar_s_cm2"],
+        0.00001,
+        "Exact Augustin-2019/ModelDB-245415 persistent-Na equations; upstream source hash is locked separately.",
+    ),
+    MembraneMechanismDefinition(
+        "augustin_k",
+        "digifly.augustin2019.gf.k.modeldb245415.v1",
+        "Augustin GF K⁺",
+        "Augustin · K⁺",
+        "potassium",
+        "K+",
+        "k",
+        "mechanisms/augustin_2019/k.mod",
+        "73f5d0a0f1baaf575430c9744c6a5e060567831e6b94d1e1add2df6defd30da7",
+        AUGUSTIN_2019_PARAMETERS["gkbar_s_cm2"],
+        0.001,
+        "Exact Augustin-2019/ModelDB-245415 K-channel equations; upstream source hash is locked separately.",
+    ),
     MembraneMechanismDefinition(
         "para",
         "digifly.phase2.para.na16a.v1",
@@ -332,6 +377,29 @@ _PORTABLE_CLASSIC_HH: Mapping[str, Any] = {
     "active_scope": "all",
 }
 
+_AUGUSTIN_2019_GF_HH: Mapping[str, Any] = {
+    **_PORTABLE_CLASSIC_HH,
+    "ra_ohm_cm": AUGUSTIN_2019_PARAMETERS["ra_ohm_cm"],
+    "cm_uF_cm2": AUGUSTIN_2019_PARAMETERS["cm_uF_cm2"],
+    "g_pas_s_cm2": AUGUSTIN_2019_PARAMETERS["g_pas_s_cm2"],
+    "e_pas_mV": AUGUSTIN_2019_PARAMETERS["e_pas_mV"],
+    "ena_mV": AUGUSTIN_2019_PARAMETERS["ena_mV"],
+    "ek_mV": AUGUSTIN_2019_PARAMETERS["ek_mV"],
+    "v_init_mV": AUGUSTIN_2019_PARAMETERS["v_init_mV"],
+    "celsius_C": AUGUSTIN_2019_PARAMETERS["celsius_C"],
+    # Built-in squid HH is removed. The three exact ModelDB mechanisms below
+    # carry transient Na, persistent Na, and K conductances atomically.
+    "soma_gnabar_s_cm2": 0.0,
+    "soma_gkbar_s_cm2": 0.0,
+    "soma_gl_s_cm2": AUGUSTIN_2019_PARAMETERS["g_pas_s_cm2"],
+    "soma_el_mV": AUGUSTIN_2019_PARAMETERS["e_pas_mV"],
+    "branch_gnabar_s_cm2": 0.0,
+    "branch_gkbar_s_cm2": 0.0,
+    "branch_gl_s_cm2": AUGUSTIN_2019_PARAMETERS["g_pas_s_cm2"],
+    "branch_el_mV": AUGUSTIN_2019_PARAMETERS["e_pas_mV"],
+    "active_scope": "all",
+}
+
 _PHASE2_NATIVE_CHANNEL_HH: Mapping[str, Any] = {
     **_PORTABLE_CLASSIC_HH,
     # The native helpers leave these unset, so NEURON's runtime defaults apply.
@@ -362,6 +430,27 @@ _ESCAPE_SIZ_PARA_HH_K: Mapping[str, Any] = {
 
 
 MEMBRANE_PROFILES: tuple[MembraneProfileDefinition, ...] = (
+    MembraneProfileDefinition(
+        AUGUSTIN_2019_PROFILE_KEY,
+        "Augustin 2019 GF (exact)",
+        "GF-specific published membrane: ELeak −85 mV, ENa +65 mV, EK −74 mV, transient Na 0.3, persistent Na 0.00011, and K 0.01 S/cm² at 25 °C. It initializes at −65 mV but predicts a zero-current equilibrium of −74.670 mV; initialization is not rest.",
+        True,
+        {
+            "augustin_nat": (
+                AUGUSTIN_2019_PARAMETERS["gnatbar_s_cm2"],
+                AUGUSTIN_2019_PARAMETERS["gnatbar_s_cm2"],
+            ),
+            "augustin_nap": (
+                AUGUSTIN_2019_PARAMETERS["gnapbar_s_cm2"],
+                AUGUSTIN_2019_PARAMETERS["gnapbar_s_cm2"],
+            ),
+            "augustin_k": (
+                AUGUSTIN_2019_PARAMETERS["gkbar_s_cm2"],
+                AUGUSTIN_2019_PARAMETERS["gkbar_s_cm2"],
+            ),
+        },
+        _AUGUSTIN_2019_GF_HH,
+    ),
     MembraneProfileDefinition(
         "classic_hh",
         "Classic HH (portable draft)",
@@ -552,7 +641,7 @@ class GapJunctionPolicy:
     def mechanism_label(self) -> str:
         return {
             "none": "None",
-            "ohmic": "Gap / Arbor gj",
+            "ohmic": "Gap / digifly_gap",
             "rectifying": "RectGap",
             "heterotypic_rectifying": "HeteroRectGap",
         }[self.mode]
@@ -609,8 +698,10 @@ def mechanism_capability_message(
     if gap_policy.mode == "ohmic":
         if engine == "arbor":
             statements.append(
-                "The all-edge ohmic policy can map to Arbor's built-in gj after connectivity "
-                f"is loaded; conductance is explicitly {gap_policy.conductance_basis.replace('_', ' ')}."
+                "The app-owned digifly_gap equation port is built and validated in a real "
+                "two-cell Arbor test. Generic Circuit Builder execution remains blocked "
+                "until its electrical-edge/contact translator is implemented; conductance is "
+                f"stored as {gap_policy.conductance_basis.replace('_', ' ')}."
             )
         elif engine == "neuron":
             statements.append("The all-edge ohmic policy preserves the native Gap mechanism intent; connectivity is not loaded yet.")
@@ -620,9 +711,18 @@ def mechanism_capability_message(
         if engine == "neuron":
             statements.append(f"{gap_policy.mechanism_label} is preserved as a NEURON electrical-edge policy; it needs two endpoints and loaded connectivity.")
         elif engine == "arbor":
+            arbor_port = (
+                "digifly_rect_gap"
+                if gap_policy.mode == "rectifying"
+                else "digifly_hetero_rect_gap"
+            )
             statements.append(
-                f"BLOCKED for Arbor: {gap_policy.mechanism_label} has no exact kinetic/voltage-dependent mapping. "
-                "A separately labeled static ohmic approximation would be a different model."
+                f"The app-owned {arbor_port} equation port for {gap_policy.mechanism_label} "
+                "is built and validated in a real two-cell Arbor test; the dedicated "
+                "Escape-SIZ adapter uses digifly_hetero_rect_gap for its locked recipe. "
+                "BLOCKED for generic Arbor execution until the Circuit Builder can translate "
+                "electrical endpoints and contact placement; no static ohmic approximation "
+                "will be substituted."
             )
         else:
             statements.append(f"{gap_policy.mechanism_label} is stored only; no BMTK mapping is implemented.")

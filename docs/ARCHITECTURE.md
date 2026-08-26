@@ -10,9 +10,10 @@
 
 ## Layers
 
-The diagram below is the target adapter architecture. Only the Escape-SIZ
-NEURON execution adapter is implemented today; the Arbor, BMTK, and VND nodes
-are planned boundaries.
+The diagram below separates implemented, recipe-specific execution adapters
+from planned generic boundaries. Escape-SIZ has both a NEURON adapter and a
+locked 49-cell Arbor Ablation-comparison adapter. Generic Arbor/BMTK translation
+and the VND handoff remain planned.
 
 ```mermaid
 flowchart LR
@@ -21,23 +22,26 @@ flowchart LR
     DESIGN --> CONTRACT
     CORE --> CONTRACT[Engine adapter contract]
     CONTRACT --> N[Escape-SIZ NEURON adapter · implemented]
-    CONTRACT -. planned .-> A[Arbor adapter · planned]
+    CONTRACT --> A[Escape-SIZ Arbor comparison adapter · implemented]
+    CONTRACT -. planned .-> GA[Generic Arbor translator · planned]
     CONTRACT -. planned .-> B[BMTK adapter · planned]
     DESIGN -. planned .-> V[VND exporter / viewer handoff · planned]
     N --> DP[Digifly Public native files]
-    A -.-> DP
+    A --> DP
+    GA -.-> DP
     B -.-> DP
     V -.-> DP
     N --> RUNS[Versioned run manifests and artifacts]
-    A -.-> RUNS
+    A --> RUNS
+    GA -.-> RUNS
     B -.-> RUNS
 ```
 
-The UI never imports a simulator. The implemented Escape-SIZ adapter discovers
-inputs, translates supported fields from backend-unbound drafts, builds
-commands, declares build-time versus runtime-safe fields, and validates
-results. Future adapters must satisfy the same contract. Commands are passed as
-argument arrays rather than shell strings.
+The UI never imports a simulator. The implemented Escape-SIZ adapters discover
+inputs, build commands, declare build-time versus runtime-safe fields, and
+validate results. The Arbor adapter is deliberately recipe-specific rather than
+a generic `CircuitSpec` translator. Future generic adapters must satisfy the
+same contract. Commands are passed as argument arrays rather than shell strings.
 
 ## Backend-unbound circuit-design model
 
@@ -59,7 +63,8 @@ they do not depend on transient render-actor indices. Custom saves copy the SWC
 without changing it and place biophysics/provenance in JSON sidecars.
 
 Membrane mechanisms and classic HH scalars are deliberately separate. The
-catalog records the two Para sodium, four potassium-family, and two
+catalog records the provenance-locked Augustin-2019 GF `nat`, `nap`, and `k`
+equations alongside the two Para sodium, four potassium-family, and two
 calcium-family Phase 2 mechanisms with their exact NMODL suffixes and portable
 source provenance, including a stable catalog ID and exact source SHA-256. A
 design can stack mechanisms, preserve disabled values and unexposed advanced
@@ -70,6 +75,12 @@ the same neuron-level snapshot to every currently loaded neuron while retaining
 narrower segment overrides. Named profiles atomically set both HH and native
 mechanism state; any divergent HH or mechanism edit invalidates the profile name
 and saves as Custom.
+
+The Augustin GF profile is explicitly GF-specific rather than a universal
+fly-neuron default. It distinguishes −65 mV initialization, −85 mV leak
+reversal, and the model-predicted −74.670 mV zero-current equilibrium. Paper
+workflows consume this app-owned contract and must not reconstruct a partial
+"Augustin-like" hybrid by changing only leak reversal or initial voltage.
 
 Gap junctions are connection mechanisms, not membrane channels. `Gap`,
 `RectGap`, and `HeteroRectGap` therefore live in a separate all-electrical-edge
@@ -133,17 +144,62 @@ SWCs, mutation overlays, and historical summaries as read-only inputs. The
 adapter understands the current heterotypic ShakB/GFC2 cache identity, verifies
 the deduplicated-visible-contact policy, and loads completed summaries read-only.
 
+The dedicated Arbor adapter locks the active Ablation-notebook comparison to 49
+cells, 11 GFC2 stimuli, 2.5× GF contact-site sodium, 2,331 retained chemical
+rows after direct-GF removal, and 959 gap contacts. Its app-owned worker writes
+filtered inputs, plans, simulations, metrics, plots, and provenance outside
+`Digifly Public`. Gap-enabled and gap-disabled conditions share the same locked
+input contract.
+
+The app owns NMODL source ports for `Gap`, `RectGap`, and `HeteroRectGap`. A
+compiled `digifly_gap` catalogue is tied to Arbor 0.12.2 and the active
+compiler/platform ABI. Preflight validates its manifest, hash, mechanism kinds,
+and parameter schemas by loading it in the selected external Arbor runtime. The
+catalogue is cached beneath the app output root in
+`_runtime/arbor_catalogues/<ABI-key>`; it is not copied into or generated inside
+`Digifly Public`.
+
+At worker startup, a fail-closed bridge extends every fresh Arbor cable-property
+catalogue under the `digifly_` prefix and replaces only the staged runner's
+junction factory. The runner's connection weight remains 1.0. A load, schema,
+version, or hook mismatch aborts the run; there is no fallback to built-in
+`gj`.
+
 ## Engine capability boundary
 
 Four curated staged Phase 2 Arbor scenarios pass archived compact-NEURON
 comparison baselines using built-in HH/passive, `exp2syn`, and ohmic `gj`.
-NEURON remains the reference implementation lane for established Phase 2
-NMODL/Drosophila channels and current kinetic heterotypic rectification. The
-active Arbor runner does not provide equation-level `RectGap` or
-`HeteroRectGap` support; the generic design path blocks those requests. A static
-1.0/0.8 ohmic approximation, where explicitly selected by a dedicated workflow,
-is a different non-exact model. BMTK
-PointNet/DPointNet are LIF/GLIF lanes and
+Separately, the app-owned catalogue now provides equation-level Arbor ports of
+`Gap`, `RectGap`, and `HeteroRectGap` for the dedicated Escape-SIZ comparison.
+For `HeteroRectGap`, the voltage-dependent gate, residual floor, endpoint
+orientation, and opening/closing equations and parameters are represented.
+Arbor uses `cnexp` for the gate state while NEURON's source uses
+`derivimplicit`, so finite-step trajectories are not asserted to be bitwise
+identical. The first empirical 49-cell audit completed with catalogue,
+implementation, placement, and provenance checks passing, but its overall
+verdict is `NOT_YET_EQUIVALENT`. The required gap-disabled source-readiness gate
+passes 0 of 11 stimulated somas. The app includes a fail-closed translation
+of legacy grouped-section boundaries plus the native soma-site clamp for
+diagnostic use only. It is a compatibility candidate, not a topology-
+equivalence claim, because Arbor adds zero-area fork CVs and the staged
+morphology retains a tiny root stub. A four-thread 49-cell diagnostic with that
+explicit policy exited in native Arbor with `SIGBUS`. The cause was a deeply
+recursive n-ary boundary locset; the bridge now constructs an equivalent
+balanced binary locset, which preserved all tested CV parent/cable signatures
+and completed an 11-source four-thread construction A/B. It nevertheless stays
+quarantined to bounded, single-thread diagnostics and is not installed by the
+production worker. A full 49-cell four-thread 0.02 ms construction/run probe
+also completed, but the complete 5 ms threaded diagnostic is not yet
+requalified.
+Production stays on the completed `every_segment` path. The one-thread 49-cell
+source diagnostic completed but passed 0 of 11 traces after NEURON was linearly
+sampled onto Arbor's dense epoch-relative grid, so the upstream absolute-voltage
+mismatch must be resolved before another full audit.
+
+This recipe-specific bridge does not yet validate the generic Circuit Builder
+or the other Phase 2 NMODL/Drosophila membrane channels. Unsupported generic
+requests remain blocked rather than silently mapped to the custom catalogue or
+built-in `gj`. BMTK PointNet/DPointNet are LIF/GLIF lanes and
 do not consume the current cable-HH draft; a generic BioNet translator is future
 work. VND is a visualization/export consumer, not a simulator.
 

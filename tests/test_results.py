@@ -48,3 +48,33 @@ def test_missing_ordering_is_a_warning(tmp_path):
     result = load_escape_siz_result(summary)
     ordering = next(check for check in result.checks if check.key == "result_ordering")
     assert ordering.state.value == "warning"
+
+
+def test_ablation_notebook_composite_is_the_primary_result_image(tmp_path):
+    native_image = tmp_path / "native.png"
+    notebook_image = tmp_path / "notebook_3d.png"
+    native_pdf = tmp_path / "native.pdf"
+    notebook_pdf = tmp_path / "notebook_3d.pdf"
+    for path in (native_image, notebook_image):
+        path.write_bytes(b"image")
+    for path in (native_pdf, notebook_pdf):
+        path.write_bytes(b"%PDF")
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "contact_count_policy": "deduplicated_visible_contact_sites_post_xyz",
+                "visible_contact_counts": [{}],
+                "plots": {"png": str(native_image), "pdf": str(native_pdf)},
+                "notebook_plot_bundle": {
+                    "png": str(notebook_image),
+                    "pdf": str(notebook_pdf),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = load_escape_siz_result(summary)
+    assert result.primary_image == notebook_image
+    assert result.metadata["notebook plot"] == "heatmaps + postsynaptic 3D"

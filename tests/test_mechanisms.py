@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from digifly_app.core.augustin_2019 import (
+    EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV,
+    MODELDB_SOURCE_SHA256,
+    PARAMETERS as AUGUSTIN_PARAMETERS,
+    profile_contract as augustin_profile_contract,
+    validate_profile_contract,
+    zero_current_equilibrium_mV,
+)
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     ChannelAssignment,
@@ -14,6 +22,9 @@ from digifly_app.core.mechanisms import (
 
 def test_native_phase2_channel_catalog_keeps_exact_suffixes_and_portable_provenance():
     assert [item.suffix for item in MEMBRANE_MECHANISMS] == [
+        "nat",
+        "nap",
+        "k",
         "na16a",
         "na14a",
         "kv14sh",
@@ -30,7 +41,30 @@ def test_native_phase2_channel_catalog_keeps_exact_suffixes_and_portable_provena
     }
     assert all(not item.source_relpath.startswith("/") for item in MEMBRANE_MECHANISMS)
     assert all(len(item.source_sha256) == 64 for item in MEMBRANE_MECHANISMS)
-    assert all(item.catalog_id.startswith("digifly.phase2.") for item in MEMBRANE_MECHANISMS)
+    assert all(item.catalog_id.startswith("digifly.") for item in MEMBRANE_MECHANISMS)
+
+
+def test_augustin_2019_gf_profile_keeps_reversals_initialization_and_rest_distinct():
+    profile = membrane_profile("augustin_2019_gf_exact")
+    assert profile.replace_builtin_hh is True
+    assert [item.suffix for item in profile.active_channels] == ["nat", "nap", "k"]
+    assert profile.channels["augustin_nat"].soma_gbar_s_cm2 == 0.3
+    assert profile.channels["augustin_nap"].branch_gbar_s_cm2 == 0.00011
+    assert profile.channels["augustin_k"].soma_gbar_s_cm2 == 0.01
+
+    contract = augustin_profile_contract()
+    assert contract["parameters"]["e_pas_mV"] == -85.0
+    assert contract["parameters"]["ena_mV"] == 65.0
+    assert contract["parameters"]["ek_mV"] == -74.0
+    assert contract["parameters"]["v_init_mV"] == -65.0
+    assert contract["source"]["modeldb_channel_source_sha256"] == MODELDB_SOURCE_SHA256
+    assert zero_current_equilibrium_mV() == pytest.approx(
+        EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV, abs=1e-12
+    )
+    assert all(validate_profile_contract().values())
+    assert AUGUSTIN_PARAMETERS["e_pas_mV"] != pytest.approx(
+        EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV
+    )
 
 
 def test_phase2_and_escape_siz_profiles_preserve_their_distinct_defaults():
@@ -88,13 +122,15 @@ def test_gap_policy_validation_and_backend_messages_do_not_claim_false_arbor_par
         "arbor", membrane_profile("escape_siz_para_hh_k"), hetero
     )
     assert "not Arbor-qualified" in message
-    assert "BLOCKED for Arbor" in message
-    assert "different model" in message
+    assert "digifly_hetero_rect_gap" in message
+    assert "BLOCKED for generic Arbor execution" in message
+    assert "no static ohmic approximation" in message
 
     ohmic_message = mechanism_capability_message(
         "arbor", membrane_profile("classic_hh"), GapJunctionPolicy(mode="ohmic")
     )
-    assert "map to Arbor's built-in gj" in ohmic_message
+    assert "app-owned digifly_gap" in ohmic_message
+    assert "Generic Circuit Builder execution remains blocked" in ohmic_message
 
     with pytest.raises(ValueError, match="Closed gap fraction"):
         GapJunctionPolicy(mode="heterotypic_rectifying", g_closed_frac=1.1)

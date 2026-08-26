@@ -58,9 +58,29 @@
         "type": "object",
         "additionalProperties": {"$ref": "#/$defs/membrane"}
       }
+    },
+    "connection_overrides": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/connectionPairOverride"}
     }
   },
   "$defs": {
+    "connectionPairOverride": {
+      "type": "object",
+      "required": [
+        "neuron_a",
+        "neuron_b",
+        "chemical_enabled",
+        "gap_junction_enabled"
+      ],
+      "properties": {
+        "neuron_a": {"type": "string", "minLength": 1},
+        "neuron_b": {"type": "string", "minLength": 1},
+        "chemical_enabled": {"type": ["boolean", "null"]},
+        "gap_junction_enabled": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
     "channel": {
       "type": "object",
       "required": [

@@ -47,6 +47,11 @@ from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.engines.arbor_escape_siz import (
+    ArborAblationComparisonConfig,
+    ArborEscapeSizAdapter,
+    load_arbor_ablation_result,
+)
 from digifly_app.engines.neuron_escape_siz import (
     EscapeSizConfig,
     NeuronEscapeSizAdapter,
@@ -267,7 +272,7 @@ class ExperimentPage(QWidget):
             _page_header(
                 "Experiment · 01",
                 "Escape-SIZ guided run",
-                "Configure a versioned NEURON recipe, inspect cache compatibility, then review the exact plan before execution.",
+                "Run the exact NEURON reference or the app-owned Arbor HeteroRectGap equation port from one guided recipe.",
             )
         )
 
@@ -276,7 +281,9 @@ class ExperimentPage(QWidget):
         banner_layout.setContentsMargins(16, 13, 16, 13)
         banner_layout.addWidget(StatusPill(CheckState.INFO, "MILESTONE 1"))
         copy = QLabel(
-            "Latest GFC2 is a first-two-target diagnostic recipe. The canonical dual-GF heatmap is kept as a separate preset."
+            "The Ablation notebook preset reproduces its current active GFC recipe. "
+            "It uses one worker instead of the notebook's four-worker setting to avoid observed MPI segfaults; "
+            "the scientific model is unchanged. Latest GFC2 and canonical dual-GF remain separate experiments."
         )
         copy.setWordWrap(True)
         copy.setObjectName("Muted")
@@ -302,7 +309,15 @@ class ExperimentPage(QWidget):
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(10)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("NEURON · exact notebook reference", "neuron")
+        self.backend_combo.addItem("Arbor · fast custom-gap comparison", "arbor")
+        self.backend_combo.setToolTip(
+            "NEURON uses the original HeteroRectGap mechanism. Arbor uses the app-owned equation port with the "
+            "same parameters; measured cross-backend agreement is reported by the equivalence audit."
+        )
         self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Ablation notebook · active GFC experiment", "ablation_notebook_active")
         self.preset_combo.addItem("Latest GFC2 pairwise diagnostic", "latest_gfc2_pairwise")
         self.preset_combo.addItem("Canonical dual-GF comparison", "canonical_dual_gf")
         self.gj_combo = QComboBox()
@@ -318,6 +333,7 @@ class ExperimentPage(QWidget):
         self.nproc.setValue(1)
         self.amp_enabled = _double_spin(0, 1000, 1.0, suffix=" nA", decimals=8)
         self.amp_disabled = _double_spin(0, 1000, 0.46142578125, suffix=" nA", decimals=8)
+        form.addRow("Execution engine", self.backend_combo)
         form.addRow("Versioned preset", self.preset_combo)
         form.addRow("Gap-junction model  · rebuild", self.gj_combo)
         form.addRow("Contact-site Na  · runtime", self.na_multiplier)
@@ -325,7 +341,8 @@ class ExperimentPage(QWidget):
         form.addRow("Maximum pulses  · runtime", self.pulses)
         form.addRow("Gap-enabled fallback", self.amp_enabled)
         form.addRow("Gap-disabled fallback", self.amp_disabled)
-        form.addRow("NEURON workers", self.nproc)
+        self.parallelism_label = QLabel("NEURON workers")
+        form.addRow(self.parallelism_label, self.nproc)
         config_layout.addLayout(form)
 
         self.separate_gfs = QCheckBox("Remove direct GF↔GF chemical edges  · requires rebuild")
@@ -333,9 +350,11 @@ class ExperimentPage(QWidget):
         self.gfc2_ohmic = QCheckBox("Add 55 pairwise GFC2 AIS ohmic junctions  · requires rebuild")
         self.gfc2_ohmic.setChecked(True)
         self.extra_heatmaps = QCheckBox("Generate extra target heatmaps  · analysis-only")
+        self.postsynaptic_3d = QCheckBox("Generate Ablation notebook heatmap + postsynaptic 3D figure  · analysis-only")
         config_layout.addWidget(self.separate_gfs)
         config_layout.addWidget(self.gfc2_ohmic)
         config_layout.addWidget(self.extra_heatmaps)
+        config_layout.addWidget(self.postsynaptic_3d)
 
         target_label = QLabel("Per-condition stimulus map (JSON)")
         target_label.setStyleSheet("font-weight:600;")
@@ -487,6 +506,7 @@ class ExperimentPage(QWidget):
         root_layout.addWidget(_scroll_page(content))
 
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
+        self.backend_combo.currentIndexChanged.connect(self._backend_changed)
         self.overview.settings_changed.connect(self._invalidate_plan)
         for signal_owner in (
             self.gj_combo,
@@ -499,6 +519,7 @@ class ExperimentPage(QWidget):
             self.separate_gfs,
             self.gfc2_ohmic,
             self.extra_heatmaps,
+            self.postsynaptic_3d,
             self.closed_frac,
             self.vhalf,
             self.vslope,
@@ -513,6 +534,7 @@ class ExperimentPage(QWidget):
             self.stimulus_json,
         ):
             _connect_change(signal_owner, self._invalidate_plan)
+        self.set_config(EscapeSizConfig.ablation_notebook_active())
 
     def config(self) -> EscapeSizConfig:
         raw = self.stimulus_json.toPlainText().strip()
@@ -542,7 +564,41 @@ class ExperimentPage(QWidget):
             vmin_mV=self.vmin.value(),
             vmax_mV=self.vmax.value(),
             include_extra_target_heatmaps=self.extra_heatmaps.isChecked(),
+            postsynaptic_only_3d_plots=self.postsynaptic_3d.isChecked(),
         )
+
+    def arbor_config(self) -> ArborAblationComparisonConfig:
+        neuron_config = self.config()
+        amplitudes = {
+            float(value)
+            for condition in neuron_config.stimulus_by_condition.values()
+            if isinstance(condition, dict)
+            for value in condition.values()
+        }
+        if amplitudes != {0.9}:
+            raise ValueError(
+                "The Arbor comparison is locked to all 11 GFC2 cells at 0.9 nA in both conditions."
+            )
+        return ArborAblationComparisonConfig(
+            python_executable=self.overview.python_edit.text().strip(),
+            contact_site_na_multiplier=self.na_multiplier.value(),
+            static_reverse_fraction=self.residual.value(),
+            requested_hetero_g_closed_frac=self.closed_frac.value(),
+            requested_hetero_vhalf_mV=self.vhalf.value(),
+            requested_hetero_vslope_mV=self.vslope.value(),
+            requested_empirical_residual_frac=self.residual.value(),
+            requested_tau_open_ms=self.tau_open.value(),
+            requested_tau_close_ms=self.tau_close.value(),
+            frequency_hz=self.frequency.value(),
+            max_pulses=self.pulses.value(),
+            stimulus_amp_nA=0.9,
+            threads=self.nproc.value(),
+            vmin_mV=self.vmin.value(),
+            vmax_mV=self.vmax.value(),
+        )
+
+    def active_config(self) -> EscapeSizConfig | ArborAblationComparisonConfig:
+        return self.arbor_config() if self.backend_combo.currentData() == "arbor" else self.config()
 
     def set_config(self, config: EscapeSizConfig) -> None:
         index = self.preset_combo.findData(config.preset)
@@ -550,6 +606,16 @@ class ExperimentPage(QWidget):
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentIndex(index)
             self.preset_combo.blockSignals(False)
+        is_ablation_notebook = config.preset == "ablation_notebook_active"
+        if is_ablation_notebook:
+            self.na_multiplier.setRange(2.0, 3.0)
+        else:
+            self.na_multiplier.setRange(0.01, 1000.0)
+        self.na_multiplier.setToolTip(
+            "Pinned to the notebook's 2–3× ChAT-informed prior."
+            if is_ablation_notebook
+            else "Contact-site sodium conductance multiplier."
+        )
         self.gj_combo.setCurrentIndex(max(0, self.gj_combo.findData(config.gj_model)))
         self.na_multiplier.setValue(config.contact_site_na_multiplier)
         self.frequency.setValue(config.frequency_hz)
@@ -560,6 +626,7 @@ class ExperimentPage(QWidget):
         self.separate_gfs.setChecked(config.separate_gfs)
         self.gfc2_ohmic.setChecked(config.gfc2_ohmic)
         self.extra_heatmaps.setChecked(config.include_extra_target_heatmaps)
+        self.postsynaptic_3d.setChecked(config.postsynaptic_only_3d_plots)
         self.closed_frac.setValue(config.hetero_g_closed_frac)
         self.vhalf.setValue(config.hetero_vhalf_mV)
         self.vslope.setValue(config.hetero_vslope_mV)
@@ -570,6 +637,7 @@ class ExperimentPage(QWidget):
         self.vmax.setValue(config.vmax_mV)
         self.force_restart.setChecked(config.force_restart_cache)
         self.stimulus_json.setPlainText(json.dumps(config.stimulus_by_condition, indent=2))
+        self._update_parallelism_control()
         self._invalidate_plan()
 
     def validate_and_plan(self) -> None:
@@ -577,8 +645,12 @@ class ExperimentPage(QWidget):
         self.plan_state.setText("Running scientific preflight…")
         QApplication.processEvents()
         try:
-            config = self.config()
-            adapter = NeuronEscapeSizAdapter(self.overview.workspace())
+            config = self.active_config()
+            adapter = (
+                ArborEscapeSizAdapter(self.overview.workspace())
+                if self.backend_combo.currentData() == "arbor"
+                else NeuronEscapeSizAdapter(self.overview.workspace())
+            )
             report = adapter.validate(
                 config,
                 output_root=self.overview.output_edit.text(),
@@ -623,7 +695,7 @@ class ExperimentPage(QWidget):
         if self._report is None or self._plan is None or not self._report.ok:
             QMessageBox.warning(self, "Preflight required", "Validate a launch-ready plan first.")
             return
-        config = self.config()
+        config = self.active_config()
         output_root = Path(self.overview.output_edit.text()).expanduser().resolve()
         (output_root / "_runtime" / "matplotlib").mkdir(parents=True, exist_ok=True)
         store = JobStore(output_root)
@@ -671,7 +743,7 @@ class ExperimentPage(QWidget):
             self._process_error(process.error())
         else:
             store.update_status(job_dir, "running", pid=int(process.processId()))
-            self.status_message.emit(f"Escape-SIZ worker running · PID {process.processId()}")
+        self.status_message.emit(f"Escape-SIZ {self._plan.engine} worker running · PID {process.processId()}")
 
     def cancel_run(self) -> None:
         if self._process is None:
@@ -731,7 +803,11 @@ class ExperimentPage(QWidget):
         expected = Path(self._plan.expected_summary_path) if self._plan and self._plan.expected_summary_path else None
         if state == "completed" and expected and expected.is_file():
             try:
-                result = load_escape_siz_result(expected)
+                result = (
+                    load_arbor_ablation_result(expected)
+                    if self._plan and self._plan.engine == "arbor"
+                    else load_escape_siz_result(expected)
+                )
             except Exception as exc:
                 self.log.appendPlainText(f"Result inspection failed: {exc}")
             else:
@@ -751,10 +827,54 @@ class ExperimentPage(QWidget):
         self.status_message.emit(f"Worker error: {message}")
 
     def _apply_preset(self) -> None:
-        if self.preset_combo.currentData() == "canonical_dual_gf":
+        if self.preset_combo.currentData() == "ablation_notebook_active":
+            self.set_config(EscapeSizConfig.ablation_notebook_active())
+        elif self.preset_combo.currentData() == "canonical_dual_gf":
             self.set_config(EscapeSizConfig.canonical_dual_gf())
         else:
             self.set_config(EscapeSizConfig())
+
+    def _backend_changed(self) -> None:
+        is_arbor = self.backend_combo.currentData() == "arbor"
+        if is_arbor and self.preset_combo.currentData() != "ablation_notebook_active":
+            self.set_config(EscapeSizConfig.ablation_notebook_active())
+        self.preset_combo.setEnabled(not is_arbor)
+        self.gj_combo.setEnabled(not is_arbor)
+        self.separate_gfs.setEnabled(not is_arbor)
+        self.gfc2_ohmic.setEnabled(not is_arbor)
+        self.allow_cache_build.setEnabled(not is_arbor)
+        self.force_restart.setEnabled(not is_arbor)
+        if is_arbor:
+            self.nproc.setValue(4)
+            self.run_button.setText("Run Arbor custom-gap comparison")
+        else:
+            if self.preset_combo.currentData() == "ablation_notebook_active":
+                self.nproc.setValue(1)
+            self.run_button.setText("Run exact NEURON reference")
+        self._update_parallelism_control()
+        self._invalidate_plan()
+        if is_arbor:
+            self.plan_state.setText("Arbor custom HeteroRectGap · validate before comparison")
+
+    def _update_parallelism_control(self) -> None:
+        if self.backend_combo.currentData() == "arbor":
+            label = "Arbor CPU threads"
+            tooltip = "Number of CPU threads allocated to Arbor's vectorized simulation (1–64)."
+            enabled = True
+        else:
+            label = "NEURON workers"
+            is_ablation_notebook = self.preset_combo.currentData() == "ablation_notebook_active"
+            tooltip = (
+                "Pinned to one worker because historical multi-rank launches segfaulted; "
+                "scientific parameters are unchanged."
+                if is_ablation_notebook
+                else "Number of external NEURON workers."
+            )
+            enabled = not is_ablation_notebook
+        self.parallelism_label.setText(label)
+        self.parallelism_label.setToolTip(tooltip)
+        self.nproc.setToolTip(tooltip)
+        self.nproc.setEnabled(enabled)
 
     def _invalidate_plan(self) -> None:
         if self._process is not None:
@@ -867,13 +987,26 @@ class ResultsPage(QWidget):
 
     def load_latest(self) -> None:
         try:
-            config = self.experiment.config()
-            result = NeuronEscapeSizAdapter(self.overview.workspace()).latest_result(config)
+            if self.experiment.backend_combo.currentData() == "arbor":
+                result = ArborEscapeSizAdapter(self.overview.workspace()).latest_result(
+                    self.experiment.arbor_config(),
+                    output_root=self.overview.output_edit.text(),
+                )
+            else:
+                result = NeuronEscapeSizAdapter(self.overview.workspace()).latest_result(
+                    self.experiment.config(),
+                    output_root=self.overview.output_edit.text(),
+                )
         except Exception as exc:
             QMessageBox.critical(self, "Could not load result", str(exc))
             return
         if result is None:
-            QMessageBox.information(self, "No result found", "No matching Escape-SIZ summary was found.")
+            backend = "Arbor" if self.experiment.backend_combo.currentData() == "arbor" else "NEURON"
+            QMessageBox.information(
+                self,
+                "No result found",
+                f"No matching {backend} Escape-SIZ summary was found.",
+            )
             return
         self.display_result(result)
 
@@ -881,13 +1014,24 @@ class ResultsPage(QWidget):
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "Open Escape-SIZ summary",
-            str(self.overview.workspace().gfc_root),
+            str(Path(self.overview.output_edit.text()).expanduser()),
             "JSON files (*.json)",
         )
         if not selected:
             return
         try:
-            result = load_escape_siz_result(selected)
+            payload = json.loads(Path(selected).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Escape-SIZ summary must contain a JSON object.")
+            is_arbor = (
+                payload.get("backend") == "arbor"
+                or payload.get("recipe") == "ablation_notebook_arbor_comparison_v1"
+            )
+            result = (
+                load_arbor_ablation_result(selected)
+                if is_arbor
+                else load_escape_siz_result(selected)
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Invalid summary", str(exc))
             return
@@ -1158,7 +1302,7 @@ class MainWindow(QMainWindow):
         self._project_workflow = None
         self.project_label.setText("Unsaved project")
         self.circuit_builder_page.reset()
-        self.experiment_page.set_config(EscapeSizConfig())
+        self.experiment_page.set_config(EscapeSizConfig.ablation_notebook_active())
         self._last_editor_page = self.circuit_builder_page
         self.show_page(0)
 

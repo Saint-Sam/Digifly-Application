@@ -46,13 +46,40 @@
 
 ## Milestone 4 — Unified execution adapters
 
-- Wrap the four curated `Phase 2_Arbor_staging` comparison workflows first.
-- Translate `CircuitSpec` into a validated Arbor recipe and run manifest.
-- Translate supported subsets into adapter-specific NEURON and BMTK/BioNet
+- [x] Add the dedicated 49-cell Escape-SIZ Ablation Arbor 0.12.2 adapter with
+  locked inputs and paired gap-enabled/gap-disabled runs.
+- [x] Port app-owned `Gap`, `RectGap`, and `HeteroRectGap` NMODL sources into an
+  Arbor catalogue, with a fail-closed staged-runner bridge and no `gj` fallback.
+- [x] Validate and reuse the compiler/platform/Arbor-ABI-specific catalogue from
+  the app output runtime cache.
+- [x] Add a read-only NEURON–Arbor equivalence auditor that checks provenance,
+  implementation, traces, responses, and the declared solver difference.
+- [x] Run and review the first empirical 49-cell equivalence audit; retain the
+  `NOT_YET_EQUIVALENT` verdict while the required source-readiness gate is 0/11.
+- [x] Prototype a fail-closed legacy grouped-section boundary-policy candidate
+  and native `SWCCell.soma_site()` clamp while declaring the Arbor fork/root-
+  stub topology caveats.
+- [x] Quarantine that explicit legacy-CV prototype from production after a
+  four-thread 49-cell native Arbor `SIGBUS`; keep `every_segment` as the
+  production policy and retain the prototype for bounded one-thread diagnosis.
+- [x] Replace the recursive boundary locset with a CV-signature-equivalent
+  balanced binary join; retain the one-thread quarantine until the full 49-cell
+  5 ms threaded diagnostic is requalified (the 0.02 ms construction/run probe
+  now passes).
+- [ ] Resolve the absolute-voltage mismatch exposed by the completed one-thread
+  diagnostic (0/11 source somas despite high waveform correlation), then pass
+  the short gap-disabled source gate before another full paired run.
+- [ ] Wrap the remaining curated `Phase 2_Arbor_staging` comparison workflows.
+- [ ] Translate `CircuitSpec` into a validated Arbor recipe and run manifest.
+- [ ] Translate supported subsets into adapter-specific NEURON and BMTK/BioNet
   representations, with comparison gates.
-- Gate unsupported mechanisms explicitly instead of silently approximating.
-- Add backend comparison with common inputs, traces, metrics, and provenance.
-- Support `DIGIFLY_PHASE2_ARBOR_OUTPUT_ROOT` directly.
+- [x] Gate unsupported mechanisms explicitly instead of silently approximating.
+- [x] Add the dedicated Escape-SIZ backend comparison contract with common
+  inputs, traces, metrics, solver provenance, and an explicit false equivalence
+  claim until the empirical gate passes.
+- [ ] Generalize backend comparison to arbitrary supported Circuit Builder
+  designs.
+- [ ] Support `DIGIFLY_PHASE2_ARBOR_OUTPUT_ROOT` directly for generic adapters.
 
 ## Milestone 5 — BMTK and VND
 

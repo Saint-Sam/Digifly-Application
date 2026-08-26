@@ -27,6 +27,11 @@ def load_escape_siz_result(path: str | Path) -> ResultRecord:
         "cache": payload.get("cache_session_root", "unknown"),
         "stimulus targets": _stimulus_summary(payload),
         "heatmap targets": _heatmap_targets(payload),
+        "notebook plot": (
+            "heatmaps + postsynaptic 3D"
+            if isinstance(payload.get("notebook_plot_bundle"), Mapping)
+            else "not requested"
+        ),
     }
     return ResultRecord(
         summary_path=str(summary_path),
@@ -41,6 +46,13 @@ def load_escape_siz_result(path: str | Path) -> ResultRecord:
 
 def _collect_artifacts(payload: Mapping[str, Any]) -> list[Artifact]:
     candidates: list[tuple[str, str, str]] = []
+    notebook_plots = payload.get("notebook_plot_bundle")
+    if isinstance(notebook_plots, Mapping):
+        for key, value in notebook_plots.items():
+            if isinstance(value, str) and _kind_for_path(value):
+                candidates.append(
+                    (_kind_for_path(value) or "file", value, f"Ablation notebook · {_label_for_key(str(key))}")
+                )
     plots = payload.get("plots")
     if isinstance(plots, Mapping):
         for key, value in plots.items():

@@ -1,6 +1,6 @@
 {
   "recipe_version": 1,
-  "preset": "latest_gfc2_pairwise",
+  "preset": "ablation_notebook_active",
   "contact_site_na_multiplier": 2.5,
   "gj_model": "heterotypic_rectifying",
   "hetero_g_closed_frac": 0.0,
@@ -10,7 +10,7 @@
   "hetero_tau_open_ms": 6.0,
   "hetero_tau_close_ms": 2.0,
   "separate_gfs": true,
-  "gfc2_ohmic": true,
+  "gfc2_ohmic": false,
   "frequency_hz": 100.0,
   "max_pulses": 10,
   "gap_enabled_amp_nA": 1.0,
@@ -48,7 +48,7 @@
   "vmin_mV": -80.0,
   "vmax_mV": 40.0,
   "include_extra_target_heatmaps": false,
-  "postsynaptic_only_3d_plots": false,
-  "scientific_label": "GFC2 arbitrary-target diagnostic; not the canonical dual-GF heatmap",
+  "postsynaptic_only_3d_plots": true,
+  "scientific_label": "Current active NEURON experiment in Ablation Baseline and Na Response Match.ipynb; one-worker stability override",
   "contact_count_policy": "deduplicated_visible_contact_sites_post_xyz"
 }

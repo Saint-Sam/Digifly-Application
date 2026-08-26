@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import csv
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import platform
 import subprocess
 import tempfile
 from typing import Any, Mapping
@@ -40,6 +43,9 @@ GFC2_IDS = (
     16764,
     17245,
 )
+ABLATION_NOTEBOOK_SOURCE_NPROC = 4
+ABLATION_STABLE_NPROC = 1
+ABLATION_NOTEBOOK_NEURON_VERSION = "9.0.1"
 CANONICAL_VISIBLE_COUNTS = {
     (10000, 10110): 146,
     (10000, 11446): 16,
@@ -49,6 +55,9 @@ CANONICAL_VISIBLE_COUNTS = {
     (10002, 11446): 65,
     (10002, 11654): 28,
 }
+EXPECTED_GFC_CONTACT_ROWS = 959
+EXPECTED_GFC_CONTACT_PAIRS = 58
+EXPECTED_GFC_CONTACT_SHA256 = "df64a7822294119c6e58b385c34f6b59354805b7ad8bf5f6054b29bd8c74235f"
 
 
 def latest_gfc2_stimulus() -> dict[str, dict[str, float]]:
@@ -83,6 +92,7 @@ class EscapeSizConfig:
     vmin_mV: float = -80.0
     vmax_mV: float = 40.0
     include_extra_target_heatmaps: bool = False
+    postsynaptic_only_3d_plots: bool = False
 
     BUILD_TIME_FIELDS = (
         "gj_model",
@@ -105,6 +115,7 @@ class EscapeSizConfig:
         "vmin_mV",
         "vmax_mV",
         "include_extra_target_heatmaps",
+        "postsynaptic_only_3d_plots",
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -124,6 +135,16 @@ class EscapeSizConfig:
             gap_enabled_amp_nA=1.58935546875,
             gap_disabled_amp_nA=0.46142578125,
             stimulus_by_condition={},
+        )
+
+    @classmethod
+    def ablation_notebook_active(cls) -> "EscapeSizConfig":
+        """Current active NEURON recipe in the Escape-SIZ Ablation notebook."""
+        return cls(
+            preset="ablation_notebook_active",
+            gfc2_ohmic=False,
+            nproc=ABLATION_STABLE_NPROC,
+            postsynaptic_only_3d_plots=True,
         )
 
     def errors(self) -> list[str]:
@@ -150,6 +171,13 @@ class EscapeSizConfig:
             errors.append("Heterotypic time constants must be positive.")
         if self.vmin_mV >= self.vmax_mV:
             errors.append("Heatmap minimum must be below its maximum.")
+        if self.preset == "ablation_notebook_active":
+            if not 2.0 <= self.contact_site_na_multiplier <= 3.0:
+                errors.append("The Ablation notebook contact-site Na multiplier must stay within its 2–3× ChAT prior.")
+            if self.nproc != ABLATION_STABLE_NPROC:
+                errors.append(
+                    "The Ablation notebook app preset is pinned to one NEURON worker because historical multi-rank launches segfaulted."
+                )
         for condition, mapping in self.stimulus_by_condition.items():
             if condition not in {"gap_enabled", "gap_disabled"}:
                 errors.append(f"Unknown stimulus condition {condition!r}.")
@@ -170,6 +198,7 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
     display_name = "NEURON · Escape-SIZ"
 
     RUNNER_NAME = "run_baseline_with_10002_gfcs_contact_site_na_heatmaps.py"
+    POSTSYNAPTIC_3D_NAME = "make_manual_gf_heatmaps_plus_3d_voltage.py"
     EDGE_NAME = "10000_10002_10068_10110_11446_11654_DLMs_GFCs_gap_edges_unique_contact_sites.csv"
 
     @property
@@ -179,6 +208,14 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
     @property
     def edge_path(self) -> Path:
         return self.workspace.gfc_root / "gap_edge_cache" / self.EDGE_NAME
+
+    @property
+    def postsynaptic_3d_path(self) -> Path:
+        return self.workspace.gfc_root / self.POSTSYNAPTIC_3D_NAME
+
+    @property
+    def gap_mechanism_root(self) -> Path:
+        return self.workspace.phase2_neuron / "data"
 
     @property
     def worker_path(self) -> Path:
@@ -292,10 +329,22 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
                 ),
             )
         )
+        if config.postsynaptic_only_3d_plots:
+            checks.append(
+                _file_check(
+                    "postsynaptic_3d_plotter",
+                    "Ablation-notebook 3D plotter",
+                    self.postsynaptic_3d_path,
+                    blocking=True,
+                )
+            )
         checks.append(self._runtime_check(config))
+        checks.append(self._gap_mechanism_metadata_check(config))
         checks.append(self._contact_count_check())
         checks.append(self._morphology_source_check(allow_new_cache_build=allow_new_cache_build))
-        checks.append(self._camera_preset_check())
+        if config.separate_gfs:
+            checks.append(self._master_edge_database_check())
+        checks.append(self._camera_preset_check(required=config.postsynaptic_only_3d_plots))
 
         paths = self.workflow_paths(config, output_root=output_root)
         checks.append(
@@ -413,17 +462,20 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
                     json.dumps(config.stimulus_by_condition, separators=(",", ":"), sort_keys=True),
                 )
             )
+        if self.camera_preset_path.is_file():
+            args.extend(("--camera-preset", str(self.camera_preset_path.resolve())))
         if not config.include_extra_target_heatmaps:
             args.append("--no-extra-stim-target-heatmaps")
+        if config.postsynaptic_only_3d_plots:
+            args.append("--postsynaptic-only-3d-plots")
 
         output = Path(output_root).expanduser().resolve()
+        # The active Ablation notebook and its cache workers use the NEURON
+        # installed in /opt/anaconda3.  Do not append /Applications/NEURON:
+        # that selects NEURON 8.2.6 in the wrapper while the fresh cache child
+        # silently selects NEURON 9, producing a false preflight/provenance
+        # identity and an ABI mismatch with the saved gap mechanisms.
         python_paths = [str(self.workspace.phase2_neuron), str(self.workspace.gfc_root)]
-        # The validated Escape-SIZ environment uses NEURON 8.2.6 from the
-        # application bundle. /opt/anaconda3 also contains NEURON 9, so the
-        # module path must be explicit and its effective identity is probed.
-        neuron_bundle_python = Path("/Applications/NEURON/lib/python")
-        if neuron_bundle_python.is_dir():
-            python_paths.append(str(neuron_bundle_python))
         env = {
             "PATH": external_runtime_path(config.python_executable),
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -431,6 +483,8 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             "MPLCONFIGDIR": str(output / "_runtime" / "matplotlib"),
             "NEURON_MODULE_OPTIONS": "-nogui",
             "PYTHONNOUSERSITE": "1",
+            "DIGIFLY_GAP_MECH_DIR": str(self.gap_mechanism_root.resolve()),
+            "DIGIFLY_APP_TEST_STUBS": "0",
         }
         expected = self.workflow_paths(config, output_root=output_root)["summary_path"]
         working_directory = Path(output_root).expanduser().resolve()
@@ -447,12 +501,23 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             runtime_safe_fields=EscapeSizConfig.RUNTIME_SAFE_FIELDS,
         )
 
-    def latest_result(self, config: EscapeSizConfig | None = None) -> ResultRecord | None:
+    def latest_result(
+        self,
+        config: EscapeSizConfig | None = None,
+        *,
+        output_root: str | Path | None = None,
+    ) -> ResultRecord | None:
         if config is not None:
-            summary = self.workflow_paths(config)["summary_path"]
+            summary = self.workflow_paths(config, output_root=output_root)["summary_path"]
             if summary.is_file():
                 return load_escape_siz_result(summary)
-        summaries = list(self.workspace.gfc_root.glob("runs/*/*_summary.json"))
+            return None
+        result_root = (
+            self.workspace.gfc_root
+            if output_root is None
+            else Path(output_root).expanduser().resolve() / "escape_siz"
+        )
+        summaries = list(result_root.glob("runs/*/*_summary.json"))
         if not summaries:
             return None
         latest = max(summaries, key=lambda path: path.stat().st_mtime)
@@ -469,16 +534,25 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
                 blocking=True,
                 path=str(executable),
             )
+        plotter_name = self.POSTSYNAPTIC_3D_NAME.removesuffix(".py") if config.postsynaptic_only_3d_plots else ""
         code = (
             "import _ctypes, ctypes, importlib, json; "
             "import matplotlib, neuron, numpy, pandas; "
+            "from neuron import h, load_mechanisms; "
+            f"gap_loaded=bool(load_mechanisms({str(self.gap_mechanism_root)!r})); "
             f"runner=importlib.import_module({self.RUNNER_NAME.removesuffix('.py')!r}); "
+            f"plotter=importlib.import_module({plotter_name!r}) if {bool(plotter_name)!r} else None; "
             "print(json.dumps({"
             "'neuron_version': getattr(neuron, '__version__', 'unknown'), "
             "'neuron_path': getattr(neuron, '__file__', 'unknown'), "
             "'pandas_version': getattr(pandas, '__version__', 'unknown'), "
             "'numpy_version': getattr(numpy, '__version__', 'unknown'), "
             "'runner_path': getattr(runner, '__file__', 'unknown'), "
+            "'plotter_path': getattr(plotter, '__file__', None) if plotter else None, "
+            "'gap_loaded': gap_loaded, "
+            "'gap': bool(hasattr(h, 'Gap')), "
+            "'rect_gap': bool(hasattr(h, 'RectGap')), "
+            "'hetero_rect_gap': bool(hasattr(h, 'HeteroRectGap')), "
             "'_ctypes_path': getattr(_ctypes, '__file__', 'unknown'), "
             "'ctypes_path': getattr(ctypes, '__file__', 'unknown')}))"
         )
@@ -522,6 +596,47 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             identity = json.loads(completed.stdout.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):
             identity = {"neuron_version": "unknown", "neuron_path": completed.stdout.strip()}
+        missing_mechanisms = [
+            name
+            for name, key in (
+                ("Gap", "gap"),
+                ("RectGap", "rect_gap"),
+                ("HeteroRectGap", "hetero_rect_gap"),
+            )
+            if not identity.get(key)
+        ]
+        if missing_mechanisms:
+            return PreflightCheck(
+                key="neuron_runtime",
+                title="Native NEURON worker stack",
+                state=CheckState.FAIL,
+                detail=(
+                    f"NEURON {identity.get('neuron_version')} at {identity.get('neuron_path')} could not load "
+                    f"the required input-only mechanisms: {', '.join(missing_mechanisms)}."
+                ),
+                blocking=True,
+                path=str(executable),
+            )
+        if (
+            config.preset == "ablation_notebook_active"
+            and str(identity.get("neuron_version")) != ABLATION_NOTEBOOK_NEURON_VERSION
+        ):
+            return PreflightCheck(
+                key="neuron_runtime",
+                title="Native NEURON worker stack",
+                state=CheckState.FAIL,
+                detail=(
+                    f"The active Ablation notebook used NEURON {ABLATION_NOTEBOOK_NEURON_VERSION}; "
+                    f"the configured worker resolved {identity.get('neuron_version')} at {identity.get('neuron_path')}."
+                ),
+                blocking=True,
+                path=str(executable),
+            )
+        plotter_detail = (
+            f"; notebook plotter {identity.get('plotter_path')}"
+            if config.postsynaptic_only_3d_plots
+            else ""
+        )
         return PreflightCheck(
             key="neuron_runtime",
             title="Native NEURON worker stack",
@@ -529,9 +644,79 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             detail=(
                 f"NEURON {identity.get('neuron_version')} from {identity.get('neuron_path')}; "
                 f"pandas {identity.get('pandas_version')}; NumPy {identity.get('numpy_version')}; "
-                f"native runner {identity.get('runner_path')}; _ctypes {identity.get('_ctypes_path')}."
+                f"Gap/RectGap/HeteroRectGap loaded read-only from {self.gap_mechanism_root}; "
+                f"native runner {identity.get('runner_path')}{plotter_detail}; _ctypes {identity.get('_ctypes_path')}."
             ),
             path=str(executable),
+        )
+
+    def _gap_mechanism_metadata_check(self, config: EscapeSizConfig) -> PreflightCheck:
+        """Block before native code can auto-recompile mechanisms in the input tree."""
+        root = self.gap_mechanism_root
+        sentinel = root / ".digifly_gap_mechanisms.json"
+        sources = tuple(root / name for name in ("Gap.mod", "RectGap.mod", "HeteroRectGap.mod"))
+        libraries = tuple(root.glob("*/libnrnmech.*")) + tuple(root.glob("libnrnmech.*"))
+        missing = [str(path) for path in (*sources, sentinel) if not path.is_file()]
+        if not libraries:
+            missing.append(str(root / platform.machine() / "libnrnmech.dylib"))
+        if missing:
+            return PreflightCheck(
+                key="gap_mechanism_metadata",
+                title="Input-only gap mechanisms",
+                state=CheckState.FAIL,
+                detail="Missing required mechanism inputs: " + ", ".join(missing),
+                blocking=True,
+                path=str(root),
+            )
+        try:
+            payload = json.loads(sentinel.read_text(encoding="utf-8"))
+            recorded_sources = dict(payload.get("sources") or {})
+            stale = [
+                source.name
+                for source in sources
+                if int(recorded_sources.get(source.name, -1)) != int(source.stat().st_mtime_ns)
+            ]
+            recorded_version = str((payload.get("neuron_runtime") or {}).get("neuron_version") or "")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return PreflightCheck(
+                key="gap_mechanism_metadata",
+                title="Input-only gap mechanisms",
+                state=CheckState.FAIL,
+                detail=f"Could not verify the gap compile sentinel without writing to Digifly Public: {exc}",
+                blocking=True,
+                path=str(sentinel),
+            )
+        expected_version = (
+            ABLATION_NOTEBOOK_NEURON_VERSION
+            if config.preset == "ablation_notebook_active"
+            else recorded_version
+        )
+        if stale or recorded_version != expected_version:
+            reasons = []
+            if stale:
+                reasons.append("changed MOD source(s): " + ", ".join(stale))
+            if recorded_version != expected_version:
+                reasons.append(f"compiled for NEURON {recorded_version or 'unknown'}, expected {expected_version}")
+            return PreflightCheck(
+                key="gap_mechanism_metadata",
+                title="Input-only gap mechanisms",
+                state=CheckState.FAIL,
+                detail=(
+                    "; ".join(reasons)
+                    + ". The app refuses native auto-compilation inside Digifly Public; rebuild an app-owned copy first."
+                ),
+                blocking=True,
+                path=str(root),
+            )
+        return PreflightCheck(
+            key="gap_mechanism_metadata",
+            title="Input-only gap mechanisms",
+            state=CheckState.PASS,
+            detail=(
+                f"Sentinel and all three MOD source mtimes match NEURON {recorded_version}; "
+                "the app child guard disables native recompilation in Digifly Public."
+            ),
+            path=str(root),
         )
 
     def _contact_count_check(self) -> PreflightCheck:
@@ -544,13 +729,18 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
                 blocking=True,
             )
         counts: dict[tuple[int, int], int] = {}
+        all_pairs: set[tuple[int, int]] = set()
+        total_rows = 0
         try:
+            digest = hashlib.sha256(self.edge_path.read_bytes()).hexdigest()
             with self.edge_path.open(newline="", encoding="utf-8") as handle:
                 reader = csv.DictReader(handle)
                 if not {"pre_id", "post_id"}.issubset(reader.fieldnames or []):
                     raise ValueError("pre_id/post_id columns are absent")
                 for row in reader:
                     pair = (int(float(row["pre_id"])), int(float(row["post_id"])))
+                    total_rows += 1
+                    all_pairs.add(pair)
                     if pair in CANONICAL_VISIBLE_COUNTS:
                         counts[pair] = counts.get(pair, 0) + 1
         except (OSError, ValueError, TypeError) as exc:
@@ -566,9 +756,26 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             for pair, expected in CANONICAL_VISIBLE_COUNTS.items()
             if counts.get(pair, 0) != expected
         }
+        if total_rows != EXPECTED_GFC_CONTACT_ROWS:
+            mismatches[(0, 0)] = (total_rows, EXPECTED_GFC_CONTACT_ROWS)
+        if len(all_pairs) != EXPECTED_GFC_CONTACT_PAIRS:
+            mismatches[(0, 1)] = (len(all_pairs), EXPECTED_GFC_CONTACT_PAIRS)
+        if digest != EXPECTED_GFC_CONTACT_SHA256:
+            return PreflightCheck(
+                key="contact_policy",
+                title="Visible-contact policy",
+                state=CheckState.FAIL,
+                detail=(
+                    f"Contact table hash is {digest}; expected {EXPECTED_GFC_CONTACT_SHA256}. "
+                    "Refuse to run against an unversioned contact-table change."
+                ),
+                blocking=True,
+                path=str(self.edge_path),
+            )
         if mismatches:
+            labels = {(0, 0): "rows", (0, 1): "unique pairs"}
             detail = "; ".join(
-                f"{pre}->{post}: found {actual}, expected {expected}"
+                f"{labels.get((pre, post), f'{pre}->{post}')}: found {actual}, expected {expected}"
                 for (pre, post), (actual, expected) in sorted(mismatches.items())
             )
             return PreflightCheck(
@@ -583,7 +790,8 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             title="Visible-contact policy",
             state=CheckState.PASS,
             detail=(
-                f"Verified {CONTACT_COUNT_POLICY} and all seven canonical GF→PSI/TTMn pair counts."
+                f"Verified {CONTACT_COUNT_POLICY}: {total_rows} rows across {len(all_pairs)} GF→target pairs, "
+                f"all seven canonical GF→PSI/TTMn counts, SHA-256 {digest}."
             ),
             path=str(self.edge_path),
         )
@@ -642,18 +850,95 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
             path=str(swc_root),
         )
 
-    def _camera_preset_check(self) -> PreflightCheck:
+    def _master_edge_database_check(self) -> PreflightCheck:
+        try:
+            case = json.loads(self.base_case_path.read_text(encoding="utf-8"))
+            database = Path(str((case.get("edge_cache") or {}).get("db_path") or "")).expanduser()
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+            return PreflightCheck(
+                key="master_edge_database",
+                title="Master chemical-edge database",
+                state=CheckState.FAIL,
+                detail=f"Could not resolve the separated-GF edge source: {exc}",
+                blocking=True,
+                path=str(self.base_case_path),
+            )
+        if not database.is_file():
+            return PreflightCheck(
+                key="master_edge_database",
+                title="Master chemical-edge database",
+                state=CheckState.FAIL,
+                detail=f"Separated GFs require the missing edge database: {database}",
+                blocking=True,
+                path=str(database),
+            )
+        try:
+            with database.open("rb") as handle:
+                signature = handle.read(16)
+            size_gb = database.stat().st_size / (1024**3)
+        except OSError as exc:
+            return PreflightCheck(
+                key="master_edge_database",
+                title="Master chemical-edge database",
+                state=CheckState.FAIL,
+                detail=f"Could not read {database}: {exc}",
+                blocking=True,
+                path=str(database),
+            )
+        if signature != b"SQLite format 3\x00":
+            return PreflightCheck(
+                key="master_edge_database",
+                title="Master chemical-edge database",
+                state=CheckState.FAIL,
+                detail=f"The configured edge source is not a SQLite database: {database}",
+                blocking=True,
+                path=str(database),
+            )
+        return PreflightCheck(
+            key="master_edge_database",
+            title="Master chemical-edge database",
+            state=CheckState.PASS,
+            detail=f"Readable {size_gb:.2f} GB SQLite source for the app-owned separated-GF edge table.",
+            path=str(database),
+        )
+
+    def _camera_preset_check(self, *, required: bool = False) -> PreflightCheck:
         exists = self.camera_preset_path.is_file()
+        valid = False
+        schema_detail = ""
+        if exists:
+            try:
+                payload = json.loads(self.camera_preset_path.read_text(encoding="utf-8"))
+                camera = payload.get("camera") if isinstance(payload, dict) else None
+                for key in ("position", "focal_point", "view_up"):
+                    values = camera.get(key) if isinstance(camera, dict) else None
+                    if not isinstance(values, list) or len(values) != 3:
+                        raise ValueError(f"camera.{key} must be a three-number list")
+                    if not all(math.isfinite(float(value)) for value in values):
+                        raise ValueError(f"camera.{key} contains a non-finite value")
+                valid = True
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                schema_detail = str(exc)
         return PreflightCheck(
             key="camera_preset",
             title="Saved-view anatomy camera",
-            state=CheckState.WARNING,
+            state=(
+                CheckState.WARNING
+                if valid
+                else (CheckState.FAIL if required else CheckState.WARNING)
+            ),
             detail=(
                 f"External camera preset is available at {self.camera_preset_path}; it must be promoted to a versioned app asset."
-                if exists
-                else "The saved VIP_Glia camera preset is missing. Canonical heatmaps must refuse raw-node-order fallback."
+                if valid
+                else (
+                    f"The saved VIP_Glia camera preset is invalid ({schema_detail}); the requested Ablation-notebook panels cannot be reproduced."
+                    if exists
+                    else "The saved VIP_Glia camera preset is missing; the requested Ablation-notebook panels cannot be reproduced."
+                    if required
+                    else "The saved VIP_Glia camera preset is missing. Canonical heatmaps must refuse raw-node-order fallback."
+                )
             ),
-            blocking=False,
+            blocking=required and not valid,
             path=str(self.camera_preset_path),
         )
 

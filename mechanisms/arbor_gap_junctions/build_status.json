@@ -1,0 +1,30 @@
+{
+  "checked_at": "2026-08-02",
+  "runtime": {
+    "arbor_version": "0.12.2",
+    "platform": "macOS arm64",
+    "python": "/opt/anaconda3/bin/python"
+  },
+  "checks": {
+    "generated_cpu_kernel_behavior": "pass",
+    "modcc_analysis": "pass",
+    "modcc_cpu_source_generation": "pass",
+    "shared_catalogue_link": "pass",
+    "load_catalogue": "pass",
+    "mechanism_contract": "pass",
+    "actual_two_cell_gap": "pass",
+    "actual_two_cell_rect_gap": "pass",
+    "actual_two_cell_hetero_rect_gap": "pass"
+  },
+  "build": {
+    "arbor_source_revision": "77a59e9f1cb8a604b2ed25d4beeaa555ba0ad400",
+    "compiler": "Apple clang 16.0.0 (clang-1600.0.26.6)",
+    "catalogue_sha256": "2d3939fbd6cd60a74b69c0b8d7dbab9f41ca34ae9c9a7a0622732dad696cfe4b",
+    "method": "Arbor 0.12.2 was rebuilt from source with the local compiler before linking the catalogue."
+  },
+  "resolved_blocker": {
+    "code": "apple_llvm_bitcode_version_mismatch",
+    "detail": "The installed wheel carried Apple LLVM 17 bitcode while the local linker read LLVM 16. Rebuilding Arbor 0.12.2 with the local compiler produced a loadable ABI-compatible catalogue."
+  },
+  "scientific_status": "Source equations, generated CPU kernels, catalogue loading, mechanism schema, and real two-cell Arbor behavior are validated. Full-network NEURON-Arbor equivalence remains an empirical audit result."
+}

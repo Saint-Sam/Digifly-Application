@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import csv
+import hashlib
+import json
 import os
 from pathlib import Path
+import sqlite3
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QVector3D
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from digifly_app.core.circuit import (
     CircuitSpec,
@@ -48,6 +53,59 @@ from digifly_app.ui import circuit_viewport as circuit_viewport_module
 class _OverviewStub:
     def __init__(self, root: Path):
         self.workspace_edit = QLineEdit(str(root))
+
+
+def _pair_ui_workspace(tmp_path: Path) -> Path:
+    public = tmp_path / "Digifly Public"
+    swc_root = public / "Phase 1" / "manc_v1.2.1" / "export_swc"
+    for neuron_id in ("100", "200", "300", "400"):
+        path = swc_root / "IN" / "PairTest" / neuron_id / f"{neuron_id}_healed.swc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        x = int(neuron_id) / 100.0
+        path.write_text(
+            f"1 1 {x} 0 0 1 -1\n2 2 {x + 1} 0 0 0.5 1\n",
+            encoding="utf-8",
+        )
+    edge_root = swc_root / "edges"
+    edge_root.mkdir(parents=True)
+    with sqlite3.connect(edge_root / "master_edges_cache.sqlite") as connection:
+        connection.execute("CREATE TABLE edges (pre_id INTEGER, post_id INTEGER)")
+        connection.executemany(
+            "INSERT INTO edges VALUES (?, ?)",
+            ((100, 200), (100, 200), (200, 100)),
+        )
+
+    bundle = (
+        public
+        / "Phase 2_Arbor_staging"
+        / "Projects"
+        / "Escape-SIZ"
+        / "arbor_inputs"
+        / "giant_fiber_ablation"
+    )
+    bundle.mkdir(parents=True)
+    gap_csv = bundle / "gap_contacts_arbor.csv"
+    with gap_csv.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=("pre_id", "post_id", "g_uS"))
+        writer.writeheader()
+        writer.writerow({"pre_id": 100, "post_id": 200, "g_uS": 0.001})
+    (bundle / "manifest.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "kind": "gap_contacts",
+                        "path": gap_csv.name,
+                        "row_count": 1,
+                        "selected_neuron_ids": [100, 200, 300],
+                        "sha256": hashlib.sha256(gap_csv.read_bytes()).hexdigest(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return public
 
 
 def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp_path):
@@ -146,6 +204,72 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
 
         with pytest.raises(ValueError, match="Unsupported"):
             page.set_selected_engine_key("made-up-engine")
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_two_neuron_pair_panel_tracks_recency_overrides_and_edge_evidence(tmp_path):
+    public = _pair_ui_workspace(tmp_path)
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(public))
+    try:
+        page.query_edit.setText("100, 200, 300, 400")
+        page.assemble_circuit()
+        assert page.viewport.neuron_count == 4
+        assert page.pair_panel.isHidden()
+
+        page.viewport.set_neuron_selection(("100", "200"))
+        assert tuple(page.viewport.selected_neuron_ids) == ("100", "200")
+        assert not page.pair_panel.isHidden()
+        readout = page.pair_connection_readout.text()
+        assert "2 100 → 200" in readout
+        assert "1 200 → 100" in readout
+        assert "1 contact row" in readout
+        assert "bidirectional" in readout
+        assert page.chemical_pair_check.isEnabled()
+        assert page.gap_pair_check.isEnabled()
+        assert page.chemical_pair_check.isChecked()
+        assert page.gap_pair_check.isChecked()
+
+        page.chemical_pair_check.click()
+        page.gap_pair_check.click()
+        override = page.spec.connection_override("200", "100")
+        assert override is not None
+        assert override.chemical_enabled is False
+        assert override.gap_junction_enabled is False
+        restored = CircuitSpec.from_dict(page.circuit_spec().to_dict())
+        assert restored.connection_override("100", "200") == override
+
+        # A third selection advances the two-item recency window rather than
+        # leaving an ambiguous three-neuron panel.
+        page.viewport.toggle_neuron_selection("300")
+        assert tuple(page.viewport.selected_neuron_ids) == ("200", "300")
+        assert not page.pair_panel.isHidden()
+        assert "zero in the loaded source" in page.pair_connection_readout.text()
+        assert not page.chemical_pair_check.isEnabled()
+        assert not page.gap_pair_check.isEnabled()
+
+        # Command/Control-toggle semantics deselect an already selected cell.
+        page.viewport.toggle_neuron_selection("300")
+        assert tuple(page.viewport.selected_neuron_ids) == ("200",)
+        assert page.pair_panel.isHidden()
+
+        # A neuron outside the validated Arbor bundle is unknown, not a gap zero.
+        page.viewport.set_neuron_selection(("300", "400"))
+        assert "data unavailable" in page.pair_connection_readout.text()
+        assert "unknown, not zero" in page.pair_connection_readout.text()
+        assert not page.gap_pair_check.isEnabled()
+
+        page.viewport.setFocus()
+        QTest.keyClick(page.viewport, Qt.Key.Key_Escape)
+        assert tuple(page.viewport.selected_neuron_ids) == ()
+        assert page.pair_panel.isHidden()
+
+        page.viewport.set_neuron_selection(("100", "200"))
+        page.findChild(QPushButton, "ClearPairSelectionButton").click()
+        assert tuple(page.viewport.selected_neuron_ids) == ()
+        assert page.pair_panel.isHidden()
     finally:
         page.close()
         application.processEvents()

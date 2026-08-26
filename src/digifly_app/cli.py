@@ -27,7 +27,9 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--workspace", required=True)
     plan.add_argument("--python", default="/opt/anaconda3/bin/python")
     plan.add_argument("--output", default=str(Path.cwd() / "workspace"))
-    plan.add_argument("--canonical-dual-gf", action="store_true")
+    preset = plan.add_mutually_exclusive_group()
+    preset.add_argument("--ablation-notebook", action="store_true")
+    preset.add_argument("--canonical-dual-gf", action="store_true")
     plan.add_argument("--json", action="store_true")
     return parser
 
@@ -38,7 +40,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         _parser().print_help()
         return 2
     workspace = DigiflyWorkspace(args.workspace)
-    config = EscapeSizConfig.canonical_dual_gf() if getattr(args, "canonical_dual_gf", False) else EscapeSizConfig()
+    if getattr(args, "ablation_notebook", False):
+        config = EscapeSizConfig.ablation_notebook_active()
+    elif getattr(args, "canonical_dual_gf", False):
+        config = EscapeSizConfig.canonical_dual_gf()
+    else:
+        config = EscapeSizConfig.ablation_notebook_active()
     config.python_executable = args.python
     adapter = NeuronEscapeSizAdapter(workspace)
     if args.command == "plan":

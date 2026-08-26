@@ -15,12 +15,12 @@ exec_directory = .
 # path to the project file relative to project_dir
 project_file =
 
-# application icon
-icon =
+# application icon (copied into the no-space staging root by build_macos.sh)
+icon = pyside_icon.icns
 
 [python]
 
-# python path
+# python path (resolved inside the no-space staging root by build_macos.sh)
 python_path = .venv/bin/python
 
 # python packages to install
@@ -68,7 +68,7 @@ macos.permissions =
 mode = standalone
 
 # specify any extra nuitka arguments
-extra_args = --quiet --assume-yes-for-downloads --lto=no --jobs=4 --noinclude-qt-translations --include-data-file=src/digifly_app/workers/escape_siz_worker.py=digifly_app/workers/escape_siz_worker.py --include-data-file=docs/ARCHITECTURE.md=docs/ARCHITECTURE.md --include-data-file=README.md=README.md
+extra_args = --quiet --assume-yes-for-downloads --lto=no --jobs=4 --noinclude-qt-translations --include-data-file=src/digifly_app/workers/escape_siz_worker.py=digifly_app/workers/escape_siz_worker.py --include-data-file=src/digifly_app/workers/arbor_escape_siz_worker.py=digifly_app/workers/arbor_escape_siz_worker.py --include-data-file=src/digifly_app/workers/arbor_source_soma_diagnostic_worker.py=digifly_app/workers/arbor_source_soma_diagnostic_worker.py --include-data-file=src/digifly_app/workers/arbor_gap_bridge.py=digifly_app/workers/arbor_gap_bridge.py --include-data-file=src/digifly_app/workers/arbor_legacy_cv_bridge.py=digifly_app/workers/arbor_legacy_cv_bridge.py --include-data-file=src/digifly_app/workers/exact_gap_equivalence_auditor.py=digifly_app/workers/exact_gap_equivalence_auditor.py --include-data-dir=mechanisms/arbor_gap_junctions=mechanisms/arbor_gap_junctions --include-data-dir=mechanisms/augustin_2019=mechanisms/augustin_2019 --include-data-file=scripts/build_arbor_gap_catalogue.py=scripts/build_arbor_gap_catalogue.py --include-data-file=docs/ARCHITECTURE.md=docs/ARCHITECTURE.md --include-data-file=README.md=README.md
 
 [buildozer]
 

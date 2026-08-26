@@ -36,5 +36,10 @@ class EngineAdapter(ABC, Generic[ConfigT]):
         raise NotImplementedError
 
     @abstractmethod
-    def latest_result(self, config: ConfigT | None = None) -> ResultRecord | None:
+    def latest_result(
+        self,
+        config: ConfigT | None = None,
+        *,
+        output_root: str | Path | None = None,
+    ) -> ResultRecord | None:
         raise NotImplementedError

@@ -3,8 +3,9 @@
 Digifly App is a standalone desktop workbench for configuring, validating,
 running, and reviewing Digifly experiments. It does not modify Digifly's source
 code. Instead, it opens a Digifly workspace; the implemented Escape-SIZ
-workflow delegates execution through an explicit adapter, while newer design
-pages remain previews until their adapters pass capability and comparison gates.
+workflows delegate execution through explicit NEURON and Arbor adapters, while
+the generic Circuit Builder remains a preview until each requested mechanism
+and mapping passes an adapter's capability and comparison gates.
 
 The first guided workflow configures and wraps the documented Escape-SIZ NEURON
 GFC/contact-site sodium recipe and is intended to reproduce the work described
@@ -14,8 +15,10 @@ roots, selects morphologies by neuron ID or path-derived type/family, renders
 soma-point or full-skeleton representations, and stores a classic-HH draft plus
 stable SWC child-node selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
 identities, regional conductance densities, and a separate gap-junction edge
-policy. It does not yet load chemical/gap connectivity or translate the design
-into an executable Arbor, NEURON, or BMTK model.
+policy. It does not yet load chemical/gap connectivity or translate an
+arbitrary Circuit Builder design into an executable Arbor, NEURON, or BMTK
+model. The dedicated Escape-SIZ Arbor comparison is a separate, locked adapter
+for the active 49-cell Ablation-notebook recipe.
 
 ## What the first milestone includes
 
@@ -32,12 +35,18 @@ into an executable Arbor, NEURON, or BMTK model.
 - Editable cell-set-, neuron-, and SWC-segment classic-HH drafts, including Na,
   K, and Ca reversal potentials, which remain capability-gated until an
   execution adapter validates them.
-- A versioned catalog for all eight native Phase 2 membrane surrogates:
+- A versioned catalog for the three Augustin-2019 GF mechanisms and all eight
+  native Phase 2 membrane surrogates. The exact GF set is `nat`, `nap`, and `k`;
+  the Phase 2 set is
   `na16a`, `na14a`, `kv14sh`, `kv42shal`, `kv21shab`, `kv31shaw`,
   `cav21cac`, and `cav31t`. Saved assignments include a stable catalog ID,
   source-relative path, and SHA-256 of the exact `.mod` source.
-- Named classic-HH, Phase 2 Para+Shab, Phase 2 channel-family, and Escape-SIZ
-  Para+HH-K profiles, plus fully custom multi-channel stacks with separate soma
+- A named **Augustin 2019 GF (exact)** profile keeps ELeak −85 mV, ENa +65 mV,
+  EK −74 mV, the three published conductances, 25 °C, and −65 mV initialization
+  together. It reports the model's predicted zero-current equilibrium separately
+  (−74.670 mV); initialization is not labeled as rest. Classic-HH, Phase 2
+  Para+Shab, Phase 2 channel-family, and Escape-SIZ Para+HH-K profiles remain
+  available, plus fully custom multi-channel stacks with separate soma
   and branch densities. A named profile applies its HH and native-channel values
   atomically; editing either half marks it Custom.
 - Selected-neuron, selected-SWC-segment, cell-set-default, and explicit
@@ -51,6 +60,11 @@ into an executable Arbor, NEURON, or BMTK model.
 - Non-destructive reusable morphology bundles containing an unchanged SWC,
   biophysics sidecar, provenance manifest, and SHA-256 identity.
 - An Escape-SIZ preset matching the latest documented GFC2 experiment.
+- A dedicated Arbor 0.12.2 adapter for the locked 49-cell Escape-SIZ Ablation
+  comparison, with paired gap-enabled/gap-disabled plans and app-owned outputs.
+- App-owned Arbor NMODL sources for `Gap`, `RectGap`, and `HeteroRectGap`, plus
+  a fail-closed worker bridge that loads the compiled catalogue under the
+  `digifly_` prefix and never substitutes Arbor's built-in `gj`.
 - Explicit separation of build-time and runtime-safe controls.
 - Cache, contact-policy, environment, disk, and output preflight checks.
 - Exact command preview with no shell interpolation.
@@ -165,6 +179,13 @@ as read-only inputs while redirecting caches, requests, simulations, statuses,
 and plots beneath the configured app output root. A new cache build is always an
 explicit opt-in because the validated 49-cell recipe is expensive.
 
+The Arbor comparison has its own app-owned worker boundary. Preflight loads and
+inspects the compiled `digifly_gap` mechanism catalogue in the selected Arbor
+runtime before a run is allowed. The catalogue is built for Arbor 0.12.2 and the
+current compiler/platform ABI, then reused only from the app output runtime
+cache under `_runtime/arbor_catalogues`; it is not treated as portable across
+Arbor versions or architectures.
+
 ## Repository status
 
 This folder is deliberately separate from `Digifly Public` and is ready to
@@ -183,15 +204,44 @@ build is intentionally not bundled or auto-started: it is an explicit opt-in,
 needs roughly 4 GB for the two legacy recording tables, and is the next
 scientific acceptance run.
 
-`Phase 2_Arbor_staging` is a working Digifly runtime, not a placeholder. Four
-curated scenarios pass archived compact-NEURON comparison baselines using
-built-in HH/passive mechanisms, `exp2syn`, and ohmic `gj`. That evidence does
-not validate arbitrary circuits, biological equivalence, Drosophila MOD-channel
-parity, or true heterotypic rectifying gaps. The app therefore defaults new
-designs to classic HH while exposing the native profiles explicitly; selecting
-a native NMODL channel under the Arbor target produces an unsupported warning
-instead of a silent approximation. Rectifying GJ choices are explicitly blocked
-for Arbor; `HeteroRectGap` is preserved as the current kinetic NEURON policy and
-is never presented as equivalent to Arbor's built-in ohmic `gj`. Translating the Circuit Builder design into capability-checked
+`Phase 2_Arbor_staging` is a working Digifly runtime, not a placeholder. In
+addition to its earlier compact-NEURON baselines, Digifly App now implements a
+dedicated Arbor 0.12.2 execution path for the active 49-cell Escape-SIZ Ablation
+comparison. It validates the locked inputs, removes the 99 direct-GF chemical
+rows to retain 2,331 rows, preserves the 959 gap-contact rows, and runs paired
+gap-enabled and gap-disabled conditions beneath an app-owned output boundary.
+
+The app-owned `digifly_gap` catalogue contains Arbor ports of `Gap`, `RectGap`,
+and `HeteroRectGap`. For the locked Ablation comparison, the worker bridge uses
+`digifly_hetero_rect_gap` with the notebook's voltage-dependent gate, residual
+floor, endpoint orientation, and opening/closing time constants. This is an
+equation and parameter port, not a claim of biological or finite-step numerical
+equivalence: Arbor advances the gate with `cnexp`, whereas the NEURON source
+uses `derivimplicit`. The first empirical 49-cell NEURON–Arbor audit has now
+run. Catalogue, implementation, placement, and provenance checks pass, but the
+overall verdict is `NOT_YET_EQUIVALENT`: all 11 stimulated source somas fail the
+required gap-disabled baseline-readiness gate before the gap mechanism can be
+judged. A prescribed-voltage solver replay puts the `cnexp`/`derivimplicit`
+difference at about 0.036% of peak junction current. Production runs remain on
+the previously completed `every_segment` policy. An experimental
+`legacy_neuron_section_explicit` boundary/soma-site bridge is retained only for
+bounded, single-thread diagnostics. The original bridge encoded thousands of
+boundaries as one recursively folded locset and a four-thread 49-cell setup
+exited with `SIGBUS`. Its replacement builds a balanced binary locset with the
+same CV boundaries; an 11-source four-thread construction A/B no longer crashes,
+and a full 49-cell four-thread 0.02 ms construction/run probe also completes.
+The policy remains quarantined from production until the complete threaded
+diagnostic is requalified.
+It also remains a compatibility candidate rather than topology equivalence
+because Arbor adds zero-area fork CVs and retains the staged tree's tiny root
+stub. A one-thread 49-cell, one-pulse diagnostic completed, but its corrected
+dense-grid comparison again passed 0 of 11 source somas despite high waveform
+correlations. The next acceptance step is resolving that upstream absolute-
+voltage mismatch. Result metadata keeps `equivalence_claim` false.
+
+The custom-gap adapter does not make arbitrary Circuit Builder designs runnable
+and does not establish parity for the other native Drosophila membrane MOD
+channels. Unsupported generic mappings remain capability-gated instead of being
+silently approximated. Translating the Circuit Builder design into validated
 execution plans is the next integration boundary. VND remains an optional
 external viewer rather than a simulator dependency.

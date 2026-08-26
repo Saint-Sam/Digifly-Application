@@ -231,10 +231,10 @@ def _probe_neuron_runtime(python_executable: str, phase2_root: Path) -> tuple[Ch
     executable = Path(python_executable).expanduser()
     if not executable.is_file():
         return CheckState.FAIL, f"Python executable not found: {executable}"
+    # Probe the selected scientific interpreter itself.  Escape-SIZ's active
+    # notebook uses /opt/anaconda3 NEURON 9; appending the separate NEURON.app
+    # Python tree would report a runtime that the cache child does not use.
     paths = [str(phase2_root)]
-    bundled = Path("/Applications/NEURON/lib/python")
-    if bundled.is_dir():
-        paths.append(str(bundled))
     code = (
         "import json, neuron; "
         "print(json.dumps({'version': getattr(neuron, '__version__', 'unknown'), "

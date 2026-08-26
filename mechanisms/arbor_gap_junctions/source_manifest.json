@@ -1,0 +1,32 @@
+{
+  "catalogue_name": "digifly_gap",
+  "mechanisms": {
+    "gap": {
+      "arbor_source": "gap.mod",
+      "arbor_source_sha256": "2b88d95a628abd21be48d550a7f387a0cefe1b65a4c09e43d19d06b11701aec2",
+      "neuron_source": "Phase 2/data/Gap.mod",
+      "neuron_source_sha256": "e3ab9d0a37811314d3baa8461050e6d65fbb9b8e163ff6618a6d9f2f2549c1f2"
+    },
+    "hetero_rect_gap": {
+      "arbor_source": "hetero_rect_gap.mod",
+      "arbor_source_sha256": "b4ded50b979589f218ad9a7366b994be3ed33bb5473eff5f908b1f5749a7ba3d",
+      "neuron_source": "Phase 2/data/HeteroRectGap.mod",
+      "neuron_source_sha256": "22b505af799076bb8079f204d222adfa72432f8609bd89fd050f7ffb325c9c2f"
+    },
+    "rect_gap": {
+      "arbor_source": "rect_gap.mod",
+      "arbor_source_sha256": "e2164233d1230be646e6e66a5307290083d2a3bc4fb23ec9062213bc0cd9558d",
+      "neuron_source": "Phase 2/data/RectGap.mod",
+      "neuron_source_sha256": "d9fa308ff0433ad0eb424017fff4384d5c06915ca9a2cbe25485ad176db3a8d6"
+    }
+  },
+  "port_contract": {
+    "arbor_conductance_unit": "uS",
+    "arbor_current_unit": "nA",
+    "neuron_conductance_unit": "nS",
+    "neuron_to_arbor_conductance_scale": 0.001,
+    "peer_voltage": "v_peer",
+    "source_kind": "JUNCTION_PROCESS"
+  },
+  "source_tree_policy": "Digifly Public is read-only input; these files are independent Arbor ports, not shared binaries."
+}

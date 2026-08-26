@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -33,7 +34,13 @@ from digifly_app.core.circuit import (
     NeuronQuery,
     cell_design_profile,
 )
-from digifly_app.core.connectomes import ConnectomeCatalog, NeuronRecord, discover_connectomes
+from digifly_app.core.connectomes import (
+    ConnectionClassSummary,
+    ConnectomeCatalog,
+    ConnectomeEdgeCatalog,
+    NeuronRecord,
+    discover_connectomes,
+)
 from digifly_app.core.morphology import (
     Morphology,
     load_custom_biophysics,
@@ -42,6 +49,7 @@ from digifly_app.core.morphology import (
     save_custom_morphology,
     sha256_file,
 )
+from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
@@ -124,11 +132,14 @@ class CircuitBuilderPage(QWidget):
         self.loaded_morphologies: dict[str, Morphology] = {}
         self._sources: tuple[ConnectomeRef, ...] = ()
         self._catalog_cache: dict[tuple[str, str], ConnectomeCatalog] = {}
+        self._edge_catalog: ConnectomeEdgeCatalog | None = None
         self._restoring_controls = False
         self._setting_mechanism_controls = False
         self._unlisted_channel_assignments: dict[str, ChannelAssignment] = {}
         self._known_channel_parameters: dict[str, dict[str, float]] = {}
         self._mixed_selection_design = False
+        self._setting_connection_controls = False
+        self._syncing_neuron_table_selection = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 22, 28, 24)
@@ -243,6 +254,7 @@ class CircuitBuilderPage(QWidget):
             lambda: self.viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
         )
         self.viewport.neuron_selected.connect(self._neuron_selected)
+        self.viewport.neurons_selected.connect(self._neurons_selected)
         self.viewport.compartments_changed.connect(self._compartments_changed)
         self.viewport.isolation_changed.connect(self._isolation_changed)
         self.viewport.display_mode_changed.connect(self._display_mode_changed)
@@ -254,9 +266,11 @@ class CircuitBuilderPage(QWidget):
         self.neuron_table.setHorizontalHeaderLabels(("Neuron ID", "Family", "Type", "Segments"))
         self.neuron_table.horizontalHeader().setStretchLastSection(True)
         self.neuron_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.neuron_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.neuron_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.neuron_table.setMaximumHeight(170)
         self.neuron_table.cellClicked.connect(self._table_clicked)
+        self.neuron_table.itemSelectionChanged.connect(self._table_selection_changed)
         left_layout.addWidget(self.neuron_table)
         splitter.addWidget(left)
 
@@ -289,10 +303,48 @@ class CircuitBuilderPage(QWidget):
         selection_actions.addWidget(clear)
         side_layout.addLayout(selection_actions)
 
+        self.pair_panel = QWidget()
+        self.pair_panel.setObjectName("PairConnectionPanel")
+        pair_layout = QVBoxLayout(self.pair_panel)
+        pair_layout.setContentsMargins(0, 4, 0, 6)
+        pair_layout.setSpacing(6)
+        pair_layout.addWidget(_section_label("Connections between selected neurons"))
+        pair_help = QLabel(
+            "Cmd/Ctrl-click two neuron points, skeletons, or table rows. A third replaces "
+            "the oldest selection. These switches create plan overrides; native connectome "
+            "files remain unchanged."
+        )
+        pair_help.setObjectName("Muted")
+        pair_help.setWordWrap(True)
+        pair_layout.addWidget(pair_help)
+        self.pair_connection_readout = QLabel()
+        self.pair_connection_readout.setObjectName("PairConnectionReadout")
+        self.pair_connection_readout.setWordWrap(True)
+        pair_layout.addWidget(self.pair_connection_readout)
+        self.chemical_pair_check = QCheckBox("Chemical connections enabled")
+        self.chemical_pair_check.setObjectName("ChemicalPairEnabled")
+        self.chemical_pair_check.toggled.connect(
+            lambda enabled: self._pair_connection_toggled("chemical", enabled)
+        )
+        pair_layout.addWidget(self.chemical_pair_check)
+        self.gap_pair_check = QCheckBox("Gap junctions enabled")
+        self.gap_pair_check.setObjectName("GapPairEnabled")
+        self.gap_pair_check.toggled.connect(
+            lambda enabled: self._pair_connection_toggled("gap_junction", enabled)
+        )
+        pair_layout.addWidget(self.gap_pair_check)
+        clear_pair = QPushButton("Clear pair selection")
+        clear_pair.setObjectName("ClearPairSelectionButton")
+        clear_pair.clicked.connect(self._clear_pair_selection)
+        pair_layout.addWidget(clear_pair)
+        self.pair_panel.setVisible(False)
+        side_layout.addWidget(self.pair_panel)
+
         side_layout.addWidget(_section_label("Native Digifly membrane channels"))
         channel_help = QLabel(
-            "Mechanism identity is saved separately from generic HH values. These are Phase 2 "
-            "surrogates, not silent cross-backend equivalents. gbar columns are soma / branch in S/cm²."
+            "Mechanism identity is saved separately from built-in HH values. The list includes "
+            "the provenance-locked Augustin GF membrane and exploratory Phase 2 surrogates; "
+            "they are not silent cross-backend equivalents. gbar columns are soma / branch in S/cm²."
         )
         channel_help.setObjectName("Muted")
         channel_help.setWordWrap(True)
@@ -366,14 +418,14 @@ class CircuitBuilderPage(QWidget):
         self.active_scope_combo.addItem("Soma + AIS draft", "soma_ais")
         self.active_scope_combo.addItem("Soma-only draft", "soma")
         self.active_scope_combo.currentIndexChanged.connect(self._hh_controls_edited)
-        scope_form.addRow("Classic HH distribution", self.active_scope_combo)
+        scope_form.addRow("Active-channel distribution", self.active_scope_combo)
         side_layout.addLayout(scope_form)
 
         self.hh_editors: dict[str, QDoubleSpinBox] = {}
         groups = (
             ("Passive & adapter-dependent", HH_PARAMETER_DEFINITIONS[:9]),
-            ("Soma HH", HH_PARAMETER_DEFINITIONS[9:13]),
-            ("Branch HH", HH_PARAMETER_DEFINITIONS[13:]),
+            ("Built-in soma HH (off when replaced)", HH_PARAMETER_DEFINITIONS[9:13]),
+            ("Built-in branch HH (off when replaced)", HH_PARAMETER_DEFINITIONS[13:]),
         )
         for title, definitions in groups:
             side_layout.addWidget(_section_label(title))
@@ -403,7 +455,7 @@ class CircuitBuilderPage(QWidget):
         self.gap_mode_combo = QComboBox()
         self.gap_mode_combo.setObjectName("GapModeCombo")
         self.gap_mode_combo.addItem("None", "none")
-        self.gap_mode_combo.addItem("Ohmic · Gap / Arbor gj", "ohmic")
+        self.gap_mode_combo.addItem("Ohmic · Gap / digifly_gap", "ohmic")
         self.gap_mode_combo.addItem("Ideal rectifier · RectGap", "rectifying")
         self.gap_mode_combo.addItem(
             "Kinetic heterotypic · HeteroRectGap", "heterotypic_rectifying"
@@ -563,12 +615,14 @@ class CircuitBuilderPage(QWidget):
             profile for profile in ENGINE_PROFILES if profile[0] == key
         )
         parity = {
-            "arbor": "The staged runtime passes four curated archived-baseline scenarios using built-in HH/passive, exp2syn, and ohmic gj. This does not validate arbitrary circuit designs, Drosophila MOD channels, or true HeteroRectGap.",
+            "arbor": "The staged runtime passes curated HH/passive scenarios, and the dedicated Escape-SIZ adapter uses app-owned Gap, RectGap, and HeteroRectGap equation ports. Arbitrary Circuit Builder translation and other Drosophila MOD channels remain capability-gated.",
             "neuron": "Reference path for native HH, NMODL channels, and rectifying/heterotypic gap mechanisms.",
             "bmtk": "PointNet/DPointNet are LIF/GLIF lanes and do not consume this cable-HH draft. A general BioNet cable adapter is future work.",
         }[key]
         self.engine_note.setText(
-            f"{profile_summary}  {parity}  This page currently loads morphology/cell sets only; connectivity and execution plans are not built yet."
+            f"{profile_summary}  {parity}  Local pair connectivity is inspected read-only and "
+            "pair enable/disable intent is serialized for execution adapters; a generic circuit "
+            "execution plan is not built by this page yet."
         )
         self._update_mechanism_capability()
         self.status_message.emit(f"Selected {profile_name} as the design target")
@@ -629,12 +683,14 @@ class CircuitBuilderPage(QWidget):
 
     def _clear_loaded_assets(self, summary: str = "No morphology loaded") -> None:
         self.catalog = None
+        self._edge_catalog = None
         self.loaded_records.clear()
         self.loaded_morphologies.clear()
         self.viewport.clear()
         self.neuron_table.setRowCount(0)
         self.viewport_summary.setText(summary)
         self.selection_label.setText("No neuron selected")
+        self.pair_panel.setVisible(False)
         self.override_summary.setText("No local overrides")
         self.spec.neuron_ids = ()
         self.spec.morphology_sha256.clear()
@@ -642,6 +698,7 @@ class CircuitBuilderPage(QWidget):
         self.spec.compartment_overrides.clear()
         self.spec.neuron_mechanism_overrides.clear()
         self.spec.compartment_mechanism_overrides.clear()
+        self.spec.connection_overrides.clear()
         self._set_hh(self.spec.hh)
         self._set_membrane(self.spec.membrane)
         self._set_mixed_selection_design(False)
@@ -696,6 +753,7 @@ class CircuitBuilderPage(QWidget):
             previous_compartment_mechanism_overrides = dict(
                 self.spec.compartment_mechanism_overrides
             )
+            previous_connection_overrides = dict(self.spec.connection_overrides)
             if source.dataset == "custom":
                 for morphology in morphologies:
                     neuron_id = morphology.record.neuron_id
@@ -755,6 +813,9 @@ class CircuitBuilderPage(QWidget):
                             restored_mechanisms
                         )
             self.catalog = catalog
+            self._edge_catalog = ConnectomeEdgeCatalog(
+                source, DigiflyWorkspace(self.overview.workspace_edit.text())
+            )
             self.loaded_records = {item.record.neuron_id: item.record for item in morphologies}
             self.loaded_morphologies = {item.record.neuron_id: item for item in morphologies}
             self.spec = CircuitSpec(
@@ -784,6 +845,12 @@ class CircuitBuilderPage(QWidget):
                     key: value
                     for key, value in previous_compartment_mechanism_overrides.items()
                     if key in self.loaded_records
+                },
+                connection_overrides={
+                    key: value
+                    for key, value in previous_connection_overrides.items()
+                    if value.neuron_a in self.loaded_records
+                    and value.neuron_b in self.loaded_records
                 },
             )
             self.viewport.set_morphologies(morphologies)
@@ -822,9 +889,71 @@ class CircuitBuilderPage(QWidget):
         self.neuron_table.resizeColumnsToContents()
 
     def _table_clicked(self, row: int, _column: int) -> None:
+        if len(self._selected_table_neuron_ids()) != 1:
+            return
         item = self.neuron_table.item(row, 0)
         if item is not None:
             self.viewport.focus_neuron(str(item.data(Qt.ItemDataRole.UserRole)), isolate=True)
+
+    def _selected_table_neuron_ids(self) -> tuple[str, ...]:
+        rows = sorted(index.row() for index in self.neuron_table.selectionModel().selectedRows(0))
+        return tuple(
+            str(self.neuron_table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            for row in rows
+            if self.neuron_table.item(row, 0) is not None
+        )
+
+    def _sync_table_selection(self, neuron_ids: tuple[str, ...]) -> None:
+        if self._syncing_neuron_table_selection:
+            return
+        wanted = set(neuron_ids)
+        self._syncing_neuron_table_selection = True
+        try:
+            self.neuron_table.clearSelection()
+            selection_model = self.neuron_table.selectionModel()
+            flags = (
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows
+            )
+            for row in range(self.neuron_table.rowCount()):
+                item = self.neuron_table.item(row, 0)
+                if item is None:
+                    continue
+                neuron_id = str(item.data(Qt.ItemDataRole.UserRole))
+                if neuron_id in wanted:
+                    selection_model.select(self.neuron_table.model().index(row, 0), flags)
+        finally:
+            self._syncing_neuron_table_selection = False
+
+    def _table_selection_changed(self) -> None:
+        if self._syncing_neuron_table_selection:
+            return
+        selected = list(self._selected_table_neuron_ids())
+        current = self.neuron_table.currentItem()
+        current_id = (
+            str(current.data(Qt.ItemDataRole.UserRole)) if current is not None else ""
+        )
+        previous = list(self.viewport.selected_neuron_ids)
+        ordered = [neuron_id for neuron_id in previous if neuron_id in selected]
+        for neuron_id in selected:
+            if neuron_id not in ordered:
+                ordered.append(neuron_id)
+        if current_id in ordered:
+            ordered.remove(current_id)
+            ordered.append(current_id)
+        ordered = ordered[-2:]
+
+        self._syncing_neuron_table_selection = True
+        try:
+            if not ordered:
+                self.viewport.clear_neuron_selection(restore_overview=True)
+            elif len(ordered) == 1:
+                self.viewport.focus_neuron(ordered[0], isolate=True)
+            else:
+                self.viewport.set_neuron_selection(ordered)
+        finally:
+            self._syncing_neuron_table_selection = False
+        self._sync_table_selection(tuple(ordered))
 
     def _neuron_selected(self, neuron_id: str) -> None:
         record = self.loaded_records.get(neuron_id)
@@ -833,25 +962,176 @@ class CircuitBuilderPage(QWidget):
         if self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
             location = self.viewport.soma_location(neuron_id)
             marker = "pseudosoma" if location and location.is_pseudosoma else "soma"
+            point_state = "isolated" if self.viewport.isolated else "focused"
             self.selection_label.setText(
                 f"{record.neuron_type} · {neuron_id}\n"
-                f"{marker.capitalize()} point isolated; switch to Full skeletons "
+                f"{marker.capitalize()} point {point_state}; switch to Full skeletons "
                 "to inspect or select compartments"
             )
         else:
+            neuron_state = (
+                "Whole neuron isolated" if self.viewport.isolated else "Neuron focused"
+            )
             self.selection_label.setText(
                 f"{record.neuron_type} · {neuron_id}\n"
-                "Whole neuron isolated; left-click a skeleton segment or "
+                f"{neuron_state}; left-click a skeleton segment or "
                 "Cmd/Ctrl+Shift+left-drag a box to select compartments"
             )
-        for row in range(self.neuron_table.rowCount()):
-            item = self.neuron_table.item(row, 0)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole)) == neuron_id:
-                self.neuron_table.selectRow(row)
-                break
+        if len(self.viewport.selected_neuron_ids) <= 1:
+            self._sync_table_selection((neuron_id,))
         self._load_effective_selection_design(neuron_id, ())
         self._update_override_summary()
         self._update_viewport_guidance()
+
+    def _neurons_selected(self, neuron_ids: object) -> None:
+        ids = tuple(str(value) for value in neuron_ids) if isinstance(
+            neuron_ids, (tuple, list, set)
+        ) else ()
+        self._sync_table_selection(ids)
+        self._refresh_pair_panel(ids)
+        if len(ids) == 2:
+            self.selection_label.setText(
+                f"Pair selected · {ids[0]} ↔ {ids[1]}\n"
+                "Use the connection panel below to inspect and override imported edge classes."
+            )
+        elif not ids:
+            self.selection_label.setText("No neuron selected")
+        self._set_mixed_selection_design(False)
+        self._update_override_summary()
+        self._update_viewport_guidance()
+
+    @staticmethod
+    def _connection_class_readout(
+        label: str,
+        summary: ConnectionClassSummary,
+        neuron_a: str,
+        neuron_b: str,
+    ) -> str:
+        if not summary.available:
+            return f"{label}: data unavailable — {summary.unavailable_reason}"
+        source = summary.source_text or (
+            Path(summary.source_path).name if summary.source_path else "loaded edge source"
+        )
+        scope = f" {summary.scope_note}" if summary.scope_note else ""
+        if summary.total_count == 0:
+            return (
+                f"{label}: no connections found between these neurons in {source}. "
+                f"This is a zero in the loaded source, so there is nothing to toggle.{scope}"
+            )
+        if label == "Gap junction":
+            noun = "contact row" if summary.total_count == 1 else "contact rows"
+            return (
+                f"{label}: {summary.total_count:,} {noun} between these neurons in {source}. "
+                "Electrical contacts are treated as bidirectional; CSV endpoint order is not "
+                f"direction.{scope}"
+            )
+        parts = []
+        if summary.a_to_b_count:
+            parts.append(f"{summary.a_to_b_count:,} {neuron_a} → {neuron_b}")
+        if summary.b_to_a_count:
+            parts.append(f"{summary.b_to_a_count:,} {neuron_b} → {neuron_a}")
+        return (
+            f"{label}: {'; '.join(parts)} ({summary.total_count:,} total rows in {source})."
+            f"{scope}"
+        )
+
+    def _refresh_pair_panel(self, neuron_ids: tuple[str, ...] | None = None) -> None:
+        ids = tuple(neuron_ids if neuron_ids is not None else self.viewport.selected_neuron_ids)
+        if len(ids) != 2:
+            self.pair_panel.setVisible(False)
+            self._setting_connection_controls = True
+            try:
+                self.chemical_pair_check.setChecked(False)
+                self.gap_pair_check.setChecked(False)
+                self.chemical_pair_check.setEnabled(False)
+                self.gap_pair_check.setEnabled(False)
+            finally:
+                self._setting_connection_controls = False
+            return
+
+        self.pair_panel.setVisible(True)
+        neuron_a, neuron_b = ids
+        if self._edge_catalog is None:
+            chemical = ConnectionClassSummary(
+                False,
+                unavailable_reason="No connectome edge inventory is loaded.",
+            )
+            gap = chemical
+        else:
+            pair = self._edge_catalog.pair_summary(neuron_a, neuron_b)
+            chemical, gap = pair.chemical, pair.gap_junction
+        override = self.spec.connection_override(neuron_a, neuron_b)
+        chemical_enabled = (
+            True
+            if override is None or override.chemical_enabled is None
+            else override.chemical_enabled
+        )
+        gap_enabled = (
+            True
+            if override is None or override.gap_junction_enabled is None
+            else override.gap_junction_enabled
+        )
+        self._setting_connection_controls = True
+        try:
+            self.chemical_pair_check.setEnabled(chemical.has_connections)
+            self.chemical_pair_check.setChecked(
+                bool(chemical_enabled) if chemical.has_connections else False
+            )
+            self.gap_pair_check.setEnabled(gap.has_connections)
+            self.gap_pair_check.setChecked(
+                bool(gap_enabled) if gap.has_connections else False
+            )
+            self.chemical_pair_check.setToolTip(
+                chemical.source_path or chemical.unavailable_reason
+            )
+            self.gap_pair_check.setToolTip(gap.source_path or gap.unavailable_reason)
+        finally:
+            self._setting_connection_controls = False
+
+        chemical_state = (
+            f" Plan state: {'enabled' if chemical_enabled else 'disabled'}."
+            if chemical.has_connections
+            else ""
+        )
+        gap_state = (
+            f" Plan state: {'enabled' if gap_enabled else 'disabled'}."
+            if gap.has_connections
+            else ""
+        )
+        self.pair_connection_readout.setText(
+            f"{neuron_a} ↔ {neuron_b}\n"
+            f"{self._connection_class_readout('Chemical', chemical, neuron_a, neuron_b)}"
+            f"{chemical_state}\n"
+            f"{self._connection_class_readout('Gap junction', gap, neuron_a, neuron_b)}"
+            f"{gap_state}"
+        )
+
+    def _pair_connection_toggled(self, connection_class: str, enabled: bool) -> None:
+        if self._setting_connection_controls:
+            return
+        ids = tuple(self.viewport.selected_neuron_ids)
+        if len(ids) != 2:
+            return
+        control = (
+            self.chemical_pair_check
+            if connection_class == "chemical"
+            else self.gap_pair_check
+        )
+        if not control.isEnabled():
+            return
+        self.spec.set_connection_class_enabled(ids[0], ids[1], connection_class, enabled)
+        self.circuit_changed.emit(self.spec)
+        label = "chemical connections" if connection_class == "chemical" else "gap junctions"
+        self.status_message.emit(
+            f"{label.capitalize()} between {ids[0]} and {ids[1]} will be "
+            f"{'enabled' if enabled else 'disabled'} in experiment plans"
+        )
+        self._refresh_pair_panel(ids)
+        self._update_override_summary()
+
+    def _clear_pair_selection(self) -> None:
+        self.viewport.clear_neuron_selection(restore_overview=True)
+        self.status_message.emit("Cleared pair selection and restored the circuit overview")
 
     def _compartments_changed(self, neuron_id: str, node_ids: object) -> None:
         ids = tuple(node_ids) if isinstance(node_ids, (tuple, list, set)) else ()
@@ -901,8 +1181,15 @@ class CircuitBuilderPage(QWidget):
 
     def _update_viewport_guidance(self) -> None:
         neuron_id = self.viewport.selected_neuron_id
+        pair_ids = tuple(self.viewport.selected_neuron_ids)
         selected_count = len(self.viewport.selected_compartments)
-        if self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
+        if len(pair_ids) == 2:
+            selection_state = (
+                f"Pair selection: {pair_ids[0]} ↔ {pair_ids[1]}. Cmd/Ctrl-click either "
+                "selected neuron to remove it; selecting a third replaces the oldest. "
+                "Use Clear pair or Esc to leave pair mode."
+            )
+        elif self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
             if self.viewport.neuron_count == 0:
                 selection_state = "Soma points (default): load a cell set to begin."
             elif self.viewport.isolated and neuron_id is not None:
@@ -949,7 +1236,8 @@ class CircuitBuilderPage(QWidget):
         self.viewport_controls_hint.setText(
             f"{selection_state}\n"
             "Navigate: left-drag rotate · Shift-left-drag or middle-drag pan · scroll zoom · "
-            "right-click center · Esc restore all · C clear selected compartments."
+            "right-click center · Cmd/Ctrl-click pair-select · Esc clear pair/restore all · "
+            "C clear selected compartments."
         )
 
     def _load_effective_selection_design(
@@ -988,7 +1276,10 @@ class CircuitBuilderPage(QWidget):
         self._mixed_selection_design = bool(mixed)
         if not hasattr(self, "apply_compartments_button"):
             return
-        has_neuron = self.viewport.selected_neuron_id is not None
+        has_neuron = (
+            self.viewport.selected_neuron_id is not None
+            and len(self.viewport.selected_neuron_ids) == 1
+        )
         has_target = bool(
             has_neuron and self.viewport.selected_compartments
         )
@@ -1281,12 +1572,14 @@ class CircuitBuilderPage(QWidget):
         finally:
             self._restoring_controls = False
         self.catalog = None
+        self._edge_catalog = None
         self.loaded_records.clear()
         self.loaded_morphologies.clear()
         self.viewport.clear()
         self.neuron_table.setRowCount(0)
         self.viewport_summary.setText("Saved cell set not loaded yet")
         self.selection_label.setText("No neuron selected")
+        self.pair_panel.setVisible(False)
         self._update_viewport_guidance()
         self._update_override_summary()
         self._update_mechanism_capability()
@@ -1311,6 +1604,9 @@ class CircuitBuilderPage(QWidget):
                 raise ValueError(f"Saved morphology identity changed for neuron {neuron_id}")
             self.spec.morphology_sha256[neuron_id] = actual_hash
         self.catalog = catalog
+        self._edge_catalog = ConnectomeEdgeCatalog(
+            source, DigiflyWorkspace(self.overview.workspace_edit.text())
+        )
         self.loaded_records = {item.record.neuron_id: item.record for item in morphologies}
         self.loaded_morphologies = {item.record.neuron_id: item for item in morphologies}
         self.viewport.set_morphologies(morphologies)
@@ -1406,6 +1702,27 @@ class CircuitBuilderPage(QWidget):
 
     def _update_override_summary(self) -> None:
         neuron_id = self.viewport.selected_neuron_id
+        pair_ids = tuple(self.viewport.selected_neuron_ids)
+        pair_total = len(self.spec.connection_overrides)
+        if len(pair_ids) == 2:
+            override = self.spec.connection_override(pair_ids[0], pair_ids[1])
+            if override is None:
+                state = "using imported connection defaults"
+            else:
+                chemical = (
+                    "inherit" if override.chemical_enabled is None else
+                    ("on" if override.chemical_enabled else "off")
+                )
+                gap = (
+                    "inherit" if override.gap_junction_enabled is None else
+                    ("on" if override.gap_junction_enabled else "off")
+                )
+                state = f"chemical {chemical} · gap {gap}"
+            self.override_summary.setText(
+                f"Selected pair: {state} · {pair_total} saved pair override(s) total · "
+                f"GJ mechanism: {self.spec.gap_junction_policy.mechanism_label}"
+            )
+            return
         if neuron_id is None:
             total = sum(len(nodes) for nodes in self.spec.compartment_overrides.values())
             mechanism_total = sum(
@@ -1414,6 +1731,7 @@ class CircuitBuilderPage(QWidget):
             self.override_summary.setText(
                 f"{len(self.spec.neuron_overrides)} neuron override(s) · "
                 f"{max(total, mechanism_total)} SWC-segment override(s) · "
+                f"{pair_total} connection-pair override(s) · "
                 f"GJ edges: {self.spec.gap_junction_policy.mechanism_label}"
             )
             return
@@ -1428,6 +1746,7 @@ class CircuitBuilderPage(QWidget):
         self.override_summary.setText(
             f"Selected neuron: {'custom HH/channels' if has_neuron else 'cell-set defaults'} · "
             f"{count} saved SWC-segment override(s) · "
+            f"{pair_total} connection-pair override(s) · "
             f"GJ edges: {self.spec.gap_junction_policy.mechanism_label}"
         )
 

@@ -228,6 +228,7 @@ class CircuitViewport(QOpenGLWidget):
     """Batched OpenGL SWC renderer with CPU-assisted neuron and segment picking."""
 
     neuron_selected = Signal(str)
+    neurons_selected = Signal(object)
     compartments_changed = Signal(str, object)
     isolation_changed = Signal(bool)
     display_mode_changed = Signal(str)
@@ -269,6 +270,9 @@ class CircuitViewport(QOpenGLWidget):
         self._selection_dirty = True
 
         self.selected_neuron_id: str | None = None
+        # Ordered oldest -> most recent. Pair-selection is intentionally capped
+        # at two neurons so a third selection replaces the oldest one.
+        self.selected_neuron_ids: list[str] = []
         self.selected_compartments: set[int] = set()
         self.isolated = False
 
@@ -424,12 +428,14 @@ class CircuitViewport(QOpenGLWidget):
         self._rubber_band.hide()
         self.unsetCursor()
         self.selected_neuron_id = None
+        self.selected_neuron_ids.clear()
         self.selected_compartments.clear()
         self.isolated = False
         self.yaw_degrees = DEFAULT_YAW_DEGREES
         self.pitch_degrees = DEFAULT_PITCH_DEGREES
         self._rebuild_selection_data()
         self.fit_all()
+        self.neurons_selected.emit(())
         self.update()
 
     def clear(self) -> None:
@@ -505,6 +511,7 @@ class CircuitViewport(QOpenGLWidget):
             return
         changed = self.selected_neuron_id != str(neuron_id)
         self.selected_neuron_id = str(neuron_id)
+        self.selected_neuron_ids = [str(neuron_id)]
         self.isolated = bool(isolate)
         self._interaction_timer.stop()
         self._interaction_preview = False
@@ -513,8 +520,66 @@ class CircuitViewport(QOpenGLWidget):
             self._rebuild_selection_data()
         self._frame_neuron(str(neuron_id))
         self.neuron_selected.emit(str(neuron_id))
+        self.neurons_selected.emit((str(neuron_id),))
         self.isolation_changed.emit(self.isolated)
         self.compartments_changed.emit(str(neuron_id), tuple(sorted(self.selected_compartments)))
+        self.update()
+
+    def set_neuron_selection(self, neuron_ids: Iterable[str | int]) -> tuple[str, ...]:
+        """Select at most two neurons without hiding the rest of the circuit."""
+
+        normalized: list[str] = []
+        for value in neuron_ids:
+            neuron_id = str(value)
+            if neuron_id in self.morphologies and neuron_id not in normalized:
+                normalized.append(neuron_id)
+        normalized = normalized[-2:]
+        previous_primary = self.selected_neuron_id
+        self.selected_neuron_ids = normalized
+        self.selected_neuron_id = normalized[-1] if normalized else None
+        self.isolated = False
+        self._interaction_timer.stop()
+        self._interaction_preview = False
+        if self.selected_neuron_id != previous_primary or len(normalized) != 1:
+            self.selected_compartments.clear()
+            self._rebuild_selection_data()
+        self.fit_all()
+        if self.selected_neuron_id is not None:
+            self.neuron_selected.emit(self.selected_neuron_id)
+            self.compartments_changed.emit(self.selected_neuron_id, ())
+        self.neurons_selected.emit(tuple(normalized))
+        self.isolation_changed.emit(False)
+        self.update()
+        return tuple(normalized)
+
+    def toggle_neuron_selection(self, neuron_id: str | int) -> tuple[str, ...]:
+        """Command/Control-click semantics with a two-item recency cap."""
+
+        wanted = str(neuron_id)
+        if wanted not in self.morphologies:
+            return tuple(self.selected_neuron_ids)
+        ordered = list(self.selected_neuron_ids)
+        if wanted in ordered:
+            ordered.remove(wanted)
+        else:
+            ordered.append(wanted)
+        return self.set_neuron_selection(ordered[-2:])
+
+    def clear_neuron_selection(self, *, restore_overview: bool = True) -> None:
+        previous = self.selected_neuron_id
+        self.selected_neuron_ids.clear()
+        self.selected_neuron_id = None
+        self.selected_compartments.clear()
+        self.isolated = False
+        self._interaction_timer.stop()
+        self._interaction_preview = False
+        self._rebuild_selection_data()
+        if restore_overview:
+            self.fit_all()
+        if previous is not None:
+            self.compartments_changed.emit(previous, ())
+        self.neurons_selected.emit(())
+        self.isolation_changed.emit(False)
         self.update()
 
     def restore_all(self) -> None:
@@ -661,7 +726,7 @@ class CircuitViewport(QOpenGLWidget):
                 if neuron_id is None:
                     continue
                 source_index = self._point_indices[neuron_id]
-                selected = neuron_id == self.selected_neuron_id
+                selected = neuron_id in self.selected_neuron_ids
                 color = (
                     self._selected_neuron_rgba
                     if selected
@@ -699,12 +764,12 @@ class CircuitViewport(QOpenGLWidget):
                 continue
             color = (
                 self._selected_neuron_rgba
-                if neuron_id == self.selected_neuron_id
+                if neuron_id in self.selected_neuron_ids
                 else self._palette_rgba[index % len(self._palette_rgba)]
             )
             program.setUniformValue("tint", color)
             functions.glLineWidth(
-                2.5 if neuron_id == self.selected_neuron_id else (1.0 if use_preview else 1.35)
+                2.5 if neuron_id in self.selected_neuron_ids else (1.0 if use_preview else 1.35)
             )
             for start, count in self._render_ranges_for(
                 neuron_id, matrix, use_preview=use_preview
@@ -1019,6 +1084,15 @@ class CircuitViewport(QOpenGLWidget):
             modifiers & command_or_control
         )
 
+    @staticmethod
+    def _pair_selection_requested(modifiers: Qt.KeyboardModifier) -> bool:
+        command_or_control = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+        )
+        return bool(modifiers & command_or_control) and not bool(
+            modifiers & Qt.KeyboardModifier.ShiftModifier
+        )
+
     def _begin_interaction_preview(self) -> None:
         if self.display_mode != DISPLAY_MODE_FULL_SKELETONS:
             self._interaction_preview = False
@@ -1174,21 +1248,33 @@ class CircuitViewport(QOpenGLWidget):
             event.accept()
             return
         if not self._dragged and event.button() == Qt.MouseButton.LeftButton:
+            pair_selection = self._pair_selection_requested(event.modifiers())
             if self.display_mode == DISPLAY_MODE_SOMA_POINTS:
                 neuron_id = self._pick_soma(event.position())
                 if neuron_id is not None:
-                    self.focus_neuron(neuron_id, isolate=True)
                     location = self._soma_locations[neuron_id]
                     marker = "pseudosoma" if location.is_pseudosoma else "soma"
-                    self.status_message.emit(
-                        f"Selected and isolated {marker} point for neuron {neuron_id}"
-                    )
+                    if pair_selection:
+                        selected = self.toggle_neuron_selection(neuron_id)
+                        self.status_message.emit(
+                            f"Pair selection: {len(selected)} neuron(s) selected"
+                        )
+                    else:
+                        self.focus_neuron(neuron_id, isolate=True)
+                        self.status_message.emit(
+                            f"Selected and isolated {marker} point for neuron {neuron_id}"
+                        )
                 event.accept()
                 return
             picked = self._pick(event.position())
             if picked is not None:
                 neuron_id, segment = picked
-                if self.isolated and self.selected_neuron_id == neuron_id:
+                if pair_selection:
+                    selected = self.toggle_neuron_selection(neuron_id)
+                    self.status_message.emit(
+                        f"Pair selection: {len(selected)} neuron(s) selected"
+                    )
+                elif self.isolated and self.selected_neuron_id == neuron_id:
                     if segment.child_id in self.selected_compartments:
                         self.selected_compartments.remove(segment.child_id)
                     else:
@@ -1239,7 +1325,13 @@ class CircuitViewport(QOpenGLWidget):
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
-        if key in (Qt.Key.Key_Escape, Qt.Key.Key_I):
+        if key == Qt.Key.Key_Escape:
+            if len(self.selected_neuron_ids) != 1 or not self.isolated:
+                self.clear_neuron_selection(restore_overview=True)
+                self.status_message.emit("Cleared pair selection and restored the circuit overview")
+            else:
+                self.restore_all()
+        elif key == Qt.Key.Key_I:
             if self.isolated:
                 self.restore_all()
             elif self.selected_neuron_id is not None:

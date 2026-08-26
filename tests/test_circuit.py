@@ -113,3 +113,50 @@ def test_named_cell_profile_is_atomic_and_mismatches_become_custom():
     mutated.channels["para"].branch_gbar_s_cm2 = 9.0
     inconsistent_channel = CircuitSpec(hh=hh, membrane=mutated)
     assert inconsistent_channel.membrane.profile_key == "custom"
+
+
+def test_augustin_profile_is_an_atomic_gf_design_not_a_resting_voltage_alias():
+    hh, membrane = cell_design_profile("augustin_2019_gf_exact")
+    assert hh.e_pas_mV == -85.0
+    assert hh.ena_mV == 65.0
+    assert hh.ek_mV == -74.0
+    assert hh.v_init_mV == -65.0
+    assert hh.ra_ohm_cm == 35.4
+    assert hh.celsius_C == 25.0
+    assert hh.soma_gnabar_s_cm2 == 0.0
+    assert hh.branch_gkbar_s_cm2 == 0.0
+    assert membrane.replace_builtin_hh is True
+    assert membrane.profile_key == "augustin_2019_gf_exact"
+
+
+def test_connection_pair_overrides_are_unordered_serialized_plan_intent():
+    spec = CircuitSpec(neuron_ids=("100", "200"))
+    chemical = spec.set_connection_class_enabled("200", "100", "chemical", False)
+    assert chemical.neuron_a == "100"
+    assert chemical.neuron_b == "200"
+    assert chemical.chemical_enabled is False
+    assert chemical.gap_junction_enabled is None
+
+    updated = spec.set_connection_class_enabled("100", "200", "gap_junction", True)
+    assert updated.chemical_enabled is False
+    assert updated.gap_junction_enabled is True
+    assert len(spec.connection_overrides) == 1
+
+    payload = spec.to_dict()
+    assert payload["connection_overrides"] == [
+        {
+            "neuron_a": "100",
+            "neuron_b": "200",
+            "chemical_enabled": False,
+            "gap_junction_enabled": True,
+        }
+    ]
+    restored = CircuitSpec.from_dict(payload)
+    assert restored.connection_override("200", "100") == updated
+    assert restored.clear_connection_override("100", "200") is True
+    assert restored.connection_override("100", "200") is None
+
+    with pytest.raises(ValueError, match="two different"):
+        spec.set_connection_class_enabled("100", "100", "chemical", False)
+    with pytest.raises(ValueError, match="Unsupported connection class"):
+        spec.set_connection_class_enabled("100", "200", "modulatory", False)
