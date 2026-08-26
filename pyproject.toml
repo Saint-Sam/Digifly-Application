@@ -41,6 +41,7 @@ package = [
 digifly-app = "digifly_app.app:main"
 digifly-doctor = "digifly_app.cli:doctor_main"
 digifly-package-audit = "digifly_app.packaging.audit:main"
+digifly-resources = "digifly_app.resource_cli:main"
 
 [project.gui-scripts]
 digifly-workstation = "digifly_app.app:main"
@@ -74,6 +75,7 @@ where = ["src"]
 "share/digifly-workstation/schemas" = [
   "schemas/digifly-circuit-v2.schema.json",
   "schemas/digifly-project-v1.schema.json",
+  "schemas/digifly-resources-v1.schema.json",
 ]
 "share/digifly-workstation/scripts" = ["scripts/build_arbor_gap_catalogue.py"]
 

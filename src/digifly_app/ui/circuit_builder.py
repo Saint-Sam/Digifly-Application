@@ -50,6 +50,8 @@ from digifly_app.core.morphology import (
     sha256_file,
 )
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.providers import profile_connectome_sources
+from digifly_app.core.resource_profile import load_default_profile
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
@@ -630,9 +632,14 @@ class CircuitBuilderPage(QWidget):
     def refresh_connectomes(self) -> None:
         self._catalog_cache.clear()
         previous_source = self._selected_source()
+        try:
+            profile = load_default_profile()
+        except (OSError, ValueError):
+            profile = None
         discovered = discover_connectomes(
             self.overview.workspace_edit.text(),
             morphology_library_root=morphology_library_root(),
+            external_sources=profile_connectome_sources(profile),
         )
         if (
             previous_source is not None

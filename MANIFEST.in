@@ -8,6 +8,7 @@ include docs/DEPLOYMENT.md
 include docs/DEVELOPMENT_PLAN.md
 include docs/PACKAGING_BOUNDARY.md
 include docs/PHASE1_ACCEPTANCE.md
+include docs/PHASE2_ACCEPTANCE.md
 include docs/ROADMAP.md
 include scripts/build_arbor_gap_catalogue.py
 include scripts/build_macos.sh

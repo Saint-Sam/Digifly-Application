@@ -427,6 +427,7 @@ def discover_connectomes(
     digifly_public_root: str | Path,
     *,
     morphology_library_root: str | Path | None = None,
+    external_sources: Iterable[ConnectomeRef] = (),
 ) -> tuple[ConnectomeRef, ...]:
     """Discover local SWC sources without importing Phase 1 or accessing neuPrint."""
     public_root = Path(digifly_public_root).expanduser()
@@ -491,6 +492,22 @@ def discover_connectomes(
                         dataset="custom",
                     )
                 )
+
+    # Explicit providers are registered without crawling them. Their contents
+    # are indexed only if the user selects that source in Circuit Builder.
+    for source in external_sources:
+        root = Path(source.root).expanduser()
+        resolved = str(root.resolve())
+        if root.is_dir() and resolved not in seen:
+            sources.append(
+                ConnectomeRef(
+                    key=source.key,
+                    label=source.label,
+                    root=resolved,
+                    dataset=source.dataset,
+                )
+            )
+            seen.add(resolved)
 
     sources.sort(key=lambda item: (0 if item.key.startswith("manc:") else 1, item.label.casefold()))
     return tuple(sources)

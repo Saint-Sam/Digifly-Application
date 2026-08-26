@@ -3,17 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
 
 from .models import CheckState, EngineProbe, PreflightCheck, PreflightReport
 from .process_environment import sanitized_external_environment
+
+if TYPE_CHECKING:
+    from .resource_profile import ResourceProfile
 
 
 class DigiflyWorkspace:
     """Resolved native-file layout for a Digifly Public workspace."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, profile: "ResourceProfile | None" = None):
         self.root = Path(root).expanduser().resolve()
+        self.profile = profile
 
     @property
     def phase2_neuron(self) -> Path:
@@ -49,16 +53,28 @@ class DigiflyWorkspace:
 
     @property
     def vnd_candidates(self) -> tuple[Path, ...]:
+        configured: tuple[Path, ...] = ()
+        if self.profile is not None:
+            from .resource_profile import ResourceKind
+
+            binding = self.profile.binding(ResourceKind.VND_VIEWER)
+            configured = (binding.resolved_path,) if binding is not None else ()
         desktop = self.root.parent
-        return (
+        return configured + (
             desktop / "VND 1.14 UIUC" / "VND r1.14_1.9.4a57-arm64.app",
             desktop / "VND 1.14 UIUC" / "VND r1.14_1.9.4a57.app",
         )
 
     @property
     def bmtk_python_candidates(self) -> tuple[Path, ...]:
+        configured: tuple[Path, ...] = ()
+        if self.profile is not None:
+            from .resource_profile import ResourceKind
+
+            runtime = self.profile.runtime_path(ResourceKind.BMTK_RUNTIME)
+            configured = (runtime,) if runtime is not None else ()
         desktop = self.root.parent
-        return (
+        return configured + (
             desktop / "Digifly-Runtimes" / "envs" / "digifly-bmtk-dpointnet-py311" / "bin" / "python",
             Path("/opt/anaconda3/envs/digifly-bmtk-dpointnet-py311/bin/python"),
         )
@@ -104,8 +120,15 @@ class DigiflyWorkspace:
         return PreflightReport(tuple(checks))
 
     def probe_engines(self, python_executable: str) -> tuple[EngineProbe, ...]:
+        neuron_python = Path(python_executable).expanduser()
+        arbor_python = neuron_python
+        if self.profile is not None:
+            from .resource_profile import ResourceKind
+
+            neuron_python = self.profile.runtime_path(ResourceKind.NEURON_RUNTIME) or neuron_python
+            arbor_python = self.profile.runtime_path(ResourceKind.ARBOR_RUNTIME) or neuron_python
         neuron_source = self.phase2_neuron / "digifly" / "phase2"
-        neuron_runtime = _probe_neuron_runtime(python_executable, self.phase2_neuron)
+        neuron_runtime = _probe_neuron_runtime(str(neuron_python), self.phase2_neuron)
         neuron = EngineProbe(
             key="neuron",
             name="NEURON",
@@ -120,7 +143,7 @@ class DigiflyWorkspace:
         )
 
         arbor_source = self.phase2_arbor / "digifly" / "phase2"
-        arbor_runtime = _probe_python_module(python_executable, "arbor")
+        arbor_runtime = _probe_python_module(str(arbor_python), "arbor")
         arbor = EngineProbe(
             key="arbor",
             name="Arbor",

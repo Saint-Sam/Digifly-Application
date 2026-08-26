@@ -9,6 +9,7 @@ from typing import Sequence
 
 from digifly_app.core.resources import capture_resources
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.resource_profile import ResourceKind, ResourceProfile
 from digifly_app.engines.neuron_escape_siz import EscapeSizConfig, NeuronEscapeSizAdapter
 
 
@@ -16,17 +17,21 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="digifly-doctor", description="Inspect a Digifly Workstation workspace.")
     subparsers = parser.add_subparsers(dest="command")
     doctor = subparsers.add_parser("doctor", help="Run workspace and runtime checks.")
-    doctor.add_argument("--workspace", required=True)
-    doctor.add_argument("--python", default="/opt/anaconda3/bin/python")
-    doctor.add_argument("--output", default=str(Path.cwd() / "workspace"))
+    doctor_source = doctor.add_mutually_exclusive_group(required=True)
+    doctor_source.add_argument("--workspace")
+    doctor_source.add_argument("--profile")
+    doctor.add_argument("--python")
+    doctor.add_argument("--output")
     doctor.add_argument("--allow-cache-build", action="store_true")
     doctor.add_argument("--acknowledge-legacy-writes", action="store_true")
     doctor.add_argument("--json", action="store_true")
 
     plan = subparsers.add_parser("plan", help="Print the first Escape-SIZ execution plan.")
-    plan.add_argument("--workspace", required=True)
-    plan.add_argument("--python", default="/opt/anaconda3/bin/python")
-    plan.add_argument("--output", default=str(Path.cwd() / "workspace"))
+    plan_source = plan.add_mutually_exclusive_group(required=True)
+    plan_source.add_argument("--workspace")
+    plan_source.add_argument("--profile")
+    plan.add_argument("--python")
+    plan.add_argument("--output")
     preset = plan.add_mutually_exclusive_group()
     preset.add_argument("--ablation-notebook", action="store_true")
     preset.add_argument("--canonical-dual-gf", action="store_true")
@@ -39,17 +44,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         _parser().print_help()
         return 2
-    workspace = DigiflyWorkspace(args.workspace)
+    profile = ResourceProfile.load(args.profile) if args.profile else None
+    profile_report = profile.validate() if profile is not None else None
+    if args.command == "plan" and profile_report is not None and not profile_report.ok:
+        for check in profile_report.checks:
+            if not check.ok and check.blocking:
+                print(f"Invalid resource profile [{check.resource_id}]: {check.detail}", file=sys.stderr)
+        return 2
+    workspace_root = profile.workspace_root if profile is not None else Path(args.workspace)
+    output_root = (
+        Path(args.output).expanduser()
+        if args.output
+        else profile.output_root
+        if profile is not None
+        else Path.home() / "Digifly Workstation Workspace" / "runs"
+    )
+    configured_python = (
+        profile.runtime_path(ResourceKind.NEURON_RUNTIME) if profile is not None else None
+    )
+    python_executable = str(Path(args.python).expanduser()) if args.python else str(
+        configured_python or Path("/opt/anaconda3/bin/python")
+    )
+    workspace = DigiflyWorkspace(workspace_root, profile=profile)
     if getattr(args, "ablation_notebook", False):
         config = EscapeSizConfig.ablation_notebook_active()
     elif getattr(args, "canonical_dual_gf", False):
         config = EscapeSizConfig.canonical_dual_gf()
     else:
         config = EscapeSizConfig.ablation_notebook_active()
-    config.python_executable = args.python
+    config.python_executable = python_executable
     adapter = NeuronEscapeSizAdapter(workspace)
     if args.command == "plan":
-        resolved = adapter.plan(config, output_root=args.output)
+        resolved = adapter.plan(config, output_root=output_root)
         if args.json:
             print(json.dumps(resolved.to_dict(), indent=2))
         else:
@@ -60,16 +86,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     report = adapter.validate(
         config,
-        output_root=args.output,
+        output_root=output_root,
         allow_new_cache_build=bool(args.allow_cache_build),
         legacy_write_acknowledged=bool(args.acknowledge_legacy_writes),
     )
-    probes = workspace.probe_engines(args.python)
-    resources = capture_resources(args.output)
+    probes = workspace.probe_engines(python_executable)
+    resources = capture_resources(output_root)
     qt = _qt_probe()
     payload = {
-        "ok": report.ok,
+        "ok": report.ok and (profile_report is None or profile_report.ok),
         "workspace": str(workspace.root),
+        "resource_profile": str(Path(args.profile).expanduser().resolve()) if args.profile else None,
+        "resource_profile_fingerprint": profile.fingerprint if profile is not None else None,
+        "resource_profile_validation": profile_report.to_dict() if profile_report is not None else None,
         "qt": qt,
         "resources": resources.__dict__,
         "engines": [
@@ -89,6 +118,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(f"Digifly workspace: {workspace.root}")
+        if profile_report is not None:
+            print("External resource profile:")
+            for check in profile_report.checks:
+                marker = "PASS" if check.ok else "FAIL" if check.blocking else "WARN"
+                print(f"  [{marker}] {check.resource_id}: {check.detail}")
         print(f"Qt UI runtime: {'PASS' if qt['ok'] else 'FAIL'} — {qt['detail']}")
         for probe in probes:
             print(
@@ -100,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             marker = check.state.value.upper()
             print(f"  [{marker}] {check.title}: {check.detail}")
         print(f"Launch-ready: {'yes' if report.ok else 'no'}")
-    return 0 if report.ok else 1
+    return 0 if payload["ok"] else 1
 
 
 def doctor_main() -> int:

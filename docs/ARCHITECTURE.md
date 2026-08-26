@@ -135,6 +135,20 @@ Run manifests copy the resolved plan, environment overrides, preflight report,
 and final exit status. Generated scientific data remains in native formats such
 as JSON, CSV, NPZ, HDF5/SONATA, SWC, PNG, and PDF.
 
+## External resource profiles
+
+Machine-local paths are represented by a separate versioned resource profile,
+not package defaults or copied data. Typed bindings cover the Digifly Public
+workspace, additional morphology/connectome roots, simulator interpreters,
+optional VND viewers, and the single writable output root. Every binding has an
+explicit access intent. Validation is fail-closed when the output root resolves
+inside a read-only scientific source.
+
+Provider adapters translate registered morphology roots into ordinary
+`ConnectomeRef` records without crawling or copying them. The existing Digifly
+Public discovery path remains compatible; explicit providers are indexed only
+after a user selects the source.
+
 ## Escape-SIZ boundary
 
 The initial NEURON adapter wraps the existing command-line runner without

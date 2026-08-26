@@ -34,6 +34,12 @@ These are user-selected external resources. Workstation stores references and
 content identities where useful; it does not mutate source datasets or silently
 copy them into its installation.
 
+Machine bindings are stored in a versioned `digifly-resources-v1` profile.
+Each binding declares its kind and access intent. Digifly workspaces,
+morphology sources, connectomes, and optional viewers are read-only; simulator
+interpreters are executable; only the Workstation output root is read-write.
+Profile validation blocks an output root located inside any read-only resource.
+
 ## Runtime storage contract
 
 The installed application is treated as read-only. All writable state goes to

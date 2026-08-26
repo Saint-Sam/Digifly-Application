@@ -48,6 +48,7 @@ from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.paths import resource_path
+from digifly_app.core.resource_profile import ResourceKind, load_default_profile
 from digifly_app.engines.arbor_escape_siz import (
     ArborAblationComparisonConfig,
     ArborEscapeSizAdapter,
@@ -1424,6 +1425,18 @@ class MainWindow(QMainWindow):
         workspace = self.settings.value("workspace_root")
         output = self.settings.value("output_root")
         worker_python = self.settings.value("neuron_python")
+        try:
+            profile = load_default_profile()
+        except (OSError, ValueError):
+            profile = None
+        if profile is not None:
+            if not workspace:
+                workspace = str(profile.workspace_root)
+            if not output:
+                output = str(profile.output_root)
+            if not worker_python:
+                runtime = profile.runtime_path(ResourceKind.NEURON_RUNTIME)
+                worker_python = str(runtime) if runtime is not None else None
         # Import only read-only input/runtime bindings from the legacy app on
         # first launch. Workstation outputs deliberately remain in their new
         # default root so the two applications cannot overwrite each other's

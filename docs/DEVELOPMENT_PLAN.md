@@ -24,6 +24,8 @@ Status: complete. See `PHASE0_BASELINE.md`.
 - Test installation in a clean virtual environment without relying on the
   source checkout.
 
+Status: complete. See `PHASE1_ACCEPTANCE.md`.
+
 ## Phase 2 — external resource profiles
 
 - Introduce a versioned machine-local profile for Digifly Public, morphology
@@ -36,6 +38,8 @@ Status: complete. See `PHASE0_BASELINE.md`.
 - Add CLI support for creating, inspecting, and validating profiles.
 - Route morphology/connectome discovery through registered providers while
   retaining the legacy single-workspace behavior.
+
+Status: complete. See `PHASE2_ACCEPTANCE.md`.
 
 ## Phase 3 — release automation
 

@@ -111,6 +111,18 @@ PYTHONPATH=src .venv/bin/python -m digifly_app.cli doctor \
   --workspace "/path/to/Digifly Public"
 ```
 
+Create a machine-local external-resource profile without copying datasets:
+
+```bash
+digifly-resources init \
+  --workspace "/path/to/Digifly Public" \
+  --output "$HOME/Digifly Workstation Workspace/runs" \
+  --neuron-python "/path/to/neuron/python" \
+  --morphology "external-swcs=/path/to/SWC/root"
+digifly-resources validate
+digifly-doctor --profile "$HOME/Digifly Workstation Workspace/config/resources-v1.json"
+```
+
 Run tests with:
 
 ```bash
@@ -198,6 +210,8 @@ point and package/data contract are recorded in
 [Phase 0 baseline](docs/PHASE0_BASELINE.md) and
 [Packaging boundary](docs/PACKAGING_BOUNDARY.md). The distributable package
 foundation is recorded in [Phase 1 acceptance](docs/PHASE1_ACCEPTANCE.md).
+The machine-local data/runtime boundary is recorded in
+[Phase 2 acceptance](docs/PHASE2_ACCEPTANCE.md).
 
 ## Scientific readiness
 
