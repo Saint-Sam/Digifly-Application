@@ -59,3 +59,18 @@ Build the independent macOS bundle with:
 
 Phase 0 is complete only after the test suite passes in the Workstation-owned
 environment and the independently named bundle launches successfully.
+
+## Acceptance record — 2026-08-26
+
+- `157 passed` in the Workstation-owned `.venv`.
+- `Digifly Workstation.app` built as a 64-bit Apple Silicon (`arm64`) bundle.
+- The 111 MB bundle passed `codesign --verify --deep --strict`.
+- Bundle metadata reports `Digifly Workstation` and
+  `org.digifly.workstation`.
+- No SWC, CSV, Parquet, Feather, HDF5, SQLite, NumPy dataset, or file larger
+  than 100 MB was present in the bundle.
+- The packaged Workspace, Circuit Builder, and Escape-SIZ pages opened in the
+  native application.
+- The migrated Digifly Public root remained an external read-only source; the
+  displayed output root was the separate
+  `~/Digifly Workstation Workspace/runs` location.
