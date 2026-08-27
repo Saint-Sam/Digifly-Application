@@ -84,8 +84,10 @@ Data Library foundation are implemented. The first neuPrint slice now includes
 OS-keyring/session/environment credentials, live dataset discovery, bounded
 body/type/instance/ROI previews, user-reviewed naming and destination, retry,
 cancellation, staged SWC download, registration, and quality-review handoff.
-Connectivity-table acquisition, resumable checkpoints, ModelDB
-archive/accession import, library relocation/relink, and removal flows remain.
+ModelDB accession lookup/download and offline ZIP/TAR/folder intake now inspect
+bounded contents, keep code inert, preserve provenance, register model/SWC
+sources, and reject malicious archive fixtures. Connectivity-table acquisition,
+resumable checkpoints, library relocation/relink, and removal flows remain.
 See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation

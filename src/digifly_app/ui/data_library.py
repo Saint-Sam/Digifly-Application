@@ -36,6 +36,7 @@ from digifly_app.core.resource_profile import (
 
 from .widgets import Card
 from .neuprint_import import NeuPrintImportDialog
+from .modeldb_import import ModelDBImportDialog
 
 
 def _human_bytes(value: int) -> str:
@@ -95,6 +96,7 @@ class DataLibraryPage(QWidget):
         self._worker: _ImportWorker | None = None
         self._review_after_import = False
         self._neuprint_dialog: NeuPrintImportDialog | None = None
+        self._modeldb_dialog: ModelDBImportDialog | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 26, 30, 32)
@@ -128,9 +130,9 @@ class DataLibraryPage(QWidget):
         self.neuprint_button = QPushButton("Download from neuPrint")
         self.neuprint_button.clicked.connect(self.open_neuprint_import)
         row.addWidget(self.neuprint_button)
-        modeldb = QPushButton("Import ModelDB model")
-        modeldb.clicked.connect(self._modeldb_guidance)
-        row.addWidget(modeldb)
+        self.modeldb_button = QPushButton("Import model / ModelDB")
+        self.modeldb_button.clicked.connect(self.open_modeldb_import)
+        row.addWidget(self.modeldb_button)
         row.addStretch(1)
         action_layout.addLayout(row)
         self.progress = QProgressBar()
@@ -371,10 +373,28 @@ class DataLibraryPage(QWidget):
         self.sources_changed.emit()
         self._review_after_import = bool(resource.swc_count)
 
-    def _modeldb_guidance(self) -> None:
-        QMessageBox.information(
-            self,
-            "ModelDB acquisition",
-            "Offline local-folder import is available now. Safe archive inspection and ModelDB "
-            "accession lookup are the next provider milestone; imported code remains inert data.",
+    @Slot()
+    def open_modeldb_import(self) -> None:
+        try:
+            profile, profile_path = self._profile()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+        dialog = ModelDBImportDialog(profile, profile_path, self)
+        dialog.resource_imported.connect(self._modeldb_completed)
+        self._modeldb_dialog = dialog
+        dialog.exec()
+        self._modeldb_dialog = None
+        if self._review_after_import:
+            self._review_after_import = False
+            self.quality_review_requested.emit()
+
+    @Slot(object)
+    def _modeldb_completed(self, resource: ManagedResource) -> None:
+        self.action_status.setText(
+            f"Imported {resource.file_count:,} inert model file(s) to {resource.root}. "
+            f"Audited {resource.swc_count:,} SWC(s)."
         )
+        self.refresh()
+        self.sources_changed.emit()
+        self._review_after_import = bool(resource.swc_count)

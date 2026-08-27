@@ -103,7 +103,7 @@
   bounded previews, reviewed naming/destination, cancellation, registration,
   and automatic post-import quality review.
 - [ ] Add resumable neuPrint checkpoints and selected connectivity tables.
-- [ ] Add safe ModelDB accession/archive/manual-folder import without executing
+- [x] Add safe ModelDB accession/archive/manual-folder import without executing
   imported model code.
 - [ ] Add cross-platform managed-library relocation, relink, unregister, and
   removal controls.

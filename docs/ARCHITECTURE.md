@@ -154,6 +154,16 @@ renames the completed bundle into place. Only a promoted bundle is registered
 as a morphology provider. User-managed folders remain a separate read-only,
 no-copy registration path.
 
+Computational models use typed `model_source` bindings and live under
+`data/modeldb/<accession>/<version>` or
+`data/models/local/<id>/<version>`. Folder and ZIP/TAR intake is preflighted for
+bounded regular files and portable contained paths, then copied/extracted
+without executing model code. The manifest records simulator signatures,
+mechanisms, entry-point candidates, README/license presence, citations,
+checksums, and an explicit `execution_performed: false`. A bundle containing
+SWCs also receives a read-only morphology binding so the existing provider and
+quality-review paths can consume it.
+
 Provider adapters translate registered morphology roots into ordinary
 `ConnectomeRef` records without crawling or copying them. The existing Digifly
 Public discovery path remains compatible; explicit providers are indexed only

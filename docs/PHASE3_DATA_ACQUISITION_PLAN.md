@@ -108,9 +108,11 @@ or mutates them without an explicit import action.
       geometry remain unchanged.
 - [ ] A ModelDB archive and a local folder can be safely imported, inspected,
       registered, reopened after restart, and removed from the registry.
+      Import, inspection, registration, and restart-safe profile persistence are
+      complete; unregister/removal controls remain.
 - [x] Interrupted acquisition restarts cleanly and never registers
       a partial bundle as complete.
-- [ ] Malicious archive fixtures covering traversal, symlink escape, and
+- [x] Malicious archive fixtures covering traversal, symlink escape, and
       decompression limits are rejected without writing outside staging.
 - [x] Package audits still prove that no managed data or credentials enter the
       wheel, source distribution, native app, or installer.
@@ -119,7 +121,7 @@ or mutates them without an explicit import action.
 
 ## Current implementation checkpoint
 
-Implemented through the second Phase 3 increment:
+Implemented through the third Phase 3 increment:
 
 - schema-v2 resource profiles with one managed-data root, automatic in-memory
   v1 compatibility, and explicit side-by-side migration;
@@ -150,17 +152,33 @@ Implemented through the second Phase 3 increment:
 - verified wheel, source distribution, and ad-hoc-signed native macOS app; all
   package-boundary and real-token byte scans pass, and the compiled Data Library
   and neuPrint dialog were opened and inspected directly.
+- a native **Import model / ModelDB** dialog with official accession lookup,
+  hosted-archive discovery/download, completely offline ZIP/TAR/folder paths,
+  model-content/simulator/mechanism/entry-point/citation warnings, editable
+  identity, exact destination preview, progress, and cancellation;
+- inert computational-model bundles under a typed read-only `model_source`
+  binding, with optional morphology registration, preserved original archive,
+  source/provenance manifest, checksums, and an explicit record that no code was
+  executed;
+- archive preflight/extraction that rejects absolute/traversal paths, ZIP and
+  TAR links or special entries, encrypted members, duplicate/case-colliding
+  paths, declared-size mismatches, excessive compression ratios, path depth and
+  length, and file/per-file/expanded/compressed byte-limit violations;
+- mocked provider/UI tests and malicious ZIP/TAR fixtures, plus a live official
+  ModelDB accession-245415 smoke that downloaded and inspected its small hosted
+  ZIP without executing it.
 
 Remaining neuPrint work is connectivity-table acquisition, durable resumable
-checkpoints, and broader retry/relink/removal controls. ModelDB remains
-guidance-only until its archive-safety and inert-code contracts are implemented
-and tested.
+checkpoints, and broader retry/relink/removal controls. Model-library retry,
+relink, unregister/removal, manifest-view, and later separately permissioned
+simulator validation remain future increments.
 
 ## External interfaces verified during planning
 
 - neuPrint's supported Python client accepts a server, dataset, and personal
   application token, can list datasets, query connectivity, and export neuron
   skeletons as SWC.
-- ModelDB exposes public metadata through its versioned JSON API and supports
-  downloading model archives; some entries point to externally hosted code, so
-  manual archive/folder import remains a required first-class path.
+- [ModelDB](https://modeldb.science/api) exposes public metadata through its
+  versioned JSON API, and its [official help](https://modeldb.science/help)
+  documents hosted ZIP downloads and externally hosted code; manual
+  archive/folder import therefore remains a required first-class path.

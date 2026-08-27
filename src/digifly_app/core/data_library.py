@@ -461,10 +461,19 @@ def list_managed_resources(
         for manifest in imports_root.rglob(MANIFEST_FILENAME):
             resources.append(_resource_from_manifest(manifest, verify=verify))
             manifests_seen.add(manifest.resolve())
+    for provider_root in (root / "modeldb", root / "models"):
+        if provider_root.is_dir():
+            for manifest in provider_root.rglob(MANIFEST_FILENAME):
+                resolved = manifest.resolve()
+                if resolved in manifests_seen:
+                    continue
+                resources.append(_resource_from_manifest(manifest, verify=verify))
+                manifests_seen.add(resolved)
     for binding in profile.resources:
         if binding.kind not in {
             ResourceKind.MORPHOLOGY_SOURCE,
             ResourceKind.CONNECTOME_SOURCE,
+            ResourceKind.MODEL_SOURCE,
         }:
             continue
         manifest_value = binding.metadata.get("manifest")

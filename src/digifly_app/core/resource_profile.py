@@ -23,6 +23,7 @@ class ResourceKind(str, Enum):
     DIGIFLY_WORKSPACE = "digifly_workspace"
     MORPHOLOGY_SOURCE = "morphology_source"
     CONNECTOME_SOURCE = "connectome_source"
+    MODEL_SOURCE = "model_source"
     NEURON_RUNTIME = "neuron_runtime"
     ARBOR_RUNTIME = "arbor_runtime"
     BMTK_RUNTIME = "bmtk_runtime"
@@ -41,6 +42,7 @@ _EXPECTED_ACCESS = {
     ResourceKind.DIGIFLY_WORKSPACE: AccessMode.READ_ONLY,
     ResourceKind.MORPHOLOGY_SOURCE: AccessMode.READ_ONLY,
     ResourceKind.CONNECTOME_SOURCE: AccessMode.READ_ONLY,
+    ResourceKind.MODEL_SOURCE: AccessMode.READ_ONLY,
     ResourceKind.NEURON_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.ARBOR_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.BMTK_RUNTIME: AccessMode.EXECUTABLE,

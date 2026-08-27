@@ -147,6 +147,18 @@ destination before a cancellable staged download begins. Completed SWCs appear
 in Circuit Builder and open in the existing post-import quality review. Tokens
 are never written to projects, profiles, manifests, logs, or command previews.
 
+**Import model / ModelDB** accepts an official ModelDB accession, a downloaded
+ZIP/TAR archive, or an unpacked local model folder. It previews metadata and
+the exact destination, rejects traversal paths, links, special files,
+case-colliding names, excessive expansion, and configured size/file-count
+limits, then copies or extracts the model through cancellable staging. The
+registered source remains read-only and inert: intake never imports Python,
+runs MATLAB/HOC, compiles NMODL, or launches a simulator. Model SWCs receive the
+same adaptive post-import audit, and the original archive can be retained for
+provenance. When a ModelDB record only links externally hosted code, Workstation
+opens the official page and requires the user to select the downloaded archive
+or folder instead of following an arbitrary external URL automatically.
+
 The Workspace page keeps separate **NEURON Python** and **Arbor Python**
 choices. **Find or install NEURON / Arbor** links to the simulators' official
 guides and offers a consent-gated, read-only search of PATH and common Conda or
