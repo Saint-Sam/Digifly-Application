@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digifly.org/schemas/digifly-resources-v2.schema.json",
+  "title": "Digifly Workstation external resource profile",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "resources"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 2},
+    "profile_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "label": {"type": "string"},
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["resource_id", "kind", "path", "access"],
+        "additionalProperties": false,
+        "properties": {
+          "resource_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+          "kind": {
+            "enum": [
+              "digifly_workspace",
+              "morphology_source",
+              "connectome_source",
+              "neuron_runtime",
+              "arbor_runtime",
+              "bmtk_runtime",
+              "vnd_viewer",
+              "managed_data_root",
+              "output_root"
+            ]
+          },
+          "path": {"type": "string", "minLength": 1},
+          "access": {"enum": ["read_only", "executable", "read_write"]},
+          "label": {"type": "string"},
+          "required": {"type": "boolean"},
+          "metadata": {"type": "object"}
+        }
+      }
+    }
+  }
+}

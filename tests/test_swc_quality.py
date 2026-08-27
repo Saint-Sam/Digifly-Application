@@ -182,6 +182,12 @@ def test_recent_scan_is_bounded_by_manifests_and_records_decisions(tmp_path: Pat
                 AccessMode.READ_WRITE,
             ),
             ResourceBinding(
+                "managed-data",
+                ResourceKind.MANAGED_DATA_ROOT,
+                str(tmp_path / "managed"),
+                AccessMode.READ_WRITE,
+            ),
+            ResourceBinding(
                 "recent-import",
                 ResourceKind.MORPHOLOGY_SOURCE,
                 str(bundle / "export_swc"),

@@ -96,7 +96,7 @@ or mutates them without an explicit import action.
 
 ## Acceptance checklist
 
-- [ ] Version-1 profiles migrate without losing or moving existing bindings.
+- [x] Version-1 profiles migrate without losing or moving existing bindings.
 - [ ] The managed library can be relocated and relinked on macOS, Windows, and
       Linux.
 - [ ] Tokens never appear in profiles, project files, logs, crash reports,
@@ -116,6 +116,25 @@ or mutates them without an explicit import action.
       wheel, source distribution, native app, or installer.
 - [ ] Unit tests use small fixtures or mocked provider responses; no large
       public dataset is required to build or test Digifly Workstation.
+
+## Current implementation checkpoint
+
+Implemented in the first Phase 3 foundation increment:
+
+- schema-v2 resource profiles with one managed-data root, automatic in-memory
+  v1 compatibility, and explicit side-by-side migration;
+- a provider-neutral local-folder importer with collision/free-space checks,
+  symlink and special-file rejection, source-byte preservation, SHA-256 file
+  inventory, provenance metadata, same-filesystem staging, atomic promotion,
+  and post-promotion profile registration;
+- a mandatory per-file SWC structural/adaptive-radius audit recorded in each
+  import manifest, followed by the existing explicit user repair review;
+- Data Library navigation, managed-resource inventory, local import, reveal,
+  and read-only no-copy registration of existing SWC folders.
+
+The neuPrint and ModelDB controls deliberately remain guidance-only until their
+credential, query/archive safety, cancellation, retry, and resume contracts are
+implemented and tested.
 
 ## External interfaces verified during planning
 

@@ -10,6 +10,7 @@ from .core.resource_profile import (
     ResourceProfile,
     default_profile_path,
     make_default_profile,
+    migrate_profile_file,
 )
 
 
@@ -23,6 +24,10 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--profile", default=str(default_profile_path()))
     initialize.add_argument("--workspace", required=True)
     initialize.add_argument("--output", required=True)
+    initialize.add_argument(
+        "--managed-data",
+        help="Writable managed library root (defaults to a data folder beside the output root).",
+    )
     initialize.add_argument("--neuron-python")
     initialize.add_argument("--arbor-python")
     initialize.add_argument("--bmtk-python")
@@ -43,6 +48,14 @@ def _parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate resource bindings and boundaries.")
     validate.add_argument("--profile", default=str(default_profile_path()))
     validate.add_argument("--json", action="store_true")
+
+    migrate = subparsers.add_parser(
+        "migrate", help="Write a schema-v2 profile while preserving the source profile."
+    )
+    migrate.add_argument("--profile", default=str(default_profile_path()))
+    migrate.add_argument("--destination")
+    migrate.add_argument("--replace", action="store_true")
+    migrate.add_argument("--json", action="store_true")
     return parser
 
 
@@ -63,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         profile = make_default_profile(
             workspace_root=args.workspace,
             output_root=args.output,
+            managed_data_root=args.managed_data,
             neuron_runtime=args.neuron_python,
             arbor_runtime=args.arbor_python,
             bmtk_runtime=args.bmtk_python,
@@ -80,6 +94,27 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"Created {destination}")
             print(f"Profile fingerprint: {profile.fingerprint}")
+            print(f"Bindings valid: {'yes' if payload['validation']['ok'] else 'no'}")
+        return 0 if payload["validation"]["ok"] else 1
+
+    if args.command == "migrate":
+        destination = migrate_profile_file(
+            profile_path,
+            args.destination,
+            replace=bool(args.replace),
+        )
+        profile = ResourceProfile.load(destination)
+        payload = {
+            "source": str(profile_path),
+            "profile": str(destination),
+            "fingerprint": profile.fingerprint,
+            "validation": profile.validate().to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Migrated {profile_path}")
+            print(f"Created {destination}")
             print(f"Bindings valid: {'yes' if payload['validation']['ok'] else 'no'}")
         return 0 if payload["validation"]["ok"] else 1
 

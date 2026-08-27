@@ -107,9 +107,13 @@ class DigiflyWorkspace:
         )
         return PreflightReport(tuple(checks))
 
-    def probe_engines(self, python_executable: str) -> tuple[EngineProbe, ...]:
+    def probe_engines(
+        self,
+        python_executable: str,
+        arbor_python_executable: str | None = None,
+    ) -> tuple[EngineProbe, ...]:
         neuron_python = Path(python_executable).expanduser()
-        arbor_python = neuron_python
+        arbor_python = Path(arbor_python_executable or python_executable).expanduser()
         if self.profile is not None:
             from .resource_profile import ResourceKind
 

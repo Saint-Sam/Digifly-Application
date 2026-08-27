@@ -13,6 +13,7 @@ from digifly_app.core.resource_profile import (
     ResourceKind,
     ResourceProfile,
     make_default_profile,
+    migrate_profile_file,
 )
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.resource_cli import main as resource_cli_main
@@ -39,6 +40,7 @@ def test_resource_profile_round_trip_and_fingerprint(tmp_path: Path):
     assert restored.fingerprint == profile.fingerprint
     assert restored.workspace_root == workspace.resolve()
     assert restored.output_root == output.resolve()
+    assert restored.managed_data_root == (tmp_path / "data").resolve()
     assert restored.validate().ok
 
 
@@ -127,6 +129,74 @@ def test_resource_cli_creates_and_validates_profile(tmp_path: Path, capsys):
     ) == 0
     validated = json.loads(capsys.readouterr().out)
     assert validated["ok"] is True
+
+
+def test_v1_profile_migrates_without_changing_existing_bindings(tmp_path: Path):
+    workspace = _workspace(tmp_path / "Digifly Public")
+    output = tmp_path / "runs"
+    source = tmp_path / "resources-v1.json"
+    source.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "profile_id": "legacy",
+                "label": "Legacy profile",
+                "resources": [
+                    {
+                        "resource_id": "digifly-public",
+                        "kind": "digifly_workspace",
+                        "path": str(workspace),
+                        "access": "read_only",
+                        "label": "Digifly Public",
+                        "required": True,
+                        "metadata": {},
+                    },
+                    {
+                        "resource_id": "workstation-output",
+                        "kind": "output_root",
+                        "path": str(output),
+                        "access": "read_write",
+                        "label": "Output",
+                        "required": True,
+                        "metadata": {},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    profile = ResourceProfile.load(source)
+
+    assert profile.schema_version == 2
+    assert profile.output_root == output.resolve()
+    assert profile.managed_data_root == (tmp_path / "data").resolve()
+    assert [binding.resource_id for binding in profile.resources[:2]] == [
+        "digifly-public",
+        "workstation-output",
+    ]
+    destination = migrate_profile_file(source)
+    assert destination.name == "resources-v2.json"
+    assert source.is_file()
+    assert json.loads(source.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert json.loads(destination.read_text(encoding="utf-8"))["schema_version"] == 2
+
+
+def test_resource_cli_migrates_v1_profile(tmp_path: Path, capsys):
+    workspace = _workspace(tmp_path / "Digifly Public")
+    v2_profile = make_default_profile(workspace_root=workspace, output_root=tmp_path / "runs")
+    payload = v2_profile.to_dict()
+    payload["schema_version"] = 1
+    payload["resources"] = [
+        item for item in payload["resources"] if item["kind"] != "managed_data_root"
+    ]
+    source = tmp_path / "resources-v1.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert resource_cli_main(["migrate", "--profile", str(source), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert Path(result["profile"]).name == "resources-v2.json"
+    assert result["validation"]["ok"] is True
 
 
 def test_doctor_plan_refuses_an_invalid_profile_boundary(tmp_path: Path, capsys):

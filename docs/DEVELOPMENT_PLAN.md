@@ -41,6 +41,19 @@ Status: complete. See `PHASE1_ACCEPTANCE.md`.
 
 Status: complete. See `PHASE2_ACCEPTANCE.md`.
 
+## Cross-cutting runtime onboarding
+
+- Keep NEURON and Arbor external to the application package and permit a
+  different verified Python interpreter for each simulator.
+- Link users to each simulator's official installation documentation.
+- Ask permission before a bounded, read-only PATH/common-environment search;
+  never scan the whole disk or modify an environment.
+- Probe package metadata in sanitized child processes, show versions and exact
+  interpreter paths, and persist only choices the user explicitly accepts.
+
+Status: foundation implemented; automated installation and per-platform
+troubleshooting recipes remain future work.
+
 ## Phase 3 — managed data acquisition and import
 
 - Add a configurable, Workstation-managed data-library root outside the
@@ -65,7 +78,11 @@ Status: complete. See `PHASE2_ACCEPTANCE.md`.
 - Never bundle downloaded scientific data, credentials, or generated indexes
   in the core application or its release artifacts.
 
-Status: planned. See `PHASE3_DATA_ACQUISITION_PLAN.md`.
+Status: in progress. The v2 managed-data profile/migration, staged local-folder
+import, checksum/provenance manifest, atomic promotion, adaptive SWC audit, and
+Data Library foundation are implemented. neuPrint, ModelDB archive/accession,
+credential-store, resumable-job, relink, and removal flows remain. See
+`PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation
 

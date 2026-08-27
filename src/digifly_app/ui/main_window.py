@@ -49,6 +49,10 @@ from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.paths import resource_path
 from digifly_app.core.resource_profile import ResourceKind, load_default_profile
+from digifly_app.core.resource_profile import (
+    default_profile_path,
+    update_runtime_bindings,
+)
 from digifly_app.engines.arbor_escape_siz import (
     ArborAblationComparisonConfig,
     ArborEscapeSizAdapter,
@@ -61,6 +65,8 @@ from digifly_app.engines.neuron_escape_siz import (
 )
 from .style import APP_STYLE
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
+from .data_library import DataLibraryPage
+from .runtime_setup import RuntimeSetupDialog
 from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_label_copyable
 
 
@@ -154,9 +160,17 @@ class OverviewPage(QWidget):
         self.workspace_edit = QLineEdit(str(Path.home() / "Desktop" / "Digifly Public"))
         self.output_edit = QLineEdit(str(_workspace_home() / "runs"))
         self.python_edit = QLineEdit("/opt/anaconda3/bin/python")
+        self.arbor_python_edit = QLineEdit("/opt/anaconda3/bin/python")
         form.addRow("Digifly Public root", _path_row(self.workspace_edit, self, "Choose Digifly Public"))
         form.addRow("Workstation output root", _path_row(self.output_edit, self, "Choose output root"))
         form.addRow("NEURON Python", _path_row(self.python_edit, self, "Choose NEURON Python", file_mode=True))
+        form.addRow(
+            "Arbor Python",
+            _path_row(self.arbor_python_edit, self, "Choose Arbor Python", file_mode=True),
+        )
+        runtime_setup = QPushButton("Find or install NEURON / Arbor…")
+        runtime_setup.clicked.connect(self.open_runtime_setup)
+        form.addRow("Runtime setup", runtime_setup)
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 5, 0, 0)
@@ -207,8 +221,51 @@ class OverviewPage(QWidget):
         layout.addStretch(1)
         root_layout.addWidget(_scroll_page(content))
 
-        for editor in (self.workspace_edit, self.output_edit, self.python_edit):
+        for editor in (
+            self.workspace_edit,
+            self.output_edit,
+            self.python_edit,
+            self.arbor_python_edit,
+        ):
             editor.textChanged.connect(self.settings_changed)
+
+    def open_runtime_setup(self) -> None:
+        dialog = RuntimeSetupDialog(
+            current_neuron=self.python_edit.text(),
+            current_arbor=self.arbor_python_edit.text(),
+            parent=self,
+        )
+        dialog.runtimes_selected.connect(self._runtime_selected)
+        dialog.exec()
+
+    def _runtime_selected(self, neuron_python: str, arbor_python: str) -> None:
+        if neuron_python:
+            self.python_edit.setText(neuron_python)
+        if arbor_python:
+            self.arbor_python_edit.setText(arbor_python)
+        profile_path = default_profile_path()
+        try:
+            profile = load_default_profile()
+            if profile is None:
+                self.doctor_summary.setText(
+                    "Runtime detected. Create a resource profile to persist it machine-wide."
+                )
+                return
+            updated = update_runtime_bindings(
+                profile,
+                neuron_runtime=neuron_python or None,
+                arbor_runtime=arbor_python or None,
+            )
+            destination = (
+                profile_path.with_name("resources-v2.json")
+                if profile_path.name == "resources-v1.json"
+                else profile_path
+            )
+            updated.save(destination, replace=destination.exists())
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not save runtime choices", str(exc))
+            return
+        self.doctor_summary.setText(f"Saved verified runtimes to {destination}")
 
     def workspace(self) -> DigiflyWorkspace:
         return DigiflyWorkspace(self.workspace_edit.text())
@@ -220,7 +277,9 @@ class OverviewPage(QWidget):
         workspace = self.workspace()
         base = workspace.base_preflight()
         try:
-            probes = workspace.probe_engines(self.python_edit.text())
+            probes = workspace.probe_engines(
+                self.python_edit.text(), self.arbor_python_edit.text()
+            )
             resources = capture_resources(self.output_edit.text())
         except Exception as exc:  # GUI boundary: show diagnostic rather than crash.
             self.doctor_summary.setText(f"Doctor failed: {exc}")
@@ -580,7 +639,7 @@ class ExperimentPage(QWidget):
                 "The Arbor comparison is locked to all 11 GFC2 cells at 0.9 nA in both conditions."
             )
         return ArborAblationComparisonConfig(
-            python_executable=self.overview.python_edit.text().strip(),
+            python_executable=self.overview.arbor_python_edit.text().strip(),
             contact_site_na_multiplier=self.na_multiplier.value(),
             static_reverse_fraction=self.residual.value(),
             requested_hetero_g_closed_frac=self.closed_frac.value(),
@@ -1133,7 +1192,10 @@ class EnginesPage(QWidget):
         clear_layout(self.cards)
         QApplication.processEvents()
         try:
-            probes = self.overview.workspace().probe_engines(self.overview.python_edit.text())
+            probes = self.overview.workspace().probe_engines(
+                self.overview.python_edit.text(),
+                self.overview.arbor_python_edit.text(),
+            )
         except Exception as exc:
             self.cards.addWidget(_muted_label(f"Engine probe failed: {exc}"))
             return
@@ -1177,6 +1239,7 @@ class MainWindow(QMainWindow):
         for index, (label, icon) in enumerate(
             (
                 ("Workspace", "⌂"),
+                ("Data Library", "▤"),
                 ("Circuit Builder", "⌁"),
                 ("Escape-SIZ", "◉"),
                 ("Results", "▦"),
@@ -1217,12 +1280,14 @@ class MainWindow(QMainWindow):
         right.addWidget(topbar)
         self.pages = QStackedWidget()
         self.overview_page = OverviewPage()
+        self.data_library_page = DataLibraryPage()
         self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
         self.experiment_page = ExperimentPage(self.overview_page)
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
         self.engines_page = EnginesPage(self.overview_page)
         for page in (
             self.overview_page,
+            self.data_library_page,
             self.circuit_builder_page,
             self.experiment_page,
             self.results_page,
@@ -1234,6 +1299,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
         self.circuit_builder_page.status_message.connect(self.statusBar().showMessage)
+        self.data_library_page.status_message.connect(self.statusBar().showMessage)
+        self.data_library_page.sources_changed.connect(
+            self.circuit_builder_page.refresh_connectomes
+        )
+        self.data_library_page.quality_review_requested.connect(
+            self.circuit_builder_page.review_recent_imports
+        )
         self.experiment_page.status_message.connect(self.statusBar().showMessage)
         self.results_page.status_message.connect(self.statusBar().showMessage)
         self.experiment_page.result_ready.connect(
@@ -1261,6 +1333,8 @@ class MainWindow(QMainWindow):
             self._last_editor_page = current
         if current is self.engines_page:
             self.engines_page.refresh()
+        if current is self.data_library_page:
+            self.data_library_page.refresh()
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -1425,6 +1499,7 @@ class MainWindow(QMainWindow):
         workspace = self.settings.value("workspace_root")
         output = self.settings.value("output_root")
         worker_python = self.settings.value("neuron_python")
+        arbor_python = self.settings.value("arbor_python")
         try:
             profile = load_default_profile()
         except (OSError, ValueError):
@@ -1437,6 +1512,9 @@ class MainWindow(QMainWindow):
             if not worker_python:
                 runtime = profile.runtime_path(ResourceKind.NEURON_RUNTIME)
                 worker_python = str(runtime) if runtime is not None else None
+            if not arbor_python:
+                runtime = profile.runtime_path(ResourceKind.ARBOR_RUNTIME)
+                arbor_python = str(runtime) if runtime is not None else None
         # Import only read-only input/runtime bindings from the legacy app on
         # first launch. Workstation outputs deliberately remain in their new
         # default root so the two applications cannot overwrite each other's
@@ -1451,8 +1529,19 @@ class MainWindow(QMainWindow):
             self.overview_page.output_edit.setText(str(output))
         if worker_python:
             self.overview_page.python_edit.setText(str(worker_python))
+        if arbor_python:
+            self.overview_page.arbor_python_edit.setText(str(arbor_python))
 
     def closeEvent(self, event: Any) -> None:
+        if self.data_library_page.import_in_progress:
+            QMessageBox.warning(
+                self,
+                "A data import is still running",
+                "The app will remain open until staging, validation, and registration finish. "
+                "An incomplete bundle is never promoted into the Data Library.",
+            )
+            event.ignore()
+            return
         if self.experiment_page._process is not None:
             QMessageBox.warning(
                 self,
@@ -1465,6 +1554,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("workspace_root", self.overview_page.workspace_edit.text())
         self.settings.setValue("output_root", self.overview_page.output_edit.text())
         self.settings.setValue("neuron_python", self.overview_page.python_edit.text())
+        self.settings.setValue("arbor_python", self.overview_page.arbor_python_edit.text())
         super().closeEvent(event)
 
 

@@ -13,7 +13,8 @@ import tempfile
 from typing import Any, Iterable, Mapping
 
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
+LEGACY_PROFILE_SCHEMA_VERSION = 1
 PROFILE_PATH_ENV = "DIGIFLY_WORKSTATION_PROFILE"
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -26,6 +27,7 @@ class ResourceKind(str, Enum):
     ARBOR_RUNTIME = "arbor_runtime"
     BMTK_RUNTIME = "bmtk_runtime"
     VND_VIEWER = "vnd_viewer"
+    MANAGED_DATA_ROOT = "managed_data_root"
     OUTPUT_ROOT = "output_root"
 
 
@@ -43,6 +45,7 @@ _EXPECTED_ACCESS = {
     ResourceKind.ARBOR_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.BMTK_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.VND_VIEWER: AccessMode.READ_ONLY,
+    ResourceKind.MANAGED_DATA_ROOT: AccessMode.READ_WRITE,
     ResourceKind.OUTPUT_ROOT: AccessMode.READ_WRITE,
 }
 
@@ -134,6 +137,8 @@ class ResourceProfile:
             raise ValueError("A resource profile requires exactly one Digifly workspace")
         if len(self.bindings(ResourceKind.OUTPUT_ROOT)) != 1:
             raise ValueError("A resource profile requires exactly one output root")
+        if len(self.bindings(ResourceKind.MANAGED_DATA_ROOT)) != 1:
+            raise ValueError("A resource profile requires exactly one managed data root")
         for kind in (
             ResourceKind.NEURON_RUNTIME,
             ResourceKind.ARBOR_RUNTIME,
@@ -159,6 +164,12 @@ class ResourceProfile:
     @property
     def output_root(self) -> Path:
         binding = self.binding(ResourceKind.OUTPUT_ROOT)
+        assert binding is not None
+        return binding.resolved_path
+
+    @property
+    def managed_data_root(self) -> Path:
+        binding = self.binding(ResourceKind.MANAGED_DATA_ROOT)
         assert binding is not None
         return binding.resolved_path
 
@@ -189,6 +200,7 @@ class ResourceProfile:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ResourceProfile":
+        payload = migrate_profile_payload(payload)
         resources = payload.get("resources")
         if not isinstance(resources, list):
             raise ValueError("Resource profile resources must be a list")
@@ -235,14 +247,25 @@ class ResourceProfile:
         checks: list[ResourceCheck] = []
         for binding in self.resources:
             path = binding.resolved_path
-            if binding.kind == ResourceKind.OUTPUT_ROOT:
-                exists = path.is_dir() or (not path.exists() and path.parent.is_dir())
+            if binding.kind in {ResourceKind.OUTPUT_ROOT, ResourceKind.MANAGED_DATA_ROOT}:
+                exists = (
+                    path.is_dir() and os.access(path, os.W_OK)
+                ) or (
+                    not path.exists()
+                    and path.parent.is_dir()
+                    and os.access(path.parent, os.W_OK)
+                )
+                noun = (
+                    "managed data directory"
+                    if binding.kind == ResourceKind.MANAGED_DATA_ROOT
+                    else "output directory"
+                )
                 detail = (
-                    "Writable output directory is available."
-                    if path.is_dir()
-                    else "Output directory can be created beneath its existing parent."
+                    f"Writable {noun} is available."
+                    if exists and path.is_dir()
+                    else f"{noun.capitalize()} can be created beneath its existing parent."
                     if exists
-                    else "Output directory and its parent do not exist."
+                    else f"{noun.capitalize()} is unavailable or not writable."
                 )
             elif binding.kind in {
                 ResourceKind.NEURON_RUNTIME,
@@ -274,32 +297,105 @@ class ResourceProfile:
                 )
             )
 
+        writable_roots = (
+            ("output-boundary", "Output root", self.output_root),
+            ("managed-data-boundary", "Managed data root", self.managed_data_root),
+        )
+        for check_id, label, writable_root in writable_roots:
+            for binding in self.resources:
+                if binding.access != AccessMode.READ_ONLY:
+                    continue
+                source = binding.resolved_path
+                try:
+                    writable_root.relative_to(source)
+                except ValueError:
+                    continue
+                checks.append(
+                    ResourceCheck(
+                        check_id,
+                        False,
+                        True,
+                        f"{label} is inside read-only resource {binding.resource_id}.",
+                        str(writable_root),
+                    )
+                )
         output = self.output_root
-        for binding in self.resources:
-            if binding.access != AccessMode.READ_ONLY:
-                continue
-            source = binding.resolved_path
-            try:
-                output.relative_to(source)
-            except ValueError:
-                continue
+        managed = self.managed_data_root
+        if _paths_overlap(output, managed):
             checks.append(
                 ResourceCheck(
-                    "output-boundary",
+                    "writable-boundary",
                     False,
                     True,
-                    f"Output root is inside read-only resource {binding.resource_id}.",
-                    str(output),
+                    "Output and managed data roots must not contain one another.",
+                    f"{output} | {managed}",
                 )
             )
         return ResourceProfileReport(tuple(checks))
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+        return True
+    except ValueError:
+        pass
+    try:
+        right.relative_to(left)
+        return True
+    except ValueError:
+        return False
+
+
+def _v1_managed_data_root(payload: Mapping[str, Any]) -> Path:
+    resources = payload.get("resources")
+    if isinstance(resources, list):
+        for item in resources:
+            if not isinstance(item, Mapping) or item.get("kind") != ResourceKind.OUTPUT_ROOT.value:
+                continue
+            output = Path(str(item.get("path") or "")).expanduser()
+            if str(output).strip():
+                return output.parent / "data"
+    return Path.home() / "Digifly Workstation Workspace" / "data"
+
+
+def migrate_profile_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a schema-v2 payload without moving or rewriting any bound resource."""
+    migrated = dict(payload)
+    version = int(migrated.get("schema_version", 0))
+    if version == PROFILE_SCHEMA_VERSION:
+        return migrated
+    if version != LEGACY_PROFILE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported resource profile schema {version}; expected "
+            f"{LEGACY_PROFILE_SCHEMA_VERSION} or {PROFILE_SCHEMA_VERSION}"
+        )
+    resources = migrated.get("resources")
+    if not isinstance(resources, list):
+        raise ValueError("Resource profile resources must be a list")
+    migrated_resources = [dict(item) for item in resources]
+    migrated_resources.append(
+        ResourceBinding(
+            "workstation-data",
+            ResourceKind.MANAGED_DATA_ROOT,
+            str(_v1_managed_data_root(migrated)),
+            AccessMode.READ_WRITE,
+            "Digifly Workstation managed data",
+        ).to_dict()
+    )
+    migrated["schema_version"] = PROFILE_SCHEMA_VERSION
+    migrated["resources"] = migrated_resources
+    return migrated
 
 
 def default_profile_path() -> Path:
     override = os.environ.get(PROFILE_PATH_ENV, "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return Path.home() / "Digifly Workstation Workspace" / "config" / "resources-v1.json"
+    config_root = Path.home() / "Digifly Workstation Workspace" / "config"
+    current = config_root / "resources-v2.json"
+    legacy = config_root / "resources-v1.json"
+    return current if current.is_file() or not legacy.is_file() else legacy
 
 
 def load_default_profile() -> ResourceProfile | None:
@@ -307,16 +403,72 @@ def load_default_profile() -> ResourceProfile | None:
     return ResourceProfile.load(path) if path.is_file() else None
 
 
+def migrate_profile_file(
+    source: str | Path,
+    destination: str | Path | None = None,
+    *,
+    replace: bool = False,
+) -> Path:
+    """Write a v2 profile beside a v1 profile, preserving the source by default."""
+    source_path = Path(source).expanduser().resolve()
+    profile = ResourceProfile.load(source_path)
+    destination_path = (
+        Path(destination).expanduser().resolve()
+        if destination is not None
+        else source_path.with_name("resources-v2.json")
+    )
+    return profile.save(destination_path, replace=replace)
+
+
+def update_runtime_bindings(
+    profile: ResourceProfile,
+    *,
+    neuron_runtime: str | Path | None = None,
+    arbor_runtime: str | Path | None = None,
+) -> ResourceProfile:
+    """Return a profile with verified external runtime choices replaced by kind."""
+    replacements = {
+        ResourceKind.NEURON_RUNTIME: neuron_runtime,
+        ResourceKind.ARBOR_RUNTIME: arbor_runtime,
+    }
+    resources = list(profile.resources)
+    for kind, runtime in replacements.items():
+        if runtime is None:
+            continue
+        existing = profile.binding(kind)
+        replacement = ResourceBinding(
+            existing.resource_id if existing is not None else kind.value.removesuffix("_runtime"),
+            kind,
+            str(Path(runtime).expanduser()),
+            AccessMode.EXECUTABLE,
+            existing.label if existing is not None else f"{kind.value.split('_')[0].upper()} Python",
+            False,
+            dict(existing.metadata) if existing is not None else {},
+        )
+        if existing is None:
+            resources.append(replacement)
+        else:
+            resources[resources.index(existing)] = replacement
+    return ResourceProfile(profile.profile_id, tuple(resources), profile.label)
+
+
 def make_default_profile(
     *,
     workspace_root: str | Path,
     output_root: str | Path,
+    managed_data_root: str | Path | None = None,
     neuron_runtime: str | Path | None = None,
     arbor_runtime: str | Path | None = None,
     bmtk_runtime: str | Path | None = None,
     vnd_viewer: str | Path | None = None,
     morphology_sources: Iterable[tuple[str, str | Path, str]] = (),
 ) -> ResourceProfile:
+    output_path = Path(output_root).expanduser()
+    managed_path = (
+        Path(managed_data_root).expanduser()
+        if managed_data_root is not None
+        else output_path.parent / "data"
+    )
     resources = [
         ResourceBinding(
             "digifly-public",
@@ -328,9 +480,16 @@ def make_default_profile(
         ResourceBinding(
             "workstation-output",
             ResourceKind.OUTPUT_ROOT,
-            str(Path(output_root).expanduser()),
+            str(output_path),
             AccessMode.READ_WRITE,
             "Digifly Workstation output",
+        ),
+        ResourceBinding(
+            "workstation-data",
+            ResourceKind.MANAGED_DATA_ROOT,
+            str(managed_path),
+            AccessMode.READ_WRITE,
+            "Digifly Workstation managed data",
         ),
     ]
     optional = (

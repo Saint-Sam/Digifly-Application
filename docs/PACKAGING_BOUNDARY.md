@@ -36,11 +36,14 @@ import data into a configurable Workstation-managed data library. It never
 mutates user-managed source datasets or silently copies scientific data into
 its installation.
 
-Machine bindings are stored in a versioned `digifly-resources-v1` profile.
+Machine bindings are stored in a versioned `digifly-resources-v2` profile;
+version-1 profiles remain readable and can be migrated to a separate v2 file
+without moving or altering their resources.
 Each binding declares its kind and access intent. Digifly workspaces,
 morphology sources, connectomes, and optional viewers are read-only; simulator
-interpreters are executable; only the Workstation output root is read-write.
-Profile validation blocks an output root located inside any read-only resource.
+interpreters are executable; the Workstation output and managed-data roots are
+read-write. Profile validation blocks either writable root inside a read-only
+resource and prevents the two writable roots from containing one another.
 
 ## Runtime storage contract
 

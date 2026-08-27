@@ -81,6 +81,7 @@ where = ["src"]
   "schemas/digifly-circuit-v2.schema.json",
   "schemas/digifly-project-v1.schema.json",
   "schemas/digifly-resources-v1.schema.json",
+  "schemas/digifly-resources-v2.schema.json",
 ]
 "share/digifly-workstation/scripts" = ["scripts/build_arbor_gap_catalogue.py"]
 

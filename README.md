@@ -117,11 +117,32 @@ Create a machine-local external-resource profile without copying datasets:
 digifly-resources init \
   --workspace "/path/to/Digifly Public" \
   --output "$HOME/Digifly Workstation Workspace/runs" \
+  --managed-data "$HOME/Digifly Workstation Workspace/data" \
   --neuron-python "/path/to/neuron/python" \
   --morphology "external-swcs=/path/to/SWC/root"
 digifly-resources validate
-digifly-doctor --profile "$HOME/Digifly Workstation Workspace/config/resources-v1.json"
+digifly-doctor --profile "$HOME/Digifly Workstation Workspace/config/resources-v2.json"
 ```
+
+Existing version-1 profiles load without modification. Write the current
+version beside the preserved v1 file with:
+
+```bash
+digifly-resources migrate \
+  --profile "$HOME/Digifly Workstation Workspace/config/resources-v1.json"
+```
+
+The **Data Library** page can copy a local folder through validated staging or
+register an existing SWC folder read-only without copying it. Managed imports
+receive a provenance/checksum manifest and an adaptive per-SWC quality audit
+before atomic promotion.
+
+The Workspace page keeps separate **NEURON Python** and **Arbor Python**
+choices. **Find or install NEURON / Arbor** links to the simulators' official
+guides and offers a consent-gated, read-only search of PATH and common Conda or
+virtual-environment locations. Discovery reads package metadata in isolated
+child processes and saves only approved interpreter paths to the machine-local
+resource profile.
 
 Audit recent manifest-declared SWC imports without scanning large legacy
 connectome trees, then optionally review radius-only repairs:

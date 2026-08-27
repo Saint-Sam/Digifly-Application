@@ -140,14 +140,38 @@ as JSON, CSV, NPZ, HDF5/SONATA, SWC, PNG, and PDF.
 Machine-local paths are represented by a separate versioned resource profile,
 not package defaults or copied data. Typed bindings cover the Digifly Public
 workspace, additional morphology/connectome roots, simulator interpreters,
-optional VND viewers, and the single writable output root. Every binding has an
-explicit access intent. Validation is fail-closed when the output root resolves
-inside a read-only scientific source.
+optional VND viewers, the writable output root, and the writable managed-data
+root. Every binding has an explicit access intent. Version-1 profiles migrate
+in memory without moving any binding; an explicit command writes a separate
+version-2 file. Validation is fail-closed when either writable root resolves
+inside a read-only scientific source or the writable roots contain one another.
+
+Local managed imports are copied under `data/imports/<provider>/<id>/<version>`.
+Workstation inventories the selected source, rejects symlinks and non-regular
+entries, checks available space, copies into `data/.staging`, hashes every file,
+runs the adaptive SWC audit, writes a provider-neutral manifest, and atomically
+renames the completed bundle into place. Only a promoted bundle is registered
+as a morphology provider. User-managed folders remain a separate read-only,
+no-copy registration path.
 
 Provider adapters translate registered morphology roots into ordinary
 `ConnectomeRef` records without crawling or copying them. The existing Digifly
 Public discovery path remains compatible; explicit providers are indexed only
 after a user selects the source.
+
+## Simulator runtime onboarding
+
+NEURON and Arbor remain external dependencies and may use distinct Python
+interpreters. Workstation links to the official
+[NEURON installation guide](https://nrn.readthedocs.io/en/latest/index.html#installation)
+and [Arbor Python installation guide](https://docs.arbor-sim.org/en/latest/install/python.html).
+Runtime discovery never begins implicitly: the user first approves a dialog
+that names the bounded search locations and actions. The search reads PATH and
+immediate children of common Conda/virtual-environment roots, launches each
+candidate Python with a sanitized environment, and checks module/package
+metadata without importing simulator modules into the GUI. The user reviews
+exact interpreter paths and versions before the selected NEURON and Arbor
+bindings are written to the machine-local v2 profile.
 
 ## Escape-SIZ boundary
 

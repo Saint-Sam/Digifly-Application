@@ -19,6 +19,11 @@ from digifly_app.ui.main_window import (
     OverviewPage,
     _workspace_home,
 )
+from digifly_app.ui.runtime_setup import (
+    ARBOR_INSTALL_URL,
+    NEURON_INSTALL_URL,
+    RuntimeSetupDialog,
+)
 
 
 def test_workstation_identity_and_writable_root_are_distinct():
@@ -28,27 +33,49 @@ def test_workstation_identity_and_writable_root_are_distinct():
     assert _workspace_home().name == "Digifly Workstation Workspace"
 
 
+def test_runtime_setup_requires_consent_before_search(monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    dialog = RuntimeSetupDialog()
+    try:
+        dialog.request_search()
+        application.processEvents()
+        assert dialog._thread is None
+        assert "not authorized" in dialog.status.text()
+        assert NEURON_INSTALL_URL.startswith("https://nrn.readthedocs.io/")
+        assert ARBOR_INSTALL_URL.startswith("https://docs.arbor-sim.org/")
+    finally:
+        dialog.close()
+
+
 def test_main_window_constructs_without_importing_simulators():
     application = QApplication.instance() or QApplication([])
     overview = OverviewPage()
     assert overview.output_edit.text() == str(_workspace_home() / "runs")
+    assert overview.arbor_python_edit.text()
     overview.close()
     window = MainWindow()
     try:
-        assert window.pages.count() == 5
+        assert window.pages.count() == 6
         assert window.windowTitle() == "Digifly Workstation"
         assert window.experiment_page.run_button.isEnabled() is False
+        assert window.data_library_page.import_in_progress is False
         assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
+        assert window.experiment_page.arbor_config().python_executable == window.overview_page.arbor_python_edit.text()
 
-        window.nav_buttons[1].setChecked(True)
+        window.nav_buttons[2].setChecked(True)
         application.processEvents()
         assert window.pages.currentWidget() is window.circuit_builder_page
         assert window.nav_buttons[0].isChecked() is False
 
-        window.nav_buttons[3].click()
+        window.nav_buttons[4].click()
         application.processEvents()
         assert window.pages.currentWidget() is window.results_page
-        assert window.nav_buttons[1].isChecked() is False
+        assert window.nav_buttons[2].isChecked() is False
     finally:
         window.close()
         application.processEvents()
