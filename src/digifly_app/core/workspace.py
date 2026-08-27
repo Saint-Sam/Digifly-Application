@@ -80,6 +80,12 @@ class DigiflyWorkspace:
         )
 
     def base_preflight(self) -> PreflightReport:
+        """Validate only the generic Digifly workspace boundary.
+
+        Scientific workflow markers belong to their adapters.  In particular,
+        an Escape-SIZ handoff, plotting contract, or cache is not required for
+        a healthy Digifly Workstation installation.
+        """
         checks: list[PreflightCheck] = []
         checks.append(
             _path_check(
@@ -95,24 +101,6 @@ class DigiflyWorkspace:
                 "readme",
                 "Digifly Public marker",
                 self.root / "README.md",
-                expected="file",
-                blocking=True,
-            )
-        )
-        checks.append(
-            _path_check(
-                "handoff",
-                "Escape-SIZ handoff",
-                self.escape_siz_handoff,
-                expected="file",
-                blocking=True,
-            )
-        )
-        checks.append(
-            _path_check(
-                "plotting_contract",
-                "Escape-SIZ plotting contract",
-                self.plotting_contract,
                 expected="file",
                 blocking=True,
             )
@@ -254,9 +242,8 @@ def _probe_neuron_runtime(python_executable: str, phase2_root: Path) -> tuple[Ch
     executable = Path(python_executable).expanduser()
     if not executable.is_file():
         return CheckState.FAIL, f"Python executable not found: {executable}"
-    # Probe the selected scientific interpreter itself.  Escape-SIZ's active
-    # notebook uses /opt/anaconda3 NEURON 9; appending the separate NEURON.app
-    # Python tree would report a runtime that the cache child does not use.
+    # Probe the selected scientific interpreter itself rather than accidentally
+    # discovering a different user- or system-level NEURON installation.
     paths = [str(phase2_root)]
     code = (
         "import json, neuron; "

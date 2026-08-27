@@ -14,6 +14,7 @@ from digifly_app.core.resource_profile import (
     ResourceProfile,
     make_default_profile,
 )
+from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.resource_cli import main as resource_cli_main
 from digifly_app.cli import main as doctor_cli_main
 
@@ -137,3 +138,27 @@ def test_doctor_plan_refuses_an_invalid_profile_boundary(tmp_path: Path, capsys)
     profile_path = profile.save(tmp_path / "unsafe-resources.json")
     assert doctor_cli_main(["plan", "--profile", str(profile_path)]) == 2
     assert "Invalid resource profile [output-boundary]" in capsys.readouterr().err
+
+
+def test_doctor_is_generic_and_requires_no_escape_siz_cache(
+    tmp_path: Path, capsys, monkeypatch
+):
+    workspace = _workspace(tmp_path / "Digifly Public")
+    profile = make_default_profile(
+        workspace_root=workspace,
+        output_root=tmp_path / "Workstation output",
+    )
+    profile_path = profile.save(tmp_path / "resources.json")
+    monkeypatch.setattr(
+        "digifly_app.cli._qt_probe",
+        lambda: {"ok": True, "detail": "test Qt", "python": "/test/python"},
+    )
+    monkeypatch.setattr(DigiflyWorkspace, "probe_engines", lambda self, _python: ())
+
+    assert doctor_cli_main(["doctor", "--profile", str(profile_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["workspace_validation"]["ok"] is True
+    assert payload["configured_runtime_validation"] == {"ok": True, "required": []}
+    assert "escape_siz" not in payload
+    assert "cache" not in json.dumps(payload).lower()

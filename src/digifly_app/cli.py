@@ -10,7 +10,6 @@ from typing import Sequence
 from digifly_app.core.resources import capture_resources
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.resource_profile import ResourceKind, ResourceProfile
-from digifly_app.engines.neuron_escape_siz import EscapeSizConfig, NeuronEscapeSizAdapter
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,8 +21,6 @@ def _parser() -> argparse.ArgumentParser:
     doctor_source.add_argument("--profile")
     doctor.add_argument("--python")
     doctor.add_argument("--output")
-    doctor.add_argument("--allow-cache-build", action="store_true")
-    doctor.add_argument("--acknowledge-legacy-writes", action="store_true")
     doctor.add_argument("--json", action="store_true")
 
     plan = subparsers.add_parser("plan", help="Print the first Escape-SIZ execution plan.")
@@ -66,15 +63,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         configured_python or Path("/opt/anaconda3/bin/python")
     )
     workspace = DigiflyWorkspace(workspace_root, profile=profile)
-    if getattr(args, "ablation_notebook", False):
-        config = EscapeSizConfig.ablation_notebook_active()
-    elif getattr(args, "canonical_dual_gf", False):
-        config = EscapeSizConfig.canonical_dual_gf()
-    else:
-        config = EscapeSizConfig.ablation_notebook_active()
-    config.python_executable = python_executable
-    adapter = NeuronEscapeSizAdapter(workspace)
     if args.command == "plan":
+        from digifly_app.engines.neuron_escape_siz import (
+            EscapeSizConfig,
+            NeuronEscapeSizAdapter,
+        )
+
+        if getattr(args, "canonical_dual_gf", False):
+            config = EscapeSizConfig.canonical_dual_gf()
+        else:
+            config = EscapeSizConfig.ablation_notebook_active()
+        config.python_executable = python_executable
+        adapter = NeuronEscapeSizAdapter(workspace)
         resolved = adapter.plan(config, output_root=output_root)
         if args.json:
             print(json.dumps(resolved.to_dict(), indent=2))
@@ -84,18 +84,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"output behavior: {resolved.output_behavior}")
         return 0
 
-    report = adapter.validate(
-        config,
-        output_root=output_root,
-        allow_new_cache_build=bool(args.allow_cache_build),
-        legacy_write_acknowledged=bool(args.acknowledge_legacy_writes),
-    )
+    workspace_report = workspace.base_preflight()
     probes = workspace.probe_engines(python_executable)
     resources = capture_resources(output_root)
     qt = _qt_probe()
+    required_runtime_keys: set[str] = set()
+    if profile is not None:
+        runtime_kinds = {
+            ResourceKind.NEURON_RUNTIME: "neuron",
+            ResourceKind.ARBOR_RUNTIME: "arbor",
+            ResourceKind.BMTK_RUNTIME: "bmtk",
+        }
+        required_runtime_keys = {
+            runtime_kinds[binding.kind]
+            for binding in profile.resources
+            if binding.required and binding.kind in runtime_kinds
+        }
+    configured_runtime_validation = {
+        "ok": all(
+            next(
+                (
+                    probe.runtime_state.value
+                    for probe in probes
+                    if probe.key == required_key
+                ),
+                "missing",
+            )
+            == "pass"
+            for required_key in required_runtime_keys
+        ),
+        "required": sorted(required_runtime_keys),
+    }
     payload = {
-        "ok": report.ok and (profile_report is None or profile_report.ok),
+        "ok": (
+            workspace_report.ok
+            and qt["ok"]
+            and configured_runtime_validation["ok"]
+            and (profile_report is None or profile_report.ok)
+        ),
         "workspace": str(workspace.root),
+        "workspace_validation": workspace_report.to_dict(),
         "resource_profile": str(Path(args.profile).expanduser().resolve()) if args.profile else None,
         "resource_profile_fingerprint": profile.fingerprint if profile is not None else None,
         "resource_profile_validation": profile_report.to_dict() if profile_report is not None else None,
@@ -112,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             for probe in probes
         ],
-        "escape_siz": report.to_dict(),
+        "configured_runtime_validation": configured_runtime_validation,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -129,11 +157,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{probe.name}: source={probe.source_state.value}, "
                 f"runtime={probe.runtime_state.value} — {probe.summary}"
             )
-        print("Escape-SIZ preflight:")
-        for check in report.checks:
+        print("Workspace validation:")
+        for check in workspace_report.checks:
             marker = check.state.value.upper()
             print(f"  [{marker}] {check.title}: {check.detail}")
-        print(f"Launch-ready: {'yes' if report.ok else 'no'}")
+        if required_runtime_keys:
+            print(
+                "Configured runtimes: "
+                f"{'PASS' if configured_runtime_validation['ok'] else 'FAIL'} — "
+                f"{', '.join(sorted(required_runtime_keys))}"
+            )
+        print(f"Workstation healthy: {'yes' if payload['ok'] else 'no'}")
     return 0 if payload["ok"] else 1
 
 

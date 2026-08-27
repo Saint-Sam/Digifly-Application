@@ -41,14 +41,37 @@ Status: complete. See `PHASE1_ACCEPTANCE.md`.
 
 Status: complete. See `PHASE2_ACCEPTANCE.md`.
 
-## Phase 3 — release automation
+## Phase 3 — managed data acquisition and import
+
+- Add a configurable, Workstation-managed data-library root outside the
+  installed application and migrate existing version-1 resource profiles
+  without invalidating them.
+- Add a provider-neutral download/import job contract with visible progress,
+  cancellation, resumable staging, disk-space checks, checksums, provenance,
+  license metadata, and atomic promotion into the managed library.
+- Add a neuPrint provider that guides users through obtaining a token, stores
+  the credential in the operating-system credential store rather than the
+  resource profile, lists available datasets, and downloads selected
+  connectivity, neuron metadata, and SWC skeletons into a versioned bundle.
+- Add a ModelDB import flow that accepts an accession, downloaded archive, or
+  local folder; inspects and explains the model contents; safely extracts or
+  copies them into a versioned managed bundle; and registers the result without
+  automatically executing imported code.
+- Keep manual registration available for datasets users manage themselves and
+  provide repair/relink tools when a managed or external resource is moved.
+- Never bundle downloaded scientific data, credentials, or generated indexes
+  in the core application or its release artifacts.
+
+Status: planned. See `PHASE3_DATA_ACQUISITION_PLAN.md`.
+
+## Phase 4 — release automation
 
 - Add CI matrices for supported Python and operating-system targets.
 - Produce checksummed artifacts and software-bill-of-materials metadata.
 - Add signed/notarized macOS and signed Windows release lanes.
 - Select and record the project license before public distribution.
 
-## Phase 4 — feature development
+## Phase 5 — feature development
 
 Resume layout, workflow, and simulator-adapter work against the stable package
 and resource contracts. Scientific acceptance gates remain governed by

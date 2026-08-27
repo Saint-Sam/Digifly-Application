@@ -212,6 +212,9 @@ point and package/data contract are recorded in
 foundation is recorded in [Phase 1 acceptance](docs/PHASE1_ACCEPTANCE.md).
 The machine-local data/runtime boundary is recorded in
 [Phase 2 acceptance](docs/PHASE2_ACCEPTANCE.md).
+Managed online acquisition and guided local imports are specified in the
+[Phase 3 data-acquisition plan](docs/PHASE3_DATA_ACQUISITION_PLAN.md); downloaded
+data and provider credentials remain outside all application artifacts.
 
 ## Scientific readiness
 

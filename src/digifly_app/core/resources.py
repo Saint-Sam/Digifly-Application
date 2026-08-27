@@ -39,12 +39,12 @@ def capture_resources(path: str | Path) -> ResourceSnapshot:
     except (ImportError, OSError):
         pass
     cores = max(1, int(os.cpu_count() or 1))
-    # Escape-SIZ's handoff explicitly identifies safe4 cache families and warns
-    # that worker count is constrained by model memory, not CPU availability.
+    # Keep the generic NEURON default conservative: simulator processes can be
+    # constrained by model memory rather than CPU availability.
     worker_default = min(4, cores)
     used_percent = round(100.0 * (usage.total - usage.free) / usage.total, 1)
     note = (
-        f"{cores} logical cores detected. Escape-SIZ defaults to at most "
+        f"{cores} logical cores detected. Digifly defaults to at most "
         f"{worker_default} workers because each NEURON process can be memory-heavy."
     )
     return ResourceSnapshot(

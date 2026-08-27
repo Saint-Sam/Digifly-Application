@@ -30,9 +30,11 @@ runtime component.
 | Simulator installations | NEURON, Arbor, BMTK, VND and their environments |
 | Machine-local configuration | absolute paths, credentials, user preferences, recent files |
 
-These are user-selected external resources. Workstation stores references and
-content identities where useful; it does not mutate source datasets or silently
-copy them into its installation.
+These are external resources. Workstation stores references and content
+identities for user-managed sources, and Phase 3 may explicitly download or
+import data into a configurable Workstation-managed data library. It never
+mutates user-managed source datasets or silently copies scientific data into
+its installation.
 
 Machine bindings are stored in a versioned `digifly-resources-v1` profile.
 Each binding declares its kind and access intent. Digifly workspaces,
@@ -50,9 +52,16 @@ the configured Workstation output root, which defaults to:
 ```
 
 The workspace may contain projects, logs, requests, caches, simulation outputs,
-plots, and exported unchanged-SWC-plus-sidecar bundles. Large source datasets
-remain wherever the user maintains them and are opened read-only whenever the
-workflow permits.
+plots, exported unchanged-SWC-plus-sidecar bundles, and an explicitly managed
+data library. Large user-managed source datasets remain wherever the user
+maintains them and are opened read-only whenever the workflow permits. Data
+acquisition uses staging, validation, and atomic promotion into the managed
+library; it never writes downloaded data into the application bundle.
+
+Credentials are not data resources. Provider tokens must be stored in the
+operating-system credential store (or supplied ephemerally through a supported
+environment variable), referenced by opaque identifier, redacted from logs,
+and excluded from profiles, manifests, projects, and artifacts.
 
 ## Release gate
 

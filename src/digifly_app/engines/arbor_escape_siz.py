@@ -381,6 +381,16 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
             )
         checks.extend(
             (
+                _file_check(
+                    "handoff",
+                    "Escape-SIZ handoff",
+                    self.workspace.escape_siz_handoff,
+                ),
+                _file_check(
+                    "plotting_contract",
+                    "Escape-SIZ plotting contract",
+                    self.workspace.plotting_contract,
+                ),
                 _file_check("arbor_helper", "Validated Arbor Escape-SIZ helper", self.helper_path),
                 _file_check("arbor_worker", "App-owned Arbor worker", self.worker_path),
                 _file_check("arbor_gap_bridge", "App-owned Arbor junction bridge", self.gap_bridge_path),

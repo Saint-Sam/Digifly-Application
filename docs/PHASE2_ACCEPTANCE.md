@@ -34,9 +34,24 @@ through a versioned, typed profile and provider boundary.
   explicitly registered external SWC provider without copying their contents.
 - The rebuilt native Circuit Builder reports four local SWC/morphology sources
   after refreshing providers.
-- Escape-SIZ validates its source/runtime/data boundary through the profile and
-  remains intentionally launch-locked because the new Workstation output root
-  contains no compatible cache and cache building was not authorized.
+- The generic Workstation package and external-resource profile require no
+  Escape-SIZ cache; any cache behavior retained by a legacy scientific adapter
+  is outside the package/profile acceptance gate.
 
 The active profile is machine-local state and is not included in a wheel,
 source distribution, native bundle, or Git commit.
+
+## Cleanup acceptance — 2026-08-27
+
+- Generic workspace validation now requires only the selected Digifly
+  workspace and its marker; Escape-SIZ handoff and plotting files are checked
+  only when that legacy adapter is explicitly used.
+- `digifly-doctor` no longer constructs or validates an Escape-SIZ execution
+  plan, exposes cache-build options, or includes an `escape_siz` report in its
+  health result.
+- Workstation health is based on Qt, the resource profile, the generic
+  workspace boundary, and any explicitly required configured runtimes.
+- The existing scientific adapters remain available, but their workflow-local
+  files and caches are not installation, packaging, profile, or general-doctor
+  requirements.
+- Source suite after cleanup: `169 passed`.

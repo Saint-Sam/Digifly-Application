@@ -319,6 +319,18 @@ class NeuronEscapeSizAdapter(EngineAdapter[EscapeSizConfig]):
 
         checks.extend(
             (
+                _file_check(
+                    "handoff",
+                    "Escape-SIZ handoff",
+                    self.workspace.escape_siz_handoff,
+                    blocking=True,
+                ),
+                _file_check(
+                    "plotting_contract",
+                    "Escape-SIZ plotting contract",
+                    self.workspace.plotting_contract,
+                    blocking=True,
+                ),
                 _file_check("runner", "Escape-SIZ runner", self.runner_path, blocking=True),
                 _file_check("app_worker", "App-owned Escape-SIZ worker", self.worker_path, blocking=True),
                 _file_check("contact_edges", "Deduplicated contact edges", self.edge_path, blocking=True),
