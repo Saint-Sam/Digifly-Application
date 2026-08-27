@@ -31,6 +31,9 @@ or mutates them without an explicit import action.
 - Preserve downloaded source bytes when practical. Put normalized SWCs,
   indexes, and other derived files in a separate derived-data directory and
   record their producing Digifly version and inputs.
+- After every completed import, audit each manifest-declared SWC for structural
+  errors and per-neuron adaptive radius discontinuities. Never use hard-coded
+  node IDs or one absolute radius across diverse neurons and connectomes.
 - Download or extract into a temporary staging directory, validate the staged
   bundle, then atomically promote it into the library and register it. Failed or
   cancelled jobs must never appear as complete resources.
@@ -86,6 +89,10 @@ or mutates them without an explicit import action.
 - Provide a post-import action to open the resource in Circuit Builder, inspect
   its manifest, reveal it in the file manager, or remove only the Workstation
   registration while leaving externally managed data untouched.
+- Present every flagged SWC for review with **Save healed copy** (default),
+  **Overwrite original** (with a recoverable backup), or **Keep original**.
+  Automatic healing must change radii only and emit a hash-addressed quality
+  provenance sidecar.
 
 ## Acceptance checklist
 
@@ -96,6 +103,9 @@ or mutates them without an explicit import action.
       manifests, command previews, or release artifacts.
 - [ ] A neuPrint test account can list datasets and acquire a small selected
       bundle that immediately appears as connectome and morphology providers.
+- [x] Recent manifest-declared SWCs receive a provider-neutral, per-SWC adaptive
+      radius audit; copy and backed-up overwrite modes prove that topology and
+      geometry remain unchanged.
 - [ ] A ModelDB archive and a local folder can be safely imported, inspected,
       registered, reopened after restart, and removed from the registry.
 - [ ] Interrupted acquisition resumes or restarts cleanly and never registers

@@ -42,6 +42,7 @@ digifly-app = "digifly_app.app:main"
 digifly-doctor = "digifly_app.cli:doctor_main"
 digifly-package-audit = "digifly_app.packaging.audit:main"
 digifly-resources = "digifly_app.resource_cli:main"
+digifly-swc-quality = "digifly_app.swc_quality_cli:main"
 
 [project.gui-scripts]
 digifly-workstation = "digifly_app.app:main"
@@ -53,7 +54,11 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.data-files]
-"share/digifly-workstation/docs" = ["docs/ARCHITECTURE.md", "docs/PACKAGING_BOUNDARY.md"]
+"share/digifly-workstation/docs" = [
+  "docs/ARCHITECTURE.md",
+  "docs/PACKAGING_BOUNDARY.md",
+  "docs/SWC_IMPORT_QUALITY.md",
+]
 "share/digifly-workstation/mechanisms/arbor_gap_junctions" = [
   "mechanisms/arbor_gap_junctions/README.md",
   "mechanisms/arbor_gap_junctions/build_status.json",

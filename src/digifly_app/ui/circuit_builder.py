@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -52,6 +53,12 @@ from digifly_app.core.morphology import (
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.providers import profile_connectome_sources
 from digifly_app.core.resource_profile import load_default_profile
+from digifly_app.core.swc_quality import (
+    heal_swc,
+    record_review_decision,
+    reviewed_hashes,
+    scan_recent_imports,
+)
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
@@ -169,6 +176,12 @@ class CircuitBuilderPage(QWidget):
         refresh = QPushButton("Refresh sources")
         refresh.clicked.connect(self.refresh_connectomes)
         top.addWidget(refresh)
+        quality_check = QPushButton("Check recent imports")
+        quality_check.setToolTip(
+            "Audit manifest-declared recent SWCs using each neuron's own radius distribution"
+        )
+        quality_check.clicked.connect(self.review_recent_imports)
+        top.addWidget(quality_check)
         controls_layout.addLayout(top)
 
         query_row = QHBoxLayout()
@@ -680,6 +693,101 @@ class CircuitBuilderPage(QWidget):
             and not prior_guard
         ):
             self._selection_controls_changed()
+
+    def review_recent_imports(self) -> None:
+        """Offer explicit copy/overwrite choices for recent imported SWC findings."""
+
+        try:
+            profile = load_default_profile()
+            if profile is None:
+                raise ValueError("no Workstation resource profile is configured")
+            batch = scan_recent_imports(profile)
+        except (OSError, ValueError) as exc:
+            self.status_message.emit(f"Could not audit recent SWC imports: {exc}")
+            return
+        pending = [
+            report
+            for report in batch.review_reports
+            if report.sha256 not in reviewed_hashes(report)
+        ]
+        if not pending:
+            self.status_message.emit(
+                f"Audited {len(batch.reports)} recent SWC import(s); no unreviewed radius flags"
+            )
+            return
+
+        completed = 0
+        for report in pending:
+            identity = report.body_id or report.instance or Path(report.path).stem
+            box = QMessageBox(self)
+            box.setIcon(
+                QMessageBox.Icon.Warning if report.errors else QMessageBox.Icon.Question
+            )
+            box.setWindowTitle("Recent SWC import needs review")
+            box.setText(
+                f"{report.dataset or 'Imported SWC'} · {identity}\n"
+                f"{len(report.findings)} unusually small compartment(s) were flagged "
+                "relative to this neuron's own topology and radius distribution."
+            )
+            box.setInformativeText(
+                "The healer changes radii only. Saving a separately named healed SWC is "
+                "recommended; overwrite keeps the original filename and first creates a backup."
+            )
+            details = [
+                f"Source: {report.path}",
+                f"SHA-256: {report.sha256}",
+                f"Detected units: {report.source_unit}",
+                "",
+            ]
+            details.extend(
+                f"node {finding.node_id}: {finding.radius_um:.6g} -> "
+                f"{finding.suggested_radius_um:.6g} um · {finding.reason}"
+                for finding in report.findings
+            )
+            if report.errors:
+                details.extend(("", "Structural errors (automatic healing disabled):"))
+                details.extend(report.errors)
+            if report.warnings:
+                details.extend(("", "Warnings:"))
+                details.extend(report.warnings)
+            box.setDetailedText("\n".join(details))
+
+            keep_button = box.addButton("Keep original", QMessageBox.ButtonRole.RejectRole)
+            if report.can_heal:
+                copy_button = box.addButton(
+                    "Save healed copy", QMessageBox.ButtonRole.AcceptRole
+                )
+                overwrite_button = box.addButton(
+                    "Overwrite original", QMessageBox.ButtonRole.DestructiveRole
+                )
+                box.setDefaultButton(copy_button)
+            else:
+                copy_button = overwrite_button = None
+                box.setDefaultButton(keep_button)
+            box.exec()
+            clicked = box.clickedButton()
+            try:
+                if clicked is copy_button and copy_button is not None:
+                    result = heal_swc(report, mode="copy")
+                    record_review_decision(report, action="copy", healing_result=result)
+                    self.status_message.emit(f"Saved radius-healed SWC copy: {result.output_path}")
+                    completed += 1
+                elif clicked is overwrite_button and overwrite_button is not None:
+                    result = heal_swc(report, mode="overwrite")
+                    record_review_decision(
+                        report, action="overwrite", healing_result=result
+                    )
+                    self.status_message.emit(
+                        f"Healed imported SWC in place; backup: {result.backup_path}"
+                    )
+                    completed += 1
+                elif clicked is keep_button:
+                    record_review_decision(report, action="keep")
+            except (OSError, ValueError) as exc:
+                self.status_message.emit(f"Could not heal {identity}: {exc}")
+
+        if completed:
+            self.refresh_connectomes()
 
     def _selection_controls_changed(self, *_args: Any) -> None:
         if self._restoring_controls:

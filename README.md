@@ -123,6 +123,20 @@ digifly-resources validate
 digifly-doctor --profile "$HOME/Digifly Workstation Workspace/config/resources-v1.json"
 ```
 
+Audit recent manifest-declared SWC imports without scanning large legacy
+connectome trees, then optionally review radius-only repairs:
+
+```bash
+digifly-swc-quality scan
+digifly-swc-quality review
+```
+
+The same review is available from Circuit Builder's **Check recent imports**
+button. The detector is normalized independently for each SWC; it never assumes
+that different neuron types or connectomes share one absolute radius. The
+historical DNp01 repair and the copy/overwrite provenance contract are described
+in [Post-import SWC quality](docs/SWC_IMPORT_QUALITY.md).
+
 Run tests with:
 
 ```bash

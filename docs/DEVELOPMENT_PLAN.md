@@ -57,6 +57,9 @@ Status: complete. See `PHASE2_ACCEPTANCE.md`.
   local folder; inspects and explains the model contents; safely extracts or
   copies them into a versioned managed bundle; and registers the result without
   automatically executing imported code.
+- Run a manifest-bounded post-import SWC audit that adapts to each neuron's own
+  scale/topology, then offers a separately named radius-healed copy, a backed-up
+  same-name overwrite, or an unchanged keep decision with provenance.
 - Keep manual registration available for datasets users manage themselves and
   provide repair/relink tools when a managed or external resource is moved.
 - Never bundle downloaded scientific data, credentials, or generated indexes
