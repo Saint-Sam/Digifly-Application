@@ -106,4 +106,6 @@
 - [x] Add safe ModelDB accession/archive/manual-folder import without executing
   imported model code.
 - [ ] Add cross-platform managed-library relocation, relink, unregister, and
-  removal controls.
+  removal controls. Validation-first relink, unregister/re-register, and
+  recoverable Trash/restore are complete; the in-app cross-filesystem mover and
+  platform matrix remain.

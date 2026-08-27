@@ -33,10 +33,18 @@ from digifly_app.core.resource_profile import (
     default_profile_path,
     load_default_profile,
 )
+from digifly_app.core.resource_management import (
+    preview_library_relink,
+    register_managed_resource,
+    relink_managed_library,
+    trash_managed_resource,
+    unregister_managed_resource,
+)
 
 from .widgets import Card
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
+from .resource_management import ManifestDialog, TrashDialog
 
 
 def _human_bytes(value: int) -> str:
@@ -97,6 +105,7 @@ class DataLibraryPage(QWidget):
         self._review_after_import = False
         self._neuprint_dialog: NeuPrintImportDialog | None = None
         self._modeldb_dialog: ModelDBImportDialog | None = None
+        self._resources: tuple[ManagedResource, ...] = ()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 26, 30, 32)
@@ -159,14 +168,50 @@ class DataLibraryPage(QWidget):
         refresh.clicked.connect(self.refresh)
         heading.addWidget(refresh)
         library_layout.addLayout(heading)
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ("Provider", "Resource", "Version", "Files", "SWCs", "Size", "Imported")
+            (
+                "Provider",
+                "Resource",
+                "Version",
+                "State",
+                "Files",
+                "SWCs",
+                "Size",
+                "Imported",
+            )
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.itemSelectionChanged.connect(self._resource_selection_changed)
         library_layout.addWidget(self.table)
+        resource_actions = QHBoxLayout()
+        self.inspect_button = QPushButton("Inspect manifest")
+        self.inspect_button.setEnabled(False)
+        self.inspect_button.clicked.connect(self.inspect_selected)
+        resource_actions.addWidget(self.inspect_button)
+        self.reveal_selected_button = QPushButton("Reveal selected")
+        self.reveal_selected_button.setEnabled(False)
+        self.reveal_selected_button.clicked.connect(self.reveal_selected)
+        resource_actions.addWidget(self.reveal_selected_button)
+        self.registration_button = QPushButton("Register")
+        self.registration_button.setEnabled(False)
+        self.registration_button.clicked.connect(self.toggle_registration)
+        resource_actions.addWidget(self.registration_button)
+        self.trash_button = QPushButton("Move to Library Trash…")
+        self.trash_button.setEnabled(False)
+        self.trash_button.clicked.connect(self.trash_selected)
+        resource_actions.addWidget(self.trash_button)
+        resource_actions.addStretch(1)
+        self.manage_trash_button = QPushButton("Manage Trash…")
+        self.manage_trash_button.clicked.connect(self.manage_trash)
+        resource_actions.addWidget(self.manage_trash_button)
+        self.relink_button = QPushButton("Relink moved library…")
+        self.relink_button.clicked.connect(self.relink_library)
+        resource_actions.addWidget(self.relink_button)
+        library_layout.addLayout(resource_actions)
         root.addWidget(library, 1)
         self.refresh()
 
@@ -182,13 +227,17 @@ class DataLibraryPage(QWidget):
     @Slot()
     def refresh(self) -> None:
         self.table.setRowCount(0)
+        self._resources = ()
         try:
             profile, _ = self._profile()
             resources = list_managed_resources(profile)
         except (OSError, ValueError) as exc:
             self.root_label.setText(str(exc))
+            self._resource_selection_changed()
             return
-        self.root_label.setText(str(profile.managed_data_root))
+        self._resources = resources
+        root_state = "" if profile.managed_data_root.is_dir() else " — missing; relink if moved"
+        self.root_label.setText(f"{profile.managed_data_root}{root_state}")
         for resource in resources:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -196,6 +245,7 @@ class DataLibraryPage(QWidget):
                 resource.provider,
                 resource.resource_id,
                 resource.source_version,
+                "Registered" if resource.is_registered else "Stored only",
                 f"{resource.file_count:,}",
                 f"{resource.swc_count:,}",
                 _human_bytes(resource.total_bytes),
@@ -203,8 +253,27 @@ class DataLibraryPage(QWidget):
             )
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
-            self.table.item(row, 0).setData(256, str(resource.root))
+        self._resource_selection_changed()
         self.status_message.emit(f"Data Library contains {len(resources)} managed resource(s)")
+
+    def _selected_resource(self) -> ManagedResource | None:
+        rows = self.table.selectionModel().selectedRows()
+        if len(rows) != 1:
+            return None
+        row = rows[0].row()
+        return self._resources[row] if 0 <= row < len(self._resources) else None
+
+    @Slot()
+    def _resource_selection_changed(self) -> None:
+        resource = self._selected_resource()
+        selected = resource is not None
+        self.inspect_button.setEnabled(selected)
+        self.reveal_selected_button.setEnabled(selected)
+        self.registration_button.setEnabled(selected)
+        self.trash_button.setEnabled(selected)
+        self.registration_button.setText(
+            "Unregister" if resource is not None and resource.is_registered else "Register"
+        )
 
     @Slot()
     def import_local_data(self) -> None:
@@ -345,8 +414,155 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Data Library is not configured", str(exc))
             return
-        profile.managed_data_root.mkdir(parents=True, exist_ok=True)
+        if not profile.managed_data_root.is_dir():
+            QMessageBox.warning(
+                self,
+                "Data Library folder is missing",
+                "The configured Data Library folder no longer exists. If you moved it, use "
+                "Relink moved library and select the relocated root. Workstation will not recreate "
+                "the old folder automatically.",
+            )
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(profile.managed_data_root)))
+
+    @Slot()
+    def inspect_selected(self) -> None:
+        resource = self._selected_resource()
+        if resource is None:
+            return
+        ManifestDialog(resource, self).exec()
+
+    @Slot()
+    def reveal_selected(self) -> None:
+        resource = self._selected_resource()
+        if resource is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(resource.root)))
+
+    @Slot()
+    def toggle_registration(self) -> None:
+        resource = self._selected_resource()
+        if resource is None:
+            return
+        try:
+            profile, profile_path = self._profile()
+            if resource.is_registered:
+                answer = QMessageBox.question(
+                    self,
+                    "Unregister managed resource",
+                    f"Unregister {resource.provider} / {resource.resource_id}?\n\n"
+                    "The managed bundle and every file in it will remain unchanged. It can be "
+                    "registered again from this table later.",
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                changed = unregister_managed_resource(
+                    profile,
+                    resource,
+                    profile_path=profile_path,
+                )
+                detail = f"Unregistered {len(changed)} profile binding(s); managed files were kept."
+            else:
+                changed = register_managed_resource(
+                    profile,
+                    resource,
+                    profile_path=profile_path,
+                )
+                detail = f"Registered {len(changed)} read-only profile binding(s)."
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not update registration", str(exc))
+            return
+        self.action_status.setText(detail)
+        self.refresh()
+        self.sources_changed.emit()
+
+    @Slot()
+    def trash_selected(self) -> None:
+        resource = self._selected_resource()
+        if resource is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Move managed resource to Library Trash",
+            f"Move {resource.provider} / {resource.resource_id} / {resource.source_version} "
+            "to the recoverable Data Library Trash?\n\n"
+            f"Bundle:\n{resource.root}\n\n"
+            "The resource will be unregistered and disappear from active providers. It is not "
+            "permanently deleted and can be restored from Manage Trash.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            profile, profile_path = self._profile()
+            entry = trash_managed_resource(
+                profile,
+                resource,
+                profile_path=profile_path,
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not move resource to Trash", str(exc))
+            return
+        self.action_status.setText(
+            f"Moved {resource.resource_id} to recoverable Library Trash at {entry.trash_root}."
+        )
+        self.refresh()
+        self.sources_changed.emit()
+
+    @Slot()
+    def manage_trash(self) -> None:
+        try:
+            profile, profile_path = self._profile()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+        dialog = TrashDialog(profile, profile_path, self)
+        dialog.resource_restored.connect(self._resource_restored)
+        dialog.exec()
+
+    @Slot(object)
+    def _resource_restored(self, resource: ManagedResource) -> None:
+        self.action_status.setText(f"Restored managed resource to {resource.root}.")
+        self.refresh()
+        self.sources_changed.emit()
+
+    @Slot()
+    def relink_library(self) -> None:
+        try:
+            profile, profile_path = self._profile()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+        start = profile.managed_data_root.parent
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose the relocated Data Library root",
+            str(start if start.is_dir() else Path.home()),
+        )
+        if not selected:
+            return
+        try:
+            preview = preview_library_relink(profile, selected)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Relocated library is incomplete", str(exc))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Relink moved Data Library",
+            f"Update the resource profile to use this relocated library?\n\n"
+            f"Current root:\n{preview.current_root}\n\n"
+            f"New root:\n{preview.new_root}\n\n"
+            f"Validated {preview.managed_binding_count} managed binding(s) and "
+            f"{preview.resource_count} discoverable bundle(s). No data will be copied or moved.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            relink_managed_library(profile, selected, profile_path=profile_path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not relink Data Library", str(exc))
+            return
+        self.action_status.setText(f"Relinked the Data Library to {preview.new_root}.")
+        self.refresh()
+        self.sources_changed.emit()
 
     @Slot()
     def open_neuprint_import(self) -> None:

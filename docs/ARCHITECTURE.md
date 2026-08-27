@@ -164,6 +164,17 @@ checksums, and an explicit `execution_performed: false`. A bundle containing
 SWCs also receives a read-only morphology binding so the existing provider and
 quality-review paths can consume it.
 
+Managed-resource lifecycle operations use the manifest as their identity and
+transaction boundary. Registration adds only read-only typed bindings;
+unregistration replaces active provider bindings with an inactive catalog
+record containing their exact definitions, without touching data. Soft removal uses
+a same-library atomic rename into `data/.trash`, records the original relative
+root and exact prior bindings, and rolls the move back if profile persistence
+fails. Restore reverses the move and reinstates those bindings. Whole-library
+relinking assumes the user has already moved the directory, verifies every
+managed binding and manifest at the equivalent relative path, checks profile
+boundaries, and only then atomically rewrites the machine-local profile.
+
 Provider adapters translate registered morphology roots into ordinary
 `ConnectomeRef` records without crawling or copying them. The existing Digifly
 Public discovery path remains compatible; explicit providers are indexed only

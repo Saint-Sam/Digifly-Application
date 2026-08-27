@@ -86,8 +86,11 @@ body/type/instance/ROI previews, user-reviewed naming and destination, retry,
 cancellation, staged SWC download, registration, and quality-review handoff.
 ModelDB accession lookup/download and offline ZIP/TAR/folder intake now inspect
 bounded contents, keep code inert, preserve provenance, register model/SWC
-sources, and reject malicious archive fixtures. Connectivity-table acquisition,
-resumable checkpoints, library relocation/relink, and removal flows remain.
+sources, and reject malicious archive fixtures. Selected managed resources now
+support manifest inspection, byte-preserving unregister/re-register,
+recoverable Trash/restore, and validation-first relinking after a user moves the
+library. Connectivity-table acquisition, resumable checkpoints, an in-app
+cross-filesystem library mover, and broader retry/repair flows remain.
 See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation

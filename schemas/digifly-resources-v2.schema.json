@@ -22,6 +22,7 @@
               "digifly_workspace",
               "morphology_source",
               "connectome_source",
+              "data_source",
               "model_source",
               "neuron_runtime",
               "arbor_runtime",

@@ -159,6 +159,18 @@ provenance. When a ModelDB record only links externally hosted code, Workstation
 opens the official page and requires the user to select the downloaded archive
 or folder instead of following an arbitrary external URL automatically.
 
+Each Data Library row now exposes its registration state and selected-resource
+controls. **Inspect manifest** shows human-readable provenance plus a bounded
+read-only inventory preview; **Unregister** removes only profile bindings and
+keeps every byte, retaining an inactive catalog record so legacy names and exact
+prior bindings are not lost; **Register** reconnects that stored bundle without
+recopying it. **Move to Library Trash** atomically unregisters and moves the
+whole bundle into a recoverable `.trash` area. **Manage Trash** restores the
+exact original location and previous bindings. If a user moves the whole data
+library with Finder or another file manager, **Relink moved library** validates
+every relocated managed path and manifest before changing the machine profile;
+it never copies data or recreates a missing old root silently.
+
 The Workspace page keeps separate **NEURON Python** and **Arbor Python**
 choices. **Find or install NEURON / Arbor** links to the simulators' official
 guides and offers a consent-gated, read-only search of PATH and common Conda or

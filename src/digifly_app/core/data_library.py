@@ -62,6 +62,14 @@ class ManagedResource:
     registered_binding: str = ""
     integrity: str = "not_checked"
 
+    @property
+    def is_registered(self) -> bool:
+        return bool(self.registered_binding)
+
+    @property
+    def registered_bindings(self) -> tuple[str, ...]:
+        return tuple(value for value in self.registered_binding.split(",") if value)
+
 
 def safe_component(value: str, *, field: str = "identifier") -> str:
     normalized = value.strip().casefold().replace(" ", "-")
@@ -446,6 +454,19 @@ def _resource_from_manifest(path: Path, *, verify: bool) -> ManagedResource:
     )
 
 
+def load_managed_resource(
+    manifest: str | Path,
+    *,
+    verify: bool = False,
+) -> ManagedResource:
+    """Load one provider-neutral managed bundle from its manifest."""
+
+    path = Path(manifest).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"Managed resource manifest does not exist: {path}")
+    return _resource_from_manifest(path, verify=verify)
+
+
 def list_managed_resources(
     profile: ResourceProfile,
     *,
@@ -456,10 +477,40 @@ def list_managed_resources(
         return ()
     resources = []
     manifests_seen: set[Path] = set()
+    bindings_by_manifest: dict[Path, list[str]] = {}
+    identity_by_manifest: dict[Path, str] = {}
+    for binding in profile.resources:
+        manifest_value = binding.metadata.get("manifest")
+        if not manifest_value:
+            continue
+        manifest = Path(str(manifest_value)).expanduser().resolve()
+        try:
+            manifest.relative_to(root)
+        except ValueError:
+            continue
+        display_id = str(binding.metadata.get("display_resource_id") or "")
+        if display_id:
+            identity_by_manifest.setdefault(manifest, display_id)
+        if binding.metadata.get("lifecycle_state") != "stored_only":
+            bindings_by_manifest.setdefault(manifest, []).append(binding.resource_id)
+
+    def with_registration(resource: ManagedResource) -> ManagedResource:
+        binding_ids = sorted(bindings_by_manifest.get(resource.manifest.resolve(), ()))
+        return ManagedResource(
+            **{
+                **resource.__dict__,
+                "resource_id": identity_by_manifest.get(
+                    resource.manifest.resolve(), resource.resource_id
+                ),
+                "registered_binding": ",".join(binding_ids),
+            }
+        )
     imports_root = root / "imports"
     if imports_root.is_dir():
         for manifest in imports_root.rglob(MANIFEST_FILENAME):
-            resources.append(_resource_from_manifest(manifest, verify=verify))
+            resources.append(
+                with_registration(_resource_from_manifest(manifest, verify=verify))
+            )
             manifests_seen.add(manifest.resolve())
     for provider_root in (root / "modeldb", root / "models"):
         if provider_root.is_dir():
@@ -467,12 +518,15 @@ def list_managed_resources(
                 resolved = manifest.resolve()
                 if resolved in manifests_seen:
                     continue
-                resources.append(_resource_from_manifest(manifest, verify=verify))
+                resources.append(
+                    with_registration(_resource_from_manifest(manifest, verify=verify))
+                )
                 manifests_seen.add(resolved)
     for binding in profile.resources:
         if binding.kind not in {
             ResourceKind.MORPHOLOGY_SOURCE,
             ResourceKind.CONNECTOME_SOURCE,
+            ResourceKind.DATA_SOURCE,
             ResourceKind.MODEL_SOURCE,
         }:
             continue
@@ -486,7 +540,7 @@ def list_managed_resources(
             continue
         if manifest in manifests_seen or not manifest.is_file():
             continue
-        resource = _resource_from_manifest(manifest, verify=verify)
+        resource = with_registration(_resource_from_manifest(manifest, verify=verify))
         try:
             declared_resource_id = json.loads(
                 manifest.read_text(encoding="utf-8")
@@ -499,10 +553,15 @@ def list_managed_resources(
                     **resource.__dict__,
                     "resource_id": (
                         resource.resource_id
-                        if declared_resource_id
+                        if declared_resource_id or resource.manifest in identity_by_manifest
                         else binding.resource_id
                     ),
-                    "registered_binding": binding.resource_id,
+                    "registered_binding": resource.registered_binding
+                    or (
+                        ""
+                        if binding.metadata.get("lifecycle_state") == "stored_only"
+                        else binding.resource_id
+                    ),
                 }
             )
         )

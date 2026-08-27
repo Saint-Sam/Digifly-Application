@@ -106,10 +106,8 @@ or mutates them without an explicit import action.
 - [x] Recent manifest-declared SWCs receive a provider-neutral, per-SWC adaptive
       radius audit; copy and backed-up overwrite modes prove that topology and
       geometry remain unchanged.
-- [ ] A ModelDB archive and a local folder can be safely imported, inspected,
+- [x] A ModelDB archive and a local folder can be safely imported, inspected,
       registered, reopened after restart, and removed from the registry.
-      Import, inspection, registration, and restart-safe profile persistence are
-      complete; unregister/removal controls remain.
 - [x] Interrupted acquisition restarts cleanly and never registers
       a partial bundle as complete.
 - [x] Malicious archive fixtures covering traversal, symlink escape, and
@@ -121,7 +119,7 @@ or mutates them without an explicit import action.
 
 ## Current implementation checkpoint
 
-Implemented through the third Phase 3 increment:
+Implemented through the fourth Phase 3 increment:
 
 - schema-v2 resource profiles with one managed-data root, automatic in-memory
   v1 compatibility, and explicit side-by-side migration;
@@ -167,11 +165,26 @@ Implemented through the third Phase 3 increment:
 - mocked provider/UI tests and malicious ZIP/TAR fixtures, plus a live official
   ModelDB accession-245415 smoke that downloaded and inspected its small hosted
   ZIP without executing it.
+- typed registration-state inventory and selected-row controls for readable/raw
+  manifest inspection, bundle reveal, byte-preserving unregister, and
+  no-recopy re-registration, with inactive catalog records preserving exact
+  legacy binding identity while a bundle is stored only;
+- transactional, recoverable Data Library Trash using same-library atomic
+  moves, receipts containing the original relative path and exact bindings,
+  rollback when profile persistence fails, and a native restore window;
+- validation-first whole-library relinking after a user moves the root: every
+  managed provider path and manifest must exist at the corresponding contained,
+  non-symlink path before the managed root and binding metadata are rewritten;
+- lifecycle backend and UI tests covering registration state, unchanged bytes,
+  failure rollback, Trash/restore, restart persistence, incomplete relocation,
+  and selected-row controls. Missing roots are no longer silently recreated by
+  the Reveal action.
 
 Remaining neuPrint work is connectivity-table acquisition, durable resumable
 checkpoints, and broader retry/relink/removal controls. Model-library retry,
-relink, unregister/removal, manifest-view, and later separately permissioned
-simulator validation remain future increments.
+in-app cross-filesystem movement, checksum-verification progress, permanent
+Trash purging, and later separately permissioned simulator validation remain
+future increments.
 
 ## External interfaces verified during planning
 
