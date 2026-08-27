@@ -37,6 +37,10 @@ anchors, or a universal micrometre cutoff. It:
    percent of candidates *within that SWC*.
 6. Proposes a conservative replacement from the lower quartile of larger local
    neighbours, rather than copying a fixed radius from another neuron.
+7. Requires that local proposal to be at least four times the current radius.
+   This dimensionless guard was added after a 200-SWC random-connectome
+   benchmark showed that a percentile alone warned on 199 otherwise unselected
+   neurons; it does not impose an absolute size shared across morphologies.
 
 This makes the same algorithm useful across connectomes while respecting each
 neuron's own scale and radius diversity. A flag remains a review request, not a
@@ -60,3 +64,31 @@ The recent-import scanner is bounded by manifest file inventories and import
 timestamps. It does not recursively inspect or copy large legacy connectome
 trees. The same core is available through Circuit Builder's **Check recent
 imports** button and the `digifly-swc-quality scan|review` command.
+
+## Random-connectome calibration benchmark
+
+On 2026-08-27, the checker was exercised against a server-random sample of 100
+`status=Traced` SWCs from MANC v1.2.1 and 100 from male-cns v0.9. The first rule,
+which used only the per-SWC two-percent rank, warned on 199 of 200 neurons and
+produced 3,164 proposals; median replacement factors were only 1.83× and 2.08×.
+That was operationally valid but not selective enough for a useful user alert.
+
+The resulting `per-swc-adaptive-radius-island-v2` rule adds the dimensionless
+four-times proposal guard. A fresh random
+100+100 sample produced:
+
+- MANC: 14 flagged SWCs and 57 proposed radius changes.
+- male-cns: 18 flagged SWCs and 102 proposed radius changes.
+- Zero download failures and zero structural errors that blocked healing.
+- All 32 attempted healed copies passed the radius-only geometry/topology
+  verification; the smallest proposed factor was 4.0645×.
+- Twenty-one multifragment SWCs produced multiple-root warnings, which remained
+  warnings and were never automatically reconnected.
+
+The second sample contained 400,261 nodes and about 13.3 MB of source SWC text.
+All source and healed benchmark SWCs were staged under a unique system temporary
+directory and deleted after the report was written. The retained JSON reports
+contain metadata and measurements only, not morphology rows or credentials.
+
+This benchmark verifies selectivity and mutation safety, not biological ground
+truth. A flagged compartment still requires user review.

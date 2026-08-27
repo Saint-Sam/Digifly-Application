@@ -15,6 +15,7 @@ from digifly_app.core.resource_profile import (
 )
 from digifly_app.core.swc_quality import (
     ADAPTIVE_RADIUS_RULE_ID,
+    MINIMUM_ADAPTIVE_REPLACEMENT_FACTOR,
     analyze_swc,
     heal_swc,
     record_review_decision,
@@ -61,6 +62,30 @@ def test_adaptive_checker_uses_each_swc_scale_and_topology(tmp_path: Path) -> No
         assert report.findings[0].suggested_radius_um == pytest.approx(1.0)
     assert local_report.source_unit == "um"
     assert raw_report.source_unit == "nm"
+    assert (
+        raw_report.findings[0].suggested_radius_um
+        / raw_report.findings[0].radius_um
+        >= MINIMUM_ADAPTIVE_REPLACEMENT_FACTOR
+    )
+
+
+def test_adaptive_checker_does_not_force_a_flag_for_mild_taper(tmp_path: Path) -> None:
+    source = tmp_path / "mild-taper.swc"
+    radii = (1.0, 1.0, 1.0, 0.6, 0.55, 0.5, 0.55, 0.6, 1.0, 1.0, 1.0, 1.0)
+    source.write_text(
+        "".join(
+            f"{index} 2 {index - 1} 0 0 {radius} "
+            f"{index - 1 if index > 1 else -1}\n"
+            for index, radius in enumerate(radii, 1)
+        ),
+        encoding="utf-8",
+    )
+
+    report = analyze_swc(source)
+
+    assert report.errors == ()
+    assert report.findings == ()
+    assert report.needs_review is False
 
 
 def test_copy_heal_leaves_original_and_changes_radius_only(tmp_path: Path) -> None:

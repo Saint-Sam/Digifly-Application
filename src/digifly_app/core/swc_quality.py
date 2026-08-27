@@ -23,7 +23,8 @@ from .resource_profile import ResourceKind, ResourceProfile
 
 QUALITY_SCHEMA_VERSION = 1
 DEFAULT_RECENT_DAYS = 30
-ADAPTIVE_RADIUS_RULE_ID = "per-swc-adaptive-radius-island-v1"
+ADAPTIVE_RADIUS_RULE_ID = "per-swc-adaptive-radius-island-v2"
+MINIMUM_ADAPTIVE_REPLACEMENT_FACTOR = 4.0
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,9 @@ def _adaptive_radius_findings(
     the relative (log-ratio) drop, and reviews only the most extreme two percent
     for that individual SWC.  The proposed radius is a conservative lower-quartile
     value from larger nearby compartments, so the healer also adapts per neuron.
+    A relative 4x proposal guard prevents the percentile rule from guaranteeing a
+    warning for an otherwise smoothly tapered SWC; this is dimensionless and does
+    not impose one absolute compartment size across neurons or connectomes.
     """
 
     by_id = {node.node_id: node for node in nodes}
@@ -303,7 +307,13 @@ def _adaptive_radius_findings(
     # A relative percentile makes a compact SWC and a giant, highly branched SWC
     # comparable without imposing the same radius or variance threshold on both.
     score_cutoff = _percentile([candidate[0] for candidate in candidates], 0.98)
-    selected = [candidate for candidate in candidates if candidate[0] >= score_cutoff]
+    selected = [
+        candidate
+        for candidate in candidates
+        if candidate[0] >= score_cutoff
+        and candidate[2]
+        >= candidate[1].radius * scale * MINIMUM_ADAPTIVE_REPLACEMENT_FACTOR
+    ]
     findings = [
         RadiusFinding(
             node_id=node.node_id,
