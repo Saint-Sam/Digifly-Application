@@ -99,27 +99,27 @@ or mutates them without an explicit import action.
 - [x] Version-1 profiles migrate without losing or moving existing bindings.
 - [ ] The managed library can be relocated and relinked on macOS, Windows, and
       Linux.
-- [ ] Tokens never appear in profiles, project files, logs, crash reports,
+- [x] Tokens never appear in profiles, project files, logs, crash reports,
       manifests, command previews, or release artifacts.
-- [ ] A neuPrint test account can list datasets and acquire a small selected
+- [x] A neuPrint test account can list datasets and acquire a small selected
       bundle that immediately appears as connectome and morphology providers.
 - [x] Recent manifest-declared SWCs receive a provider-neutral, per-SWC adaptive
       radius audit; copy and backed-up overwrite modes prove that topology and
       geometry remain unchanged.
 - [ ] A ModelDB archive and a local folder can be safely imported, inspected,
       registered, reopened after restart, and removed from the registry.
-- [ ] Interrupted acquisition resumes or restarts cleanly and never registers
+- [x] Interrupted acquisition restarts cleanly and never registers
       a partial bundle as complete.
 - [ ] Malicious archive fixtures covering traversal, symlink escape, and
       decompression limits are rejected without writing outside staging.
-- [ ] Package audits still prove that no managed data or credentials enter the
+- [x] Package audits still prove that no managed data or credentials enter the
       wheel, source distribution, native app, or installer.
-- [ ] Unit tests use small fixtures or mocked provider responses; no large
+- [x] Unit tests use small fixtures or mocked provider responses; no large
       public dataset is required to build or test Digifly Workstation.
 
 ## Current implementation checkpoint
 
-Implemented in the first Phase 3 foundation increment:
+Implemented through the second Phase 3 increment:
 
 - schema-v2 resource profiles with one managed-data root, automatic in-memory
   v1 compatibility, and explicit side-by-side migration;
@@ -131,10 +131,30 @@ Implemented in the first Phase 3 foundation increment:
   import manifest, followed by the existing explicit user repair review;
 - Data Library navigation, managed-resource inventory, local import, reveal,
   and read-only no-copy registration of existing SWC folders.
+- a native neuPrint dialog with masked token input, standard environment-token
+  support, optional OS-keyring persistence, live token validation and dataset
+  discovery, six bounded selection modes, a checkable neuron preview, editable
+  download/snapshot names, and an exact managed destination preview;
+- a dependency-light HTTPS neuPrint provider using the documented profile,
+  dataset, custom-query, and SWC endpoints with redacted failures, response
+  byte limits, retry/backoff, and cancellation;
+- same-filesystem staging and atomic promotion of raw SWCs and neuron metadata,
+  SHA-256 inventory, per-SWC adaptive quality audit, profile registration, and
+  immediate Circuit Builder/quality-review refresh;
+- mocked credential/provider/UI tests plus a live read-only validation against
+  the available MANC v1.2.1 and Male CNS v0.9 datasets. Two temporary DNp01
+  downloads were parsed and audited, then discarded. A final live MANC DNp01
+  acquisition was staged, promoted, registered, reloaded through the provider
+  boundary, checked for token exclusion, and removed with its temporary test
+  library;
+- verified wheel, source distribution, and ad-hoc-signed native macOS app; all
+  package-boundary and real-token byte scans pass, and the compiled Data Library
+  and neuPrint dialog were opened and inspected directly.
 
-The neuPrint and ModelDB controls deliberately remain guidance-only until their
-credential, query/archive safety, cancellation, retry, and resume contracts are
-implemented and tested.
+Remaining neuPrint work is connectivity-table acquisition, durable resumable
+checkpoints, and broader retry/relink/removal controls. ModelDB remains
+guidance-only until its archive-safety and inert-code contracts are implemented
+and tested.
 
 ## External interfaces verified during planning
 

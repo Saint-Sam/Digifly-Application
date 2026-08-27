@@ -80,9 +80,13 @@ troubleshooting recipes remain future work.
 
 Status: in progress. The v2 managed-data profile/migration, staged local-folder
 import, checksum/provenance manifest, atomic promotion, adaptive SWC audit, and
-Data Library foundation are implemented. neuPrint, ModelDB archive/accession,
-credential-store, resumable-job, relink, and removal flows remain. See
-`PHASE3_DATA_ACQUISITION_PLAN.md`.
+Data Library foundation are implemented. The first neuPrint slice now includes
+OS-keyring/session/environment credentials, live dataset discovery, bounded
+body/type/instance/ROI previews, user-reviewed naming and destination, retry,
+cancellation, staged SWC download, registration, and quality-review handoff.
+Connectivity-table acquisition, resumable checkpoints, ModelDB
+archive/accession import, library relocation/relink, and removal flows remain.
+See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation
 

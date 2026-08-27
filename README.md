@@ -137,6 +137,16 @@ register an existing SWC folder read-only without copying it. Managed imports
 receive a provenance/checksum manifest and an adaptive per-SWC quality audit
 before atomic promotion.
 
+**Download from neuPrint** provides the same managed path for remote neuron
+SWCs. It accepts a password-masked pasted token, the standard
+`NEUPRINT_APPLICATION_CREDENTIALS` environment variable, or an explicitly
+saved operating-system credential; validates the connection; lists the live
+datasets; and previews bounded selections by body ID, type, instance, or ROI.
+Users choose the download and snapshot folder names and review the exact
+destination before a cancellable staged download begins. Completed SWCs appear
+in Circuit Builder and open in the existing post-import quality review. Tokens
+are never written to projects, profiles, manifests, logs, or command previews.
+
 The Workspace page keeps separate **NEURON Python** and **Arbor Python**
 choices. **Find or install NEURON / Arbor** links to the simulators' official
 guides and offers a consent-gated, read-only search of PATH and common Conda or

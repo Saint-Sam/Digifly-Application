@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import threading
+
+import pytest
+import keyring
+
+from digifly_app.core.credentials import (
+    NeuPrintCredentialStore,
+    credential_reference,
+    normalize_neuprint_token,
+)
+from digifly_app.core.neuprint import (
+    AcquisitionCancelled,
+    NeuPrintAcquisitionRequest,
+    NeuPrintClient,
+    NeuPrintDataset,
+    NeuPrintNeuron,
+    NeuPrintSelection,
+    acquire_neuprint_bundle,
+    preview_destination,
+)
+from digifly_app.core.data_library import list_managed_resources
+from digifly_app.core.resource_profile import ResourceKind, ResourceProfile, make_default_profile
+from digifly_app.core.swc_quality import scan_recent_imports
+
+
+SECRET = "test-secret-that-must-never-be-persisted"
+SWC = b"1 1 10000 20000 30000 500 -1\n2 3 11000 20000 30000 200 1\n"
+
+
+def test_token_json_and_os_credential_adapter_keep_only_an_opaque_reference(monkeypatch):
+    stored = {}
+
+    class Backend:
+        priority = 5
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: Backend())
+    monkeypatch.setattr(
+        keyring,
+        "set_password",
+        lambda service, account, password: stored.__setitem__((service, account), password),
+    )
+    monkeypatch.setattr(
+        keyring,
+        "get_password",
+        lambda service, account: stored.get((service, account)),
+    )
+    monkeypatch.setattr(
+        keyring,
+        "delete_password",
+        lambda service, account: stored.pop((service, account), None),
+    )
+    store = NeuPrintCredentialStore()
+    token_json = json.dumps({"token": SECRET})
+
+    reference = store.set("https://neuprint.janelia.org", token_json)
+
+    assert reference == credential_reference("https://neuprint.janelia.org")
+    assert SECRET not in reference
+    assert store.get("https://neuprint.janelia.org") == SECRET
+    assert normalize_neuprint_token(token_json) == SECRET
+    store.delete("https://neuprint.janelia.org")
+    assert store.get("https://neuprint.janelia.org") is None
+
+
+def _profile(tmp_path: Path):
+    workspace = tmp_path / "Digifly Public"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("Digifly Public\n", encoding="utf-8")
+    profile = make_default_profile(
+        workspace_root=workspace,
+        output_root=tmp_path / "workstation" / "runs",
+        managed_data_root=tmp_path / "workstation" / "data",
+    )
+    profile_path = profile.save(tmp_path / "resources-v2.json")
+    return profile, profile_path
+
+
+def _request(*, neurons: tuple[NeuPrintNeuron, ...] | None = None):
+    return NeuPrintAcquisitionRequest(
+        server="https://neuprint.janelia.org",
+        dataset="manc:v1.2.1",
+        resource_id="dnp01-sample",
+        source_version="20260827T120000Z",
+        selection=NeuPrintSelection("type_exact", "DNp01", 10),
+        neurons=neurons or (NeuPrintNeuron(42, "DNp01", "DNp01_R"),),
+        token=SECRET,
+        credential_ref="keyring:org.digifly.workstation.neuprint:neuprint.janelia.org",
+    )
+
+
+def test_minimal_client_validates_lists_and_previews_without_exposing_token():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        calls.append((method, url, headers, payload))
+        if url.endswith("/profile"):
+            return b'{"user":"fixture"}'
+        if url.endswith("/api/dbmeta/datasets"):
+            return json.dumps(
+                {"manc:v1.2.1": {"description": "MANC", "uuid": "fixture"}}
+            ).encode()
+        assert url.endswith("/api/custom/custom")
+        return b'{"columns":["bodyId","type","instance"],"data":[[42,"DNp01","DNp01_R"]]}'
+
+    client = NeuPrintClient(
+        "neuprint.janelia.org",
+        json.dumps({"token": SECRET}),
+        transport=transport,
+    )
+    datasets = client.validate_and_list_datasets()
+    assert datasets == (NeuPrintDataset("manc:v1.2.1", "MANC", "fixture"),)
+    client.dataset = datasets[0].name
+    neurons = client.preview_neurons(NeuPrintSelection("type_exact", "DNp01", 10))
+
+    assert neurons == (NeuPrintNeuron(42, "DNp01", "DNp01_R"),)
+    query = json.loads(calls[-1][3])["cypher"]
+    assert 'n.type = "DNp01"' in query
+    assert "LIMIT 10" in query
+    assert all(call[2]["Authorization"] == f"Bearer {SECRET}" for call in calls)
+    assert SECRET not in repr(client)
+    assert SECRET not in repr(_request())
+
+
+def test_skeleton_route_preserves_dataset_version_separator_and_escapes_paths():
+    captured = {}
+
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        captured["url"] = url
+        return SWC
+
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=transport,
+    )
+    assert client.fetch_skeleton(42) == SWC
+    assert captured["url"].endswith(
+        "/api/skeletons/skeleton/manc:v1.2.1/42?format=swc"
+    )
+
+
+class _FixtureClient:
+    def __init__(self, data: bytes = SWC):
+        self.data = data
+        self.requested = []
+
+    def fetch_skeleton(self, body_id, *, cancel, max_bytes, on_bytes):
+        self.requested.append(body_id)
+        if cancel.is_set():
+            raise AcquisitionCancelled("cancelled")
+        on_bytes(len(self.data))
+        return self.data
+
+
+def test_acquisition_stages_audits_promotes_registers_and_never_persists_token(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    request = _request()
+    progress = []
+    resource = acquire_neuprint_bundle(
+        profile,
+        profile_path,
+        request,
+        client=_FixtureClient(),
+        progress=progress.append,
+    )
+
+    assert resource.root == preview_destination(profile, request)
+    assert resource.swc_count == 1
+    assert resource.registered_binding
+    swc = resource.root / "source/export_swc/DN/DNp01/42/42_neuprint_raw.swc"
+    assert swc.read_bytes() == SWC
+    manifest_text = resource.manifest.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert SECRET not in manifest_text
+    assert manifest["selection"] == {"mode": "type_exact", "value": "DNp01", "limit": 10}
+    assert manifest["post_import_quality"]["audited_swcs"] == 1
+    assert manifest["files"][0]["body_id"] == 42
+    restored = ResourceProfile.load(profile_path)
+    profile_text = profile_path.read_text(encoding="utf-8")
+    assert SECRET not in profile_text
+    binding = next(
+        binding
+        for binding in restored.bindings(ResourceKind.MORPHOLOGY_SOURCE)
+        if binding.resource_id == resource.registered_binding
+    )
+    assert binding.resolved_path == resource.root / "source/export_swc"
+    assert binding.metadata["credential_ref"].startswith("keyring:")
+    assert list_managed_resources(restored)[0].resource_id == "dnp01-sample"
+    assert len(scan_recent_imports(restored).reports) == 1
+    assert progress[-1].stage == "Complete"
+    assert not any((profile.managed_data_root / ".staging").iterdir())
+
+
+def test_cancelled_acquisition_removes_staging_and_registers_nothing(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    request = _request()
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(AcquisitionCancelled):
+        acquire_neuprint_bundle(
+            profile,
+            profile_path,
+            request,
+            client=_FixtureClient(),
+            cancel=cancel,
+        )
+
+    assert not preview_destination(profile, request).exists()
+    assert not any((profile.managed_data_root / ".staging").iterdir())
+    assert ResourceProfile.load(profile_path).bindings(ResourceKind.MORPHOLOGY_SOURCE) == ()
+
+
+def test_acquisition_collision_never_overwrites_completed_bundle(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    request = _request()
+    first = acquire_neuprint_bundle(profile, profile_path, request, client=_FixtureClient())
+    original = first.manifest.read_bytes()
+
+    with pytest.raises(FileExistsError):
+        acquire_neuprint_bundle(
+            ResourceProfile.load(profile_path),
+            profile_path,
+            request,
+            client=_FixtureClient(),
+        )
+
+    assert first.manifest.read_bytes() == original
+
+
+def test_acquisition_request_rejects_duplicates_and_nonopaque_credential_refs():
+    with pytest.raises(ValueError, match="duplicate"):
+        _request(
+            neurons=(
+                NeuPrintNeuron(42, "DNp01", "right"),
+                NeuPrintNeuron(42, "DNp01", "right"),
+            )
+        )
+    payload = _request().__dict__.copy()
+    payload["credential_ref"] = SECRET
+    with pytest.raises(ValueError, match="opaque keyring"):
+        NeuPrintAcquisitionRequest(**payload)
+
+
+@pytest.mark.parametrize(
+    ("mode", "value", "expected"),
+    [
+        ("body_ids", "42, 43", "n.bodyId IN [42,43]"),
+        ("type_regex", "DNp.*", 'n.type =~ "DNp.*"'),
+        ("instance_exact", "DNp01_R", 'n.instance = "DNp01_R"'),
+        ("roi", "legNp(T1)(R)", "n.`legNp(T1)(R)`"),
+    ],
+)
+def test_bounded_selection_modes_generate_reviewable_queries(mode, value, expected):
+    captured = {}
+
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        captured.update(json.loads(payload))
+        return b'{"columns":["bodyId","type","instance"],"data":[]}'
+
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=transport,
+    )
+    client.preview_neurons(NeuPrintSelection(mode, value, 5))
+    assert expected in captured["cypher"]
+    assert captured["cypher"].endswith("LIMIT 5")
+
+
+def test_body_id_selection_rejects_mixed_free_text_instead_of_extracting_digits():
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=lambda *args: b"{}",
+    )
+    with pytest.raises(ValueError, match="numeric"):
+        client.preview_neurons(NeuPrintSelection("body_ids", "body 42", 5))

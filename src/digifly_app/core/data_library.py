@@ -160,6 +160,8 @@ def _registered_profile(
     *,
     label: str,
     dataset: str,
+    morphology_root: Path | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[ResourceProfile, str]:
     if resource.swc_count == 0:
         return profile, ""
@@ -168,20 +170,29 @@ def _registered_profile(
     )
     if any(binding.resource_id == binding_id for binding in profile.resources):
         raise FileExistsError(f"Profile binding already exists: {binding_id}")
+    source_root = (morphology_root or (resource.root / "source")).resolve()
+    if not source_root.is_dir():
+        raise ValueError(f"Managed morphology root does not exist: {source_root}")
+    try:
+        source_root.relative_to(resource.root.resolve())
+    except ValueError as exc:
+        raise ValueError("Managed morphology root must stay inside its resource bundle") from exc
+    binding_metadata = {
+        "provider": resource.provider,
+        "dataset": dataset or resource.resource_id,
+        "source_version": resource.source_version,
+        "manifest": str(resource.manifest),
+        "managed": True,
+    }
+    binding_metadata.update(metadata or {})
     binding = ResourceBinding(
         binding_id,
         ResourceKind.MORPHOLOGY_SOURCE,
-        str(resource.root / "source"),
+        str(source_root),
         AccessMode.READ_ONLY,
         label or resource.resource_id,
         False,
-        {
-            "provider": resource.provider,
-            "dataset": dataset or resource.resource_id,
-            "source_version": resource.source_version,
-            "manifest": str(resource.manifest),
-            "managed": True,
-        },
+        binding_metadata,
     )
     return (
         ResourceProfile(
@@ -191,6 +202,36 @@ def _registered_profile(
         ),
         binding_id,
     )
+
+
+def register_managed_morphology(
+    profile: ResourceProfile,
+    resource: ManagedResource,
+    *,
+    profile_path: str | Path,
+    morphology_root: str | Path | None = None,
+    label: str = "",
+    dataset: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Register an atomically promoted provider bundle in the current profile."""
+
+    updated, binding_id = _registered_profile(
+        profile,
+        resource,
+        label=label,
+        dataset=dataset,
+        morphology_root=(
+            Path(morphology_root).expanduser().resolve()
+            if morphology_root is not None
+            else None
+        ),
+        metadata=metadata,
+    )
+    if updated != profile:
+        destination = _current_profile_destination(profile_path)
+        updated.save(destination, replace=destination.exists())
+    return binding_id
 
 
 def _current_profile_destination(profile_path: str | Path) -> Path:
@@ -325,17 +366,20 @@ def import_local_source(
             preview.swc_count,
             imported_at,
         )
-        registered_profile, binding_id = _registered_profile(
-            profile,
-            resource,
-            label=label,
-            dataset=dataset,
-        )
-        if profile_path is not None and registered_profile != profile:
-            profile_destination = _current_profile_destination(profile_path)
-            registered_profile.save(
-                profile_destination,
-                replace=profile_destination.exists(),
+        if profile_path is not None:
+            binding_id = register_managed_morphology(
+                profile,
+                resource,
+                profile_path=profile_path,
+                label=label,
+                dataset=dataset,
+            )
+        else:
+            _registered, binding_id = _registered_profile(
+                profile,
+                resource,
+                label=label,
+                dataset=dataset,
             )
         return ManagedResource(
             **{**resource.__dict__, "registered_binding": binding_id}
@@ -434,11 +478,21 @@ def list_managed_resources(
         if manifest in manifests_seen or not manifest.is_file():
             continue
         resource = _resource_from_manifest(manifest, verify=verify)
+        try:
+            declared_resource_id = json.loads(
+                manifest.read_text(encoding="utf-8")
+            ).get("resource_id")
+        except (OSError, AttributeError, json.JSONDecodeError):
+            declared_resource_id = None
         resources.append(
             ManagedResource(
                 **{
                     **resource.__dict__,
-                    "resource_id": binding.resource_id,
+                    "resource_id": (
+                        resource.resource_id
+                        if declared_resource_id
+                        else binding.resource_id
+                    ),
                     "registered_binding": binding.resource_id,
                 }
             )

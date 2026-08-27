@@ -94,3 +94,16 @@
 - Signed/notarized macOS build and packaged Windows/Linux builds.
 - Example dataset small enough for CI.
 - GitHub Actions, release artifacts, contribution guide, and chosen license.
+
+## Milestone 7 — Managed data acquisition
+
+- [x] Add a versioned managed-data root, staged local imports, manifests,
+  checksums, atomic promotion, and read-only external-folder registration.
+- [x] Add a credential-safe neuPrint SWC workflow with live dataset discovery,
+  bounded previews, reviewed naming/destination, cancellation, registration,
+  and automatic post-import quality review.
+- [ ] Add resumable neuPrint checkpoints and selected connectivity tables.
+- [ ] Add safe ModelDB accession/archive/manual-folder import without executing
+  imported model code.
+- [ ] Add cross-platform managed-library relocation, relink, unregister, and
+  removal controls.

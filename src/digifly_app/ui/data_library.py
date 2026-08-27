@@ -35,6 +35,7 @@ from digifly_app.core.resource_profile import (
 )
 
 from .widgets import Card
+from .neuprint_import import NeuPrintImportDialog
 
 
 def _human_bytes(value: int) -> str:
@@ -93,6 +94,7 @@ class DataLibraryPage(QWidget):
         self._thread: QThread | None = None
         self._worker: _ImportWorker | None = None
         self._review_after_import = False
+        self._neuprint_dialog: NeuPrintImportDialog | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 26, 30, 32)
@@ -123,9 +125,9 @@ class DataLibraryPage(QWidget):
         self.register_button = QPushButton("Register existing SWC folder…")
         self.register_button.clicked.connect(self.register_existing_folder)
         row.addWidget(self.register_button)
-        neuprint = QPushButton("Download from neuPrint")
-        neuprint.clicked.connect(self._neuprint_guidance)
-        row.addWidget(neuprint)
+        self.neuprint_button = QPushButton("Download from neuPrint")
+        self.neuprint_button.clicked.connect(self.open_neuprint_import)
+        row.addWidget(self.neuprint_button)
         modeldb = QPushButton("Import ModelDB model")
         modeldb.clicked.connect(self._modeldb_guidance)
         row.addWidget(modeldb)
@@ -344,14 +346,30 @@ class DataLibraryPage(QWidget):
         profile.managed_data_root.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(profile.managed_data_root)))
 
-    def _neuprint_guidance(self) -> None:
-        QMessageBox.information(
-            self,
-            "neuPrint acquisition",
-            "The managed storage and credential-safe profile boundary are ready. "
-            "Dataset discovery, token testing, resumable download jobs, and bounded-query "
-            "preview are the next provider milestone; tokens will never be stored in profiles or manifests.",
+    @Slot()
+    def open_neuprint_import(self) -> None:
+        try:
+            profile, profile_path = self._profile()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+        dialog = NeuPrintImportDialog(profile, profile_path, self)
+        dialog.resource_imported.connect(self._neuprint_completed)
+        self._neuprint_dialog = dialog
+        dialog.exec()
+        self._neuprint_dialog = None
+        if self._review_after_import:
+            self._review_after_import = False
+            self.quality_review_requested.emit()
+
+    @Slot(object)
+    def _neuprint_completed(self, resource: ManagedResource) -> None:
+        self.action_status.setText(
+            f"Downloaded {resource.swc_count:,} neuPrint SWC(s) to {resource.root}."
         )
+        self.refresh()
+        self.sources_changed.emit()
+        self._review_after_import = bool(resource.swc_count)
 
     def _modeldb_guidance(self) -> None:
         QMessageBox.information(
