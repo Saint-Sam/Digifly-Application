@@ -102,10 +102,10 @@
 - [x] Add a credential-safe neuPrint SWC workflow with live dataset discovery,
   bounded previews, reviewed naming/destination, cancellation, registration,
   and automatic post-import quality review.
-- [ ] Add resumable neuPrint checkpoints and selected connectivity tables.
+- [x] Add resumable neuPrint checkpoints and selected connectivity tables.
 - [x] Add safe ModelDB accession/archive/manual-folder import without executing
   imported model code.
 - [ ] Add cross-platform managed-library relocation, relink, unregister, and
   removal controls. Validation-first relink, unregister/re-register, and
-  recoverable Trash/restore are complete; the in-app cross-filesystem mover and
-  platform matrix remain.
+  recoverable Trash/restore, confirmed permanent purge, and the in-app
+  cross-filesystem mover are complete; the platform matrix remains.

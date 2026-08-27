@@ -62,6 +62,7 @@ def test_data_library_selected_resource_controls_toggle_and_soft_delete(
         assert page.inspect_button.isEnabled()
         assert page.registration_button.text() == "Unregister"
         assert page.trash_button.isEnabled()
+        assert page.move_library_button.isEnabled()
 
         page.toggle_registration()
         application.processEvents()
@@ -113,4 +114,32 @@ def test_manifest_and_trash_dialogs_render_and_restore(tmp_path: Path, monkeypat
         assert list_managed_resources(ResourceProfile.load(profile_path))[0].resource_id == "ui-resource"
     finally:
         trash.close()
+        application.processEvents()
+
+
+def test_trash_dialog_can_permanently_purge_only_selected_entry(tmp_path: Path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    profile_path = _library(tmp_path)
+    profile = ResourceProfile.load(profile_path)
+    resource = list_managed_resources(profile)[0]
+    from digifly_app.core.resource_management import trash_managed_resource
+
+    entry = trash_managed_resource(profile, resource, profile_path=profile_path)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    dialog = TrashDialog(ResourceProfile.load(profile_path), profile_path)
+    try:
+        dialog.table.selectRow(0)
+        application.processEvents()
+        assert dialog.purge_button.isEnabled()
+        dialog.purge_selected()
+        application.processEvents()
+        assert dialog.table.rowCount() == 0
+        assert not entry.trash_root.exists()
+        assert "Permanently deleted" in dialog.status.text()
+    finally:
+        dialog.close()
         application.processEvents()

@@ -48,6 +48,8 @@ from digifly_app.core.neuprint import (
     NeuPrintNeuron,
     NeuPrintSelection,
     acquire_neuprint_bundle,
+    discard_neuprint_checkpoint,
+    neuprint_checkpoint_path,
     normalize_server,
     preview_destination,
 )
@@ -119,11 +121,12 @@ class NeuPrintImportDialog(QDialog):
         root.setContentsMargins(22, 20, 22, 20)
         root.setSpacing(13)
 
-        title = QLabel("Download neuron SWCs from neuPrint")
+        title = QLabel("Download neuron data from neuPrint")
         title.setObjectName("PageTitle")
         detail = QLabel(
             "Connect with your personal application token, preview a bounded neuron set, "
-            "review its exact destination, then download into the managed library."
+            "review its exact destination, then download resumable SWCs and optional "
+            "selected connectivity into the managed library."
         )
         detail.setObjectName("Muted")
         detail.setWordWrap(True)
@@ -239,11 +242,23 @@ class NeuPrintImportDialog(QDialog):
         naming_layout.addWidget(QLabel("Snapshot"))
         naming_layout.addWidget(self.snapshot_edit, 1)
         destination_form.addRow("Download identity", naming_row)
+        self.connectivity_check = QCheckBox(
+            "Include directed connections among the selected neurons"
+        )
+        self.connectivity_check.setChecked(True)
+        self.connectivity_check.setToolTip(
+            "Adds a bounded CSV table of selected-to-selected ConnectsTo edges and weights"
+        )
+        destination_form.addRow("Connectivity table", self.connectivity_check)
         self.destination_label = QLabel("Preview neurons to calculate the exact destination")
         self.destination_label.setObjectName("Muted")
         self.destination_label.setWordWrap(True)
         self.destination_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         destination_form.addRow("Exact destination", self.destination_label)
+        self.discard_checkpoint_button = QPushButton("Discard saved partial download…")
+        self.discard_checkpoint_button.setVisible(False)
+        self.discard_checkpoint_button.clicked.connect(self.discard_checkpoint)
+        destination_form.addRow("Saved checkpoint", self.discard_checkpoint_button)
         root.addWidget(destination)
 
         progress_row = QHBoxLayout()
@@ -284,6 +299,7 @@ class NeuPrintImportDialog(QDialog):
         self.limit_spin.valueChanged.connect(self._preview_invalidated)
         self.name_edit.textChanged.connect(self._update_destination)
         self.snapshot_edit.textChanged.connect(self._update_destination)
+        self.connectivity_check.toggled.connect(self._update_destination)
 
     @property
     def operation_in_progress(self) -> bool:
@@ -297,6 +313,9 @@ class NeuPrintImportDialog(QDialog):
         self.preview_button.setEnabled(not busy and bool(self._active_token) and self.dataset_combo.count() > 0)
         self.download_button.setEnabled(not busy and bool(self._selected_neurons()))
         self.close_button.setEnabled(not busy)
+        self.discard_checkpoint_button.setEnabled(
+            not busy and self.discard_checkpoint_button.isVisible()
+        )
 
     def _start_operation(
         self,
@@ -333,7 +352,10 @@ class NeuPrintImportDialog(QDialog):
     def _operation_failed(self, detail: str) -> None:
         safe_detail = self._redact(detail)
         if isinstance(detail, str) and "cancel" in detail.casefold():
-            self.status.setText("Download cancelled; the partial staging folder was removed.")
+            self.status.setText(
+                "Download cancelled; verified completed files remain in a credential-free "
+                "checkpoint and will resume on retry."
+            )
         else:
             self.status.setText(f"{self._operation_kind.capitalize()} failed: {safe_detail}")
             QMessageBox.critical(self, f"neuPrint {self._operation_kind} failed", safe_detail)
@@ -346,6 +368,7 @@ class NeuPrintImportDialog(QDialog):
         self._success_handler = None
         self._operation_kind = ""
         self.cancel_button.setVisible(False)
+        self.cancel_button.setEnabled(True)
         if not was_download:
             self.progress.setVisible(False)
         self._set_busy(False)
@@ -524,6 +547,7 @@ class NeuPrintImportDialog(QDialog):
             neurons=self._selected_neurons(),
             token=self._active_token,
             credential_ref=self._credential_ref,
+            include_connectivity=self.connectivity_check.isChecked(),
         )
 
     def _update_destination(self, *_args: Any) -> None:
@@ -532,10 +556,47 @@ class NeuPrintImportDialog(QDialog):
             destination = preview_destination(self.profile, request)
         except ValueError:
             self.destination_label.setText("Complete the preview and naming fields to see the destination")
+            self.discard_checkpoint_button.setVisible(False)
             self.download_button.setEnabled(False)
             return
-        self.destination_label.setText(str(destination))
+        checkpoint = neuprint_checkpoint_path(self.profile, request)
+        checkpoint_note = (
+            "\nA saved partial download matches this request and will resume automatically."
+            if (checkpoint / "digifly-neuprint-checkpoint.json").is_file()
+            else ""
+        )
+        self.destination_label.setText(f"{destination}{checkpoint_note}")
+        self.discard_checkpoint_button.setVisible(bool(checkpoint_note))
+        self.discard_checkpoint_button.setEnabled(self._thread is None and bool(checkpoint_note))
         self.download_button.setEnabled(self._thread is None and bool(request.neurons))
+
+    @Slot()
+    def discard_checkpoint(self) -> None:
+        try:
+            request = self._request()
+            checkpoint = neuprint_checkpoint_path(self.profile, request)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Partial download is unavailable", str(exc))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Permanently discard partial neuPrint download",
+            f"Permanently delete the saved partial acquisition?\n\n{checkpoint}\n\n"
+            "Completed SWCs and connectivity in this checkpoint cannot be restored after deletion.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            removed = discard_neuprint_checkpoint(self.profile, request)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not discard partial download", str(exc))
+            return
+        self.status.setText(
+            "Saved partial download was permanently discarded."
+            if removed
+            else "No matching partial download remains."
+        )
+        self._update_destination()
 
     @Slot()
     def start_download(self) -> None:
@@ -546,14 +607,24 @@ class NeuPrintImportDialog(QDialog):
             QMessageBox.warning(self, "Download details are incomplete", str(exc))
             return
         count = len(request.neurons)
+        connectivity_note = (
+            " A bounded selected-to-selected connectivity CSV will also be included."
+            if request.include_connectivity
+            else ""
+        )
+        resume_note = (
+            "\n\nA matching verified checkpoint exists; completed files will not be downloaded again."
+            if (neuprint_checkpoint_path(self.profile, request) / "digifly-neuprint-checkpoint.json").is_file()
+            else ""
+        )
         large_note = "\n\nThis is a larger job; verify the limit and free disk space." if count > 100 else ""
         answer = QMessageBox.question(
             self,
             "Confirm neuPrint download",
             f"Download {count} reviewed SWC(s) from {request.dataset}?\n\n"
             f"Destination:\n{destination}\n\n"
-            "The bundle will be staged, checksummed, audited, and registered only after it is complete."
-            f"{large_note}",
+            "The bundle will be checkpointed, checksummed, audited, and registered only after it "
+            f"is complete.{connectivity_note}{resume_note}{large_note}",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -562,6 +633,7 @@ class NeuPrintImportDialog(QDialog):
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self.cancel_button.setVisible(True)
+        self.cancel_button.setEnabled(True)
         self.status.setText("Starting staged neuPrint download…")
         client = self.client_factory(
             request.server,
@@ -602,7 +674,10 @@ class NeuPrintImportDialog(QDialog):
     def cancel_download(self) -> None:
         self._cancel_event.set()
         self.cancel_button.setEnabled(False)
-        self.status.setText("Cancelling after the current network read; partial staging will be removed…")
+        self.status.setText(
+            "Cancelling after the current network read; verified completed files will remain "
+            "available for a later resume…"
+        )
 
     def _download_complete(self, resource: ManagedResource) -> None:
         self.progress.setValue(self.progress.maximum())

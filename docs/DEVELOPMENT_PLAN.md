@@ -83,14 +83,19 @@ import, checksum/provenance manifest, atomic promotion, adaptive SWC audit, and
 Data Library foundation are implemented. The first neuPrint slice now includes
 OS-keyring/session/environment credentials, live dataset discovery, bounded
 body/type/instance/ROI previews, user-reviewed naming and destination, retry,
-cancellation, staged SWC download, registration, and quality-review handoff.
+cancellation, durable credential-free resume checkpoints, selected-to-selected
+connectivity CSV acquisition, staged SWC download, typed registration, and
+quality-review handoff.
 ModelDB accession lookup/download and offline ZIP/TAR/folder intake now inspect
 bounded contents, keep code inert, preserve provenance, register model/SWC
 sources, and reject malicious archive fixtures. Selected managed resources now
 support manifest inspection, byte-preserving unregister/re-register,
 recoverable Trash/restore, and validation-first relinking after a user moves the
-library. Connectivity-table acquisition, resumable checkpoints, an in-app
-cross-filesystem library mover, and broader retry/repair flows remain.
+library. The in-app mover now uses atomic rename on one filesystem or a
+copy/checksum/relink/remove transaction across filesystems, and selected Trash
+entries can be permanently purged only after an explicit irreversible-action
+confirmation. Broader retry/repair flows, checksum-progress UX, and the
+cross-platform acceptance matrix remain.
 See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation

@@ -154,8 +154,13 @@ def _resource_destination(
     return managed_root / "imports" / provider / resource_id / source_version
 
 
-def _binding_id(provider: str, resource_id: str, source_version: str) -> str:
-    value = f"managed-{provider}-{resource_id}-{source_version}"
+def _binding_id(
+    provider: str,
+    resource_id: str,
+    source_version: str,
+    suffix: str = "",
+) -> str:
+    value = f"managed-{provider}-{resource_id}-{source_version}{suffix}"
     if len(value) <= 96:
         return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
@@ -169,22 +174,16 @@ def _registered_profile(
     label: str,
     dataset: str,
     morphology_root: Path | None = None,
+    data_root: Path | None = None,
+    data_label: str = "",
     metadata: dict[str, Any] | None = None,
+    data_metadata: dict[str, Any] | None = None,
 ) -> tuple[ResourceProfile, str]:
-    if resource.swc_count == 0:
+    if resource.swc_count == 0 and data_root is None:
         return profile, ""
     binding_id = _binding_id(
         resource.provider, resource.resource_id, resource.source_version
     )
-    if any(binding.resource_id == binding_id for binding in profile.resources):
-        raise FileExistsError(f"Profile binding already exists: {binding_id}")
-    source_root = (morphology_root or (resource.root / "source")).resolve()
-    if not source_root.is_dir():
-        raise ValueError(f"Managed morphology root does not exist: {source_root}")
-    try:
-        source_root.relative_to(resource.root.resolve())
-    except ValueError as exc:
-        raise ValueError("Managed morphology root must stay inside its resource bundle") from exc
     binding_metadata = {
         "provider": resource.provider,
         "dataset": dataset or resource.resource_id,
@@ -193,22 +192,64 @@ def _registered_profile(
         "managed": True,
     }
     binding_metadata.update(metadata or {})
-    binding = ResourceBinding(
-        binding_id,
-        ResourceKind.MORPHOLOGY_SOURCE,
-        str(source_root),
-        AccessMode.READ_ONLY,
-        label or resource.resource_id,
-        False,
-        binding_metadata,
+    new_bindings: list[ResourceBinding] = []
+    if resource.swc_count:
+        source_root = (morphology_root or (resource.root / "source")).resolve()
+        if not source_root.is_dir():
+            raise ValueError(f"Managed morphology root does not exist: {source_root}")
+        try:
+            source_root.relative_to(resource.root.resolve())
+        except ValueError as exc:
+            raise ValueError("Managed morphology root must stay inside its resource bundle") from exc
+        new_bindings.append(
+            ResourceBinding(
+                binding_id,
+                ResourceKind.MORPHOLOGY_SOURCE,
+                str(source_root),
+                AccessMode.READ_ONLY,
+                label or resource.resource_id,
+                False,
+                binding_metadata,
+            )
+        )
+    if data_root is not None:
+        resolved_data_root = data_root.resolve()
+        if not resolved_data_root.is_dir():
+            raise ValueError(f"Managed data root does not exist: {resolved_data_root}")
+        try:
+            resolved_data_root.relative_to(resource.root.resolve())
+        except ValueError as exc:
+            raise ValueError("Managed data root must stay inside its resource bundle") from exc
+        data_binding_id = _binding_id(
+            resource.provider,
+            resource.resource_id,
+            resource.source_version,
+            "-data",
+        )
+        new_bindings.append(
+            ResourceBinding(
+                data_binding_id,
+                ResourceKind.DATA_SOURCE,
+                str(resolved_data_root),
+                AccessMode.READ_ONLY,
+                data_label or f"{label or resource.resource_id} data",
+                False,
+                {**binding_metadata, **(data_metadata or {})},
+            )
+        )
+    existing_ids = {binding.resource_id for binding in profile.resources}
+    collision = existing_ids.intersection(
+        binding.resource_id for binding in new_bindings
     )
+    if collision:
+        raise FileExistsError(f"Profile binding already exists: {sorted(collision)[0]}")
     return (
         ResourceProfile(
             profile.profile_id,
-            (*profile.resources, binding),
+            (*profile.resources, *new_bindings),
             profile.label,
         ),
-        binding_id,
+        new_bindings[0].resource_id,
     )
 
 
@@ -218,9 +259,12 @@ def register_managed_morphology(
     *,
     profile_path: str | Path,
     morphology_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    data_label: str = "",
     label: str = "",
     dataset: str = "",
     metadata: dict[str, Any] | None = None,
+    data_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Register an atomically promoted provider bundle in the current profile."""
 
@@ -234,7 +278,14 @@ def register_managed_morphology(
             if morphology_root is not None
             else None
         ),
+        data_root=(
+            Path(data_root).expanduser().resolve()
+            if data_root is not None
+            else None
+        ),
+        data_label=data_label,
         metadata=metadata,
+        data_metadata=data_metadata,
     )
     if updated != profile:
         destination = _current_profile_destination(profile_path)

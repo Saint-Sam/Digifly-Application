@@ -144,8 +144,13 @@ saved operating-system credential; validates the connection; lists the live
 datasets; and previews bounded selections by body ID, type, instance, or ROI.
 Users choose the download and snapshot folder names and review the exact
 destination before a cancellable staged download begins. Completed SWCs appear
-in Circuit Builder and open in the existing post-import quality review. Tokens
-are never written to projects, profiles, manifests, logs, or command previews.
+in Circuit Builder and open in the existing post-import quality review. Users
+can also include a bounded directed CSV of connections among the reviewed
+neurons. Every completed SWC and connectivity table is checksummed into a
+credential-free checkpoint, so cancellation or a network failure can resume
+without redownloading verified files; the dialog can explicitly discard a
+saved partial job. Tokens are never written to projects, profiles, manifests,
+logs, checkpoints, or command previews.
 
 **Import model / ModelDB** accepts an official ModelDB accession, a downloaded
 ZIP/TAR archive, or an unpacked local model folder. It previews metadata and
@@ -169,7 +174,12 @@ whole bundle into a recoverable `.trash` area. **Manage Trash** restores the
 exact original location and previous bindings. If a user moves the whole data
 library with Finder or another file manager, **Relink moved library** validates
 every relocated managed path and manifest before changing the machine profile;
-it never copies data or recreates a missing old root silently.
+it never copies data or recreates a missing old root silently. **Move library**
+performs the move itself: same-filesystem destinations use rollback-safe atomic
+rename, while cross-filesystem destinations are copied and SHA-256 verified
+before the profile changes and the source is removed. Trash remains recoverable
+unless the user explicitly chooses **Permanently delete selected**, confirms the
+irreversible deletion, and purges that exact receipt.
 
 The Workspace page keeps separate **NEURON Python** and **Arbor Python**
 choices. **Find or install NEURON / Arbor** links to the simulators' official

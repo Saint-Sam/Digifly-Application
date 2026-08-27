@@ -8,7 +8,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
+import threading
 from typing import Any, Mapping
+from uuid import uuid4
 
 from .data_library import (
     MANIFEST_FILENAME,
@@ -35,6 +39,37 @@ class RelinkPreview:
     new_root: Path
     managed_binding_count: int
     resource_count: int
+
+
+@dataclass(frozen=True)
+class LibraryMovePreview:
+    source_root: Path
+    target_root: Path
+    same_filesystem: bool
+
+
+@dataclass(frozen=True)
+class LibraryMoveProgress:
+    stage: str
+    completed_files: int
+    total_files: int
+    completed_bytes: int
+    total_bytes: int
+    current: str = ""
+
+
+@dataclass(frozen=True)
+class LibraryMoveResult:
+    source_root: Path
+    target_root: Path
+    mode: str
+    source_removed: bool
+    file_count: int
+    total_bytes: int
+
+
+class LibraryMoveCancelled(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -292,6 +327,36 @@ def _proposed_bindings(
                 f"{label} morphologies" if is_model else label,
                 False,
                 metadata,
+            )
+        )
+    connectivity = payload.get("connectivity")
+    if isinstance(connectivity, Mapping) and bool(connectivity.get("included")):
+        table_value = str(connectivity.get("table_path") or "")
+        table = (resource.root / table_value).resolve()
+        try:
+            table.relative_to(resource.root.resolve())
+        except ValueError as exc:
+            raise ValueError("Managed connectivity table escapes its resource bundle") from exc
+        if not table.is_file():
+            raise ValueError(f"Managed connectivity table is missing: {table}")
+        proposed.append(
+            ResourceBinding(
+                _binding_id(
+                    provider,
+                    resource.resource_id,
+                    resource.source_version,
+                    "-data",
+                ),
+                ResourceKind.DATA_SOURCE,
+                str(table.parent),
+                AccessMode.READ_ONLY,
+                f"{label} connectivity",
+                False,
+                {
+                    **metadata,
+                    "data_role": "neuprint_connectivity",
+                    "connectivity_scope": str(connectivity.get("scope") or "selected"),
+                },
             )
         )
     return tuple(proposed)
@@ -580,6 +645,8 @@ def restore_trashed_resource(
 def preview_library_relink(
     profile: ResourceProfile,
     new_root: str | Path,
+    *,
+    allow_empty: bool = False,
 ) -> RelinkPreview:
     """Validate a user-moved library and preview path updates without writing."""
 
@@ -642,10 +709,17 @@ def preview_library_relink(
             ) from exc
         relocated_candidate(path_relative, label=binding.resource_id, file=False)
         relocated_candidate(manifest_relative, label=binding.resource_id, file=True)
-    manifest_count = sum(1 for _ in target.rglob(MANIFEST_FILENAME))
-    if not managed_bindings and manifest_count == 0:
+    resource_roots = {
+        manifest.parent.resolve() for manifest in target.rglob(MANIFEST_FILENAME)
+    }
+    resource_roots.update(
+        receipt.parent.resolve()
+        for receipt in (target / ".trash").glob(f"*/{TRASH_RECEIPT}")
+    )
+    resource_count = len(resource_roots)
+    if not managed_bindings and resource_count == 0 and not allow_empty:
         raise ValueError("The selected folder contains no Digifly managed resources")
-    return RelinkPreview(current, target, len(managed_bindings), manifest_count)
+    return RelinkPreview(current, target, len(managed_bindings), resource_count)
 
 
 def relink_managed_library(
@@ -653,10 +727,11 @@ def relink_managed_library(
     new_root: str | Path,
     *,
     profile_path: str | Path,
+    allow_empty: bool = False,
 ) -> RelinkPreview:
     """Point the profile at an already relocated library without copying data."""
 
-    preview = preview_library_relink(profile, new_root)
+    preview = preview_library_relink(profile, new_root, allow_empty=allow_empty)
     updated_bindings: list[ResourceBinding] = []
     for binding in profile.resources:
         if binding.kind == ResourceKind.MANAGED_DATA_ROOT:
@@ -701,3 +776,241 @@ def relink_managed_library(
     destination = _profile_destination(profile_path)
     updated.save(destination, replace=destination.exists())
     return preview
+
+
+def preview_library_move(
+    profile: ResourceProfile,
+    new_root: str | Path,
+) -> LibraryMovePreview:
+    """Validate a destination for an app-managed whole-library move."""
+
+    source = profile.managed_data_root.resolve()
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError(f"The active managed Data Library is unavailable: {source}")
+    selected = Path(new_root).expanduser()
+    if selected.is_symlink() or selected.exists():
+        raise FileExistsError(f"The new Data Library destination already exists: {selected}")
+    if not selected.parent.is_dir() or selected.parent.is_symlink():
+        raise ValueError(f"The destination parent is unavailable: {selected.parent}")
+    target = selected.resolve()
+    try:
+        target.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("The new Data Library cannot be nested inside the current library")
+    try:
+        source.relative_to(target)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("The new Data Library cannot contain the current library")
+    return LibraryMovePreview(
+        source,
+        target,
+        source.stat().st_dev == target.parent.stat().st_dev,
+    )
+
+
+def _library_inventory(
+    root: Path,
+) -> tuple[tuple[Path, ...], tuple[tuple[Path, Path, int], ...], int]:
+    directories: list[Path] = []
+    files: list[tuple[Path, Path, int]] = []
+    total_bytes = 0
+    for current, directory_names, file_names in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in directory_names:
+            candidate = current_path / name
+            details = os.lstat(candidate)
+            if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+                raise ValueError(f"Managed library contains an unsupported directory entry: {candidate}")
+            directories.append(candidate.relative_to(root))
+        for name in file_names:
+            candidate = current_path / name
+            details = os.lstat(candidate)
+            if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+                raise ValueError(f"Managed library contains an unsupported file entry: {candidate}")
+            relative = candidate.relative_to(root)
+            files.append((candidate, relative, details.st_size))
+            total_bytes += details.st_size
+    return (
+        tuple(sorted(directories, key=lambda path: (len(path.parts), path.as_posix()))),
+        tuple(sorted(files, key=lambda item: item[1].as_posix())),
+        total_bytes,
+    )
+
+
+def _verified_copy(source: Path, destination: Path) -> None:
+    digest = hashlib.sha256()
+    with source.open("rb") as input_stream, destination.open("xb") as output_stream:
+        for block in iter(lambda: input_stream.read(1024 * 1024), b""):
+            digest.update(block)
+            output_stream.write(block)
+        output_stream.flush()
+        os.fsync(output_stream.fileno())
+    shutil.copystat(source, destination, follow_symlinks=False)
+    copied = hashlib.sha256()
+    with destination.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            copied.update(block)
+    if copied.digest() != digest.digest():
+        raise OSError(f"Copied file failed checksum verification: {source}")
+
+
+def move_managed_library(
+    profile: ResourceProfile,
+    new_root: str | Path,
+    *,
+    profile_path: str | Path,
+    progress: Any | None = None,
+    cancel: threading.Event | None = None,
+) -> LibraryMoveResult:
+    """Move the whole library atomically or by verified cross-filesystem copy."""
+
+    preview = preview_library_move(profile, new_root)
+    cancel_event = cancel or threading.Event()
+
+    def emit(
+        stage: str,
+        completed_files: int,
+        total_files: int,
+        completed_bytes: int,
+        total_bytes: int,
+        current: str = "",
+    ) -> None:
+        if progress is None:
+            return
+        try:
+            progress(
+                LibraryMoveProgress(
+                    stage,
+                    completed_files,
+                    total_files,
+                    completed_bytes,
+                    total_bytes,
+                    current,
+                )
+            )
+        except Exception:
+            pass
+
+    emit("Inventorying managed library", 0, 0, 0, 0)
+    directories, files, total_bytes = _library_inventory(preview.source_root)
+    file_count = len(files)
+    if cancel_event.is_set():
+        raise LibraryMoveCancelled("The Data Library move was cancelled")
+    if preview.same_filesystem:
+        emit("Moving library atomically", 0, file_count, 0, total_bytes)
+        os.replace(preview.source_root, preview.target_root)
+        try:
+            relink_managed_library(
+                profile,
+                preview.target_root,
+                profile_path=profile_path,
+                allow_empty=True,
+            )
+        except Exception:
+            if preview.target_root.exists() and not preview.source_root.exists():
+                os.replace(preview.target_root, preview.source_root)
+            raise
+        emit("Complete", file_count, file_count, total_bytes, total_bytes)
+        return LibraryMoveResult(
+            preview.source_root,
+            preview.target_root,
+            "atomic_rename",
+            True,
+            file_count,
+            total_bytes,
+        )
+
+    if shutil.disk_usage(preview.target_root.parent).free < total_bytes:
+        raise OSError(
+            f"The destination needs {total_bytes:,} bytes, but only "
+            f"{shutil.disk_usage(preview.target_root.parent).free:,} bytes are free"
+        )
+    candidate = preview.target_root.parent / (
+        f".{preview.target_root.name}.digifly-copy-{uuid4().hex}"
+    )
+    promoted = False
+    profile_updated = False
+    completed_bytes = 0
+    try:
+        candidate.mkdir()
+        for relative in directories:
+            (candidate / relative).mkdir(parents=True, exist_ok=True)
+        for index, (source_file, relative, size) in enumerate(files, 1):
+            if cancel_event.is_set():
+                raise LibraryMoveCancelled("The Data Library move was cancelled")
+            emit(
+                "Copying and verifying library",
+                index - 1,
+                file_count,
+                completed_bytes,
+                total_bytes,
+                relative.as_posix(),
+            )
+            destination_file = candidate / relative
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
+            _verified_copy(source_file, destination_file)
+            completed_bytes += size
+        if cancel_event.is_set():
+            raise LibraryMoveCancelled("The Data Library move was cancelled")
+        os.replace(candidate, preview.target_root)
+        promoted = True
+        relink_managed_library(
+            profile,
+            preview.target_root,
+            profile_path=profile_path,
+            allow_empty=True,
+        )
+        profile_updated = True
+    except Exception:
+        cleanup = preview.target_root if promoted else candidate
+        if cleanup.exists() and not profile_updated:
+            shutil.rmtree(cleanup)
+        raise
+    source_removed = True
+    try:
+        shutil.rmtree(preview.source_root)
+    except OSError:
+        source_removed = False
+    emit("Complete", file_count, file_count, total_bytes, total_bytes)
+    return LibraryMoveResult(
+        preview.source_root,
+        preview.target_root,
+        "verified_copy",
+        source_removed,
+        file_count,
+        total_bytes,
+    )
+
+
+def purge_trashed_resource(
+    profile: ResourceProfile,
+    entry: TrashEntry,
+) -> tuple[int, int]:
+    """Permanently delete exactly one validated Trash entry."""
+
+    managed_root = profile.managed_data_root.resolve()
+    trash_path = managed_root / ".trash"
+    if trash_path.is_symlink():
+        raise ValueError("Refusing to purge through a symbolic-link Trash root")
+    trash_root = trash_path.resolve()
+    if entry.trash_root.is_symlink():
+        raise ValueError("Refusing to purge a symbolic-link Trash entry")
+    resolved = entry.trash_root.resolve()
+    try:
+        relative = resolved.relative_to(trash_root)
+    except ValueError as exc:
+        raise ValueError("Trash entry does not belong to the active managed library") from exc
+    if len(relative.parts) != 1:
+        raise ValueError("Refusing to purge an unsafe Data Library Trash path")
+    receipt = resolved / TRASH_RECEIPT
+    if not resolved.is_dir() or not receipt.is_file() or not entry.manifest.is_file():
+        raise ValueError("The selected Trash entry is incomplete")
+    _directories, files, total_bytes = _library_inventory(resolved)
+    shutil.rmtree(resolved)
+    if trash_root.is_dir() and not any(trash_root.iterdir()):
+        trash_root.rmdir()
+    return len(files), total_bytes

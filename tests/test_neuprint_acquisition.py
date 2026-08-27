@@ -16,10 +16,14 @@ from digifly_app.core.neuprint import (
     AcquisitionCancelled,
     NeuPrintAcquisitionRequest,
     NeuPrintClient,
+    NeuPrintConnection,
     NeuPrintDataset,
+    NeuPrintError,
     NeuPrintNeuron,
     NeuPrintSelection,
     acquire_neuprint_bundle,
+    discard_neuprint_checkpoint,
+    neuprint_checkpoint_path,
     preview_destination,
 )
 from digifly_app.core.data_library import list_managed_resources
@@ -144,10 +148,57 @@ def test_skeleton_route_preserves_dataset_version_separator_and_escapes_paths():
     )
 
 
+def test_client_fetches_bounded_selected_connectivity_table():
+    captured = {}
+
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        captured.update(json.loads(payload))
+        return (
+            b'{"columns":["sourceBodyId","targetBodyId","weight"],'
+            b'"data":[[42,43,17],[43,42,9]]}'
+        )
+
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=transport,
+    )
+    result = client.fetch_connectivity((42, 43), max_rows=10)
+
+    assert result == (
+        NeuPrintConnection(42, 43, 17),
+        NeuPrintConnection(43, 42, 9),
+    )
+    assert "source.bodyId IN [42,43]" in captured["cypher"]
+    assert "target.bodyId IN [42,43]" in captured["cypher"]
+    assert captured["cypher"].endswith("LIMIT 11")
+
+
+def test_client_rejects_connectivity_larger_than_reviewed_row_limit():
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=lambda *args: (
+            b'{"columns":["sourceBodyId","targetBodyId","weight"],'
+            b'"data":[[42,43,1],[43,42,1]]}'
+        ),
+    )
+    with pytest.raises(NeuPrintError, match="row safety limit"):
+        client.fetch_connectivity((42, 43), max_rows=1)
+
+
 class _FixtureClient:
-    def __init__(self, data: bytes = SWC):
+    def __init__(
+        self,
+        data: bytes = SWC,
+        connections: tuple[NeuPrintConnection, ...] = (),
+    ):
         self.data = data
+        self.connections = connections
         self.requested = []
+        self.connectivity_requests = []
 
     def fetch_skeleton(self, body_id, *, cancel, max_bytes, on_bytes):
         self.requested.append(body_id)
@@ -155,6 +206,13 @@ class _FixtureClient:
             raise AcquisitionCancelled("cancelled")
         on_bytes(len(self.data))
         return self.data
+
+    def fetch_connectivity(self, body_ids, *, cancel, max_rows, max_bytes, on_bytes):
+        self.connectivity_requests.append(tuple(body_ids))
+        if cancel.is_set():
+            raise AcquisitionCancelled("cancelled")
+        on_bytes(32)
+        return self.connections
 
 
 def test_acquisition_stages_audits_promotes_registers_and_never_persists_token(tmp_path: Path):
@@ -196,7 +254,7 @@ def test_acquisition_stages_audits_promotes_registers_and_never_persists_token(t
     assert not any((profile.managed_data_root / ".staging").iterdir())
 
 
-def test_cancelled_acquisition_removes_staging_and_registers_nothing(tmp_path: Path):
+def test_cancelled_acquisition_keeps_credential_free_resumable_checkpoint(tmp_path: Path):
     profile, profile_path = _profile(tmp_path)
     request = _request()
     cancel = threading.Event()
@@ -212,8 +270,113 @@ def test_cancelled_acquisition_removes_staging_and_registers_nothing(tmp_path: P
         )
 
     assert not preview_destination(profile, request).exists()
-    assert not any((profile.managed_data_root / ".staging").iterdir())
+    checkpoint = neuprint_checkpoint_path(profile, request)
+    assert checkpoint.is_dir()
+    assert SECRET not in (checkpoint / "digifly-neuprint-checkpoint.json").read_text()
     assert ResourceProfile.load(profile_path).bindings(ResourceKind.MORPHOLOGY_SOURCE) == ()
+    assert discard_neuprint_checkpoint(profile, request)
+    assert not checkpoint.exists()
+
+
+def test_acquisition_resumes_verified_swcs_without_redownloading_them(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    neurons = (
+        NeuPrintNeuron(42, "DNp01", "DNp01_R"),
+        NeuPrintNeuron(43, "DNp01", "DNp01_L"),
+    )
+    request = _request(neurons=neurons)
+    cancel = threading.Event()
+
+    class InterruptingClient(_FixtureClient):
+        def fetch_skeleton(self, body_id, *, cancel, max_bytes, on_bytes):
+            if body_id == 43:
+                raise AcquisitionCancelled("cancelled after first body")
+            return super().fetch_skeleton(
+                body_id,
+                cancel=cancel,
+                max_bytes=max_bytes,
+                on_bytes=on_bytes,
+            )
+
+    first = InterruptingClient()
+    with pytest.raises(AcquisitionCancelled):
+        acquire_neuprint_bundle(
+            profile,
+            profile_path,
+            request,
+            client=first,
+            cancel=cancel,
+        )
+    assert first.requested == [42]
+
+    resumed = _FixtureClient()
+    resource = acquire_neuprint_bundle(
+        profile,
+        profile_path,
+        request,
+        client=resumed,
+    )
+
+    assert resumed.requested == [43]
+    assert resource.swc_count == 2
+    assert not neuprint_checkpoint_path(profile, request).exists()
+
+
+def test_checkpoint_operations_refuse_symbolic_link_staging_root(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    outside = tmp_path / "outside-staging"
+    outside.mkdir()
+    staging = profile.managed_data_root / ".staging"
+    staging.parent.mkdir(parents=True)
+    staging.symlink_to(outside, target_is_directory=True)
+    marker = outside / "keep.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(NeuPrintError, match="symbolic-link staging root"):
+        acquire_neuprint_bundle(
+            profile,
+            profile_path,
+            _request(),
+            client=_FixtureClient(),
+        )
+    with pytest.raises(ValueError, match="symbolic-link staging root"):
+        discard_neuprint_checkpoint(profile, _request())
+
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_connectivity_table_is_bounded_manifested_and_registered_as_data(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    neurons = (
+        NeuPrintNeuron(42, "DNp01", "DNp01_R"),
+        NeuPrintNeuron(43, "DNp01", "DNp01_L"),
+    )
+    payload = _request(neurons=neurons).__dict__.copy()
+    payload["include_connectivity"] = True
+    request = NeuPrintAcquisitionRequest(**payload)
+    client = _FixtureClient(
+        connections=(NeuPrintConnection(42, 43, 17), NeuPrintConnection(43, 42, 9))
+    )
+
+    resource = acquire_neuprint_bundle(
+        profile,
+        profile_path,
+        request,
+        client=client,
+    )
+
+    table = resource.root / "source/connectivity/selected_connections.csv"
+    assert table.read_text(encoding="utf-8") == (
+        "source_body_id,target_body_id,weight\n42,43,17\n43,42,9\n"
+    )
+    manifest = json.loads(resource.manifest.read_text(encoding="utf-8"))
+    assert manifest["connectivity"]["row_count"] == 2
+    assert manifest["connectivity"]["scope"] == "selected_to_selected"
+    restored = ResourceProfile.load(profile_path)
+    data_binding = restored.bindings(ResourceKind.DATA_SOURCE)[0]
+    assert data_binding.resolved_path == table.parent
+    assert data_binding.metadata["data_role"] == "neuprint_connectivity"
+    assert client.connectivity_requests == [(42, 43)]
 
 
 def test_acquisition_collision_never_overwrites_completed_bundle(tmp_path: Path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtGui import QDesktopServices
@@ -34,6 +35,10 @@ from digifly_app.core.resource_profile import (
     load_default_profile,
 )
 from digifly_app.core.resource_management import (
+    LibraryMoveProgress,
+    LibraryMoveResult,
+    move_managed_library,
+    preview_library_move,
     preview_library_relink,
     register_managed_resource,
     relink_managed_library,
@@ -93,6 +98,39 @@ class _ImportWorker(QObject):
         self.completed.emit(resource)
 
 
+class _LibraryMoveWorker(QObject):
+    completed = Signal(object)
+    failed = Signal(str)
+    progress = Signal(object)
+
+    def __init__(
+        self,
+        profile: ResourceProfile,
+        profile_path: Path,
+        target: Path,
+    ):
+        super().__init__()
+        self.profile = profile
+        self.profile_path = profile_path
+        self.target = target
+        self.cancel_event = threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = move_managed_library(
+                self.profile,
+                self.target,
+                profile_path=self.profile_path,
+                progress=self.progress.emit,
+                cancel=self.cancel_event,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(result)
+
+
 class DataLibraryPage(QWidget):
     status_message = Signal(str)
     sources_changed = Signal()
@@ -101,7 +139,8 @@ class DataLibraryPage(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._thread: QThread | None = None
-        self._worker: _ImportWorker | None = None
+        self._worker: QObject | None = None
+        self._worker_kind = ""
         self._review_after_import = False
         self._neuprint_dialog: NeuPrintImportDialog | None = None
         self._modeldb_dialog: ModelDBImportDialog | None = None
@@ -144,10 +183,16 @@ class DataLibraryPage(QWidget):
         row.addWidget(self.modeldb_button)
         row.addStretch(1)
         action_layout.addLayout(row)
+        progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        action_layout.addWidget(self.progress)
+        progress_row.addWidget(self.progress, 1)
+        self.cancel_move_button = QPushButton("Cancel library move")
+        self.cancel_move_button.setVisible(False)
+        self.cancel_move_button.clicked.connect(self.cancel_library_move)
+        progress_row.addWidget(self.cancel_move_button)
+        action_layout.addLayout(progress_row)
         self.action_status = QLabel("Ready")
         self.action_status.setObjectName("Muted")
         self.action_status.setWordWrap(True)
@@ -161,6 +206,9 @@ class DataLibraryPage(QWidget):
         self.root_label = QLabel("No resource profile configured")
         self.root_label.setObjectName("Muted")
         heading.addWidget(self.root_label, 1)
+        self.move_library_button = QPushButton("Move library…")
+        self.move_library_button.clicked.connect(self.move_library)
+        heading.addWidget(self.move_library_button)
         reveal = QPushButton("Reveal library")
         reveal.clicked.connect(self.reveal_library)
         heading.addWidget(reveal)
@@ -335,6 +383,7 @@ class DataLibraryPage(QWidget):
         thread.finished.connect(self._worker_thread_finished)
         self._thread = thread
         self._worker = worker
+        self._worker_kind = "local_import"
         thread.start()
 
     @Slot(object)
@@ -354,12 +403,21 @@ class DataLibraryPage(QWidget):
 
     @Slot()
     def _worker_thread_finished(self) -> None:
+        worker_kind = self._worker_kind
         self._thread = None
         self._worker = None
+        self._worker_kind = ""
         self.progress.setVisible(False)
+        self.progress.setRange(0, 0)
+        self.cancel_move_button.setVisible(False)
+        self.cancel_move_button.setEnabled(True)
         self.import_button.setEnabled(True)
         self.register_button.setEnabled(True)
-        if self._review_after_import:
+        self.neuprint_button.setEnabled(True)
+        self.modeldb_button.setEnabled(True)
+        self.move_library_button.setEnabled(True)
+        self.relink_button.setEnabled(True)
+        if worker_kind == "local_import" and self._review_after_import:
             self._review_after_import = False
             self.quality_review_requested.emit()
 
@@ -516,13 +574,158 @@ class DataLibraryPage(QWidget):
             return
         dialog = TrashDialog(profile, profile_path, self)
         dialog.resource_restored.connect(self._resource_restored)
+        dialog.resource_purged.connect(self._trash_purged)
         dialog.exec()
+
+    @Slot(str)
+    def _trash_purged(self, detail: str) -> None:
+        self.action_status.setText(detail)
 
     @Slot(object)
     def _resource_restored(self, resource: ManagedResource) -> None:
         self.action_status.setText(f"Restored managed resource to {resource.root}.")
         self.refresh()
         self.sources_changed.emit()
+
+    @Slot()
+    def move_library(self) -> None:
+        if self._thread is not None:
+            return
+        try:
+            profile, profile_path = self._profile()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose the destination parent folder",
+            str(profile.managed_data_root.parent),
+        )
+        if not selected:
+            return
+        parent = Path(selected).expanduser().resolve()
+        default_name = profile.managed_data_root.name
+        if (parent / default_name).exists():
+            default_name = f"{default_name}-moved"
+        folder_name, accepted = QInputDialog.getText(
+            self,
+            "New Data Library folder",
+            "Folder name",
+            text=default_name,
+        )
+        if not accepted:
+            return
+        folder_name = folder_name.strip()
+        if (
+            not folder_name
+            or folder_name in {".", ".."}
+            or Path(folder_name).name != folder_name
+            or len(folder_name) > 128
+        ):
+            QMessageBox.warning(
+                self,
+                "Invalid destination folder",
+                "Enter one ordinary folder name without path separators.",
+            )
+            return
+        target = parent / folder_name
+        try:
+            preview = preview_library_move(profile, target)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Cannot move Data Library", str(exc))
+            return
+        method = (
+            "The folder is on the same filesystem, so Workstation can use an atomic rename."
+            if preview.same_filesystem
+            else "The destination is on another filesystem. Workstation will copy and checksum "
+            "every file, update the profile, and only then remove the source library."
+        )
+        answer = QMessageBox.question(
+            self,
+            "Move managed Data Library",
+            f"Move the complete Data Library?\n\n"
+            f"Current root:\n{preview.source_root}\n\n"
+            f"New root:\n{preview.target_root}\n\n{method}",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.import_button.setEnabled(False)
+        self.register_button.setEnabled(False)
+        self.neuprint_button.setEnabled(False)
+        self.modeldb_button.setEnabled(False)
+        self.move_library_button.setEnabled(False)
+        self.relink_button.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(True)
+        self.cancel_move_button.setVisible(True)
+        self.cancel_move_button.setEnabled(True)
+        self.action_status.setText("Inventorying the managed Data Library…")
+        thread = QThread(self)
+        worker = _LibraryMoveWorker(profile, profile_path, preview.target_root)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._library_move_progress)
+        worker.completed.connect(self._library_move_completed)
+        worker.failed.connect(self._library_move_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._worker_thread_finished)
+        self._thread = thread
+        self._worker = worker
+        self._worker_kind = "library_move"
+        thread.start()
+
+    @Slot(object)
+    def _library_move_progress(self, update: LibraryMoveProgress) -> None:
+        if update.total_bytes > 0:
+            self.progress.setRange(0, 1000)
+            self.progress.setValue(
+                min(1000, int(1000 * update.completed_bytes / update.total_bytes))
+            )
+        elif update.total_files > 0:
+            self.progress.setRange(0, update.total_files)
+            self.progress.setValue(update.completed_files)
+        else:
+            self.progress.setRange(0, 0)
+        current = f" · {update.current}" if update.current else ""
+        self.action_status.setText(
+            f"{update.stage}: {update.completed_files:,}/{update.total_files:,} files · "
+            f"{_human_bytes(update.completed_bytes)}/{_human_bytes(update.total_bytes)}{current}"
+        )
+
+    @Slot()
+    def cancel_library_move(self) -> None:
+        if isinstance(self._worker, _LibraryMoveWorker):
+            self._worker.cancel_event.set()
+            self.cancel_move_button.setEnabled(False)
+            self.action_status.setText(
+                "Cancelling after the current verified file; the original library remains active…"
+            )
+
+    @Slot(object)
+    def _library_move_completed(self, result: LibraryMoveResult) -> None:
+        cleanup = (
+            " The verified destination is active, but the old duplicate could not be fully "
+            f"removed and remains at {result.source_root}."
+            if not result.source_removed
+            else ""
+        )
+        self.action_status.setText(
+            f"Moved {result.file_count:,} files ({_human_bytes(result.total_bytes)}) to "
+            f"{result.target_root} using {result.mode.replace('_', ' ')}.{cleanup}"
+        )
+        self.refresh()
+        self.sources_changed.emit()
+
+    @Slot(str)
+    def _library_move_failed(self, detail: str) -> None:
+        if "cancel" in detail.casefold():
+            self.action_status.setText("Data Library move cancelled; the original library remains active.")
+            return
+        self.action_status.setText(f"Data Library move failed: {detail}")
+        QMessageBox.critical(self, "Data Library move failed", detail)
 
     @Slot()
     def relink_library(self) -> None:

@@ -35,6 +35,7 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         assert dialog.token_edit.echoMode() == QLineEdit.EchoMode.Password
         assert dialog.selection_mode.count() == 6
         assert dialog.limit_spin.maximum() == 500
+        assert dialog.connectivity_check.isChecked()
         assert not dialog.remember_token.isEnabled()
         dialog._active_token = "fixture-token"
         dialog.dataset_combo.addItem("manc:v1.2.1", "manc:v1.2.1")
@@ -50,6 +51,7 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         assert "neuprint.janelia.org" in dialog.destination_label.text()
         assert "dnp01" in dialog.destination_label.text()
         assert dialog.snapshot_edit.text().casefold() in dialog.destination_label.text().casefold()
+        assert dialog._request().include_connectivity
     finally:
         dialog.close()
         application.processEvents()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,9 @@ DEFAULT_SELECTION_LIMIT = 100
 MAX_SELECTION_LIMIT = 500
 DEFAULT_MAX_SKELETON_BYTES = 250 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_MAX_CONNECTIVITY_BYTES = 128 * 1024 * 1024
+DEFAULT_MAX_CONNECTIVITY_ROWS = 250_000
+NEUPRINT_CHECKPOINT_FILENAME = "digifly-neuprint-checkpoint.json"
 SELECTION_MODES = {
     "body_ids",
     "type_exact",
@@ -82,6 +87,16 @@ class NeuPrintNeuron:
 
 
 @dataclass(frozen=True)
+class NeuPrintConnection:
+    source_body_id: int
+    target_body_id: int
+    weight: int
+
+    def to_row(self) -> tuple[int, int, int]:
+        return (self.source_body_id, self.target_body_id, self.weight)
+
+
+@dataclass(frozen=True)
 class NeuPrintSelection:
     mode: str
     value: str
@@ -111,6 +126,9 @@ class NeuPrintAcquisitionRequest:
     credential_ref: str = ""
     max_skeleton_bytes: int = DEFAULT_MAX_SKELETON_BYTES
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
+    include_connectivity: bool = False
+    max_connectivity_rows: int = DEFAULT_MAX_CONNECTIVITY_ROWS
+    max_connectivity_bytes: int = DEFAULT_MAX_CONNECTIVITY_BYTES
 
     def __post_init__(self) -> None:
         normalize_server(self.server)
@@ -134,6 +152,12 @@ class NeuPrintAcquisitionRequest:
             raise ValueError("The neuPrint credential reference is not an opaque keyring ID")
         if self.max_skeleton_bytes < 1 or self.max_total_bytes < self.max_skeleton_bytes:
             raise ValueError("Invalid neuPrint acquisition byte limits")
+        if not 1 <= int(self.max_connectivity_rows) <= DEFAULT_MAX_CONNECTIVITY_ROWS:
+            raise ValueError(
+                f"Connectivity rows must be between 1 and {DEFAULT_MAX_CONNECTIVITY_ROWS:,}"
+            )
+        if self.max_connectivity_bytes < 1:
+            raise ValueError("Invalid neuPrint connectivity byte limit")
 
 
 @dataclass(frozen=True)
@@ -341,6 +365,47 @@ class NeuPrintClient:
             on_bytes=on_bytes,
         )
 
+    def fetch_connectivity(
+        self,
+        body_ids: tuple[int, ...],
+        *,
+        cancel: threading.Event | None = None,
+        max_rows: int = DEFAULT_MAX_CONNECTIVITY_ROWS,
+        max_bytes: int = DEFAULT_MAX_CONNECTIVITY_BYTES,
+        on_bytes: Callable[[int], None] | None = None,
+    ) -> tuple[NeuPrintConnection, ...]:
+        """Fetch a bounded directed edge table among the reviewed neurons."""
+
+        if not self.dataset:
+            raise ValueError("Choose a neuPrint dataset before downloading connectivity")
+        ids = tuple(dict.fromkeys(int(value) for value in body_ids))
+        if not ids or len(ids) > MAX_SELECTION_LIMIT:
+            raise ValueError("Connectivity requires 1–500 reviewed neuron body IDs")
+        limit = int(max_rows)
+        if not 1 <= limit <= DEFAULT_MAX_CONNECTIVITY_ROWS:
+            raise ValueError("Invalid neuPrint connectivity row limit")
+        body_list = ",".join(str(value) for value in ids)
+        cypher = (
+            "MATCH (source:Neuron)-[edge:ConnectsTo]->(target:Neuron) "
+            f"WHERE source.bodyId IN [{body_list}] AND target.bodyId IN [{body_list}] "
+            "RETURN source.bodyId AS sourceBodyId, target.bodyId AS targetBodyId, "
+            "edge.weight AS weight ORDER BY sourceBodyId, targetBodyId "
+            f"LIMIT {limit + 1}"
+        )
+        raw = self._request(
+            "POST",
+            "/api/custom/custom",
+            payload={"cypher": cypher, "dataset": self.dataset},
+            cancel=cancel,
+            max_bytes=max_bytes,
+            on_bytes=on_bytes,
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NeuPrintError("neuPrint returned an unreadable connectivity table") from exc
+        return _parse_connectivity_rows(payload, max_rows=limit)
+
 
 def _cypher_string(value: str, *, field: str) -> str:
     text = str(value).strip()
@@ -413,6 +478,43 @@ def _parse_custom_rows(payload: Any) -> list[NeuPrintNeuron]:
     return records
 
 
+def _parse_connectivity_rows(
+    payload: Any,
+    *,
+    max_rows: int,
+) -> tuple[NeuPrintConnection, ...]:
+    if not isinstance(payload, Mapping):
+        raise NeuPrintError("neuPrint returned an unexpected connectivity response")
+    columns = payload.get("columns")
+    data = payload.get("data")
+    if not isinstance(columns, list) or not isinstance(data, list):
+        raise NeuPrintError("neuPrint returned an unexpected connectivity table")
+    if len(data) > max_rows:
+        raise NeuPrintError(
+            f"The selected connectivity exceeds the {max_rows:,}-row safety limit; "
+            "reduce the neuron selection"
+        )
+    names = [str(value) for value in columns]
+    connections = []
+    for raw in data:
+        if isinstance(raw, Mapping):
+            row = raw
+        elif isinstance(raw, list) and len(raw) == len(names):
+            row = dict(zip(names, raw))
+        else:
+            raise NeuPrintError("neuPrint returned a malformed connectivity row")
+        try:
+            source = int(row.get("sourceBodyId"))
+            target = int(row.get("targetBodyId"))
+            weight = int(row.get("weight"))
+        except (TypeError, ValueError) as exc:
+            raise NeuPrintError("neuPrint returned a malformed connectivity row") from exc
+        if source < 0 or target < 0 or weight < 0:
+            raise NeuPrintError("neuPrint returned a negative connectivity value")
+        connections.append(NeuPrintConnection(source, target, weight))
+    return tuple(connections)
+
+
 def preview_destination(profile: ResourceProfile, request: NeuPrintAcquisitionRequest) -> Path:
     host = safe_component(urlsplit(normalize_server(request.server)).netloc, field="server")
     dataset = safe_component(request.dataset, field="dataset")
@@ -439,6 +541,167 @@ def _utc_text() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _request_descriptor(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
+    """Return the credential-free identity persisted in resumable checkpoints."""
+
+    return {
+        "server": normalize_server(request.server),
+        "dataset": request.dataset,
+        "resource_id": safe_component(request.resource_id),
+        "source_version": safe_component(request.source_version),
+        "selection": request.selection.to_dict(),
+        "neurons": [neuron.to_dict() for neuron in request.neurons],
+        "include_connectivity": bool(request.include_connectivity),
+        "max_connectivity_rows": int(request.max_connectivity_rows),
+    }
+
+
+def _request_digest(request: NeuPrintAcquisitionRequest) -> str:
+    encoded = json.dumps(
+        _request_descriptor(request),
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def neuprint_checkpoint_path(
+    profile: ResourceProfile,
+    request: NeuPrintAcquisitionRequest,
+) -> Path:
+    return (
+        profile.managed_data_root
+        / ".staging"
+        / f"neuprint-{_request_digest(request)[:24]}"
+    )
+
+
+def discard_neuprint_checkpoint(
+    profile: ResourceProfile,
+    request: NeuPrintAcquisitionRequest,
+) -> bool:
+    """Permanently discard exactly one credential-free partial acquisition."""
+
+    staging_path = profile.managed_data_root / ".staging"
+    if staging_path.is_symlink():
+        raise ValueError("Refusing to discard through a symbolic-link staging root")
+    staging_root = staging_path.resolve()
+    checkpoint_root = neuprint_checkpoint_path(profile, request)
+    try:
+        checkpoint_root.resolve().relative_to(staging_root)
+    except ValueError as exc:
+        raise ValueError("neuPrint checkpoint escapes the managed staging root") from exc
+    if checkpoint_root.is_symlink():
+        raise ValueError("Refusing to discard a symbolic-link checkpoint")
+    if not checkpoint_root.exists():
+        return False
+    if not (checkpoint_root / NEUPRINT_CHECKPOINT_FILENAME).is_file():
+        raise ValueError("The partial neuPrint folder has no valid checkpoint receipt")
+    shutil.rmtree(checkpoint_root)
+    return True
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_checkpoint(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _new_checkpoint(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
+    now = _utc_text()
+    return {
+        "schema_version": 1,
+        "request_sha256": _request_digest(request),
+        "request": _request_descriptor(request),
+        "created_at": now,
+        "updated_at": now,
+        "files": [],
+    }
+
+
+def _load_checkpoint(
+    root: Path,
+    request: NeuPrintAcquisitionRequest,
+) -> dict[str, Any]:
+    receipt = root / NEUPRINT_CHECKPOINT_FILENAME
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NeuPrintError(
+            "The saved neuPrint checkpoint is unreadable; discard it before retrying"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or int(payload.get("schema_version", 0)) != 1
+        or payload.get("request_sha256") != _request_digest(request)
+        or payload.get("request") != _request_descriptor(request)
+        or not isinstance(payload.get("files"), list)
+    ):
+        raise NeuPrintError(
+            "The saved neuPrint checkpoint does not match this reviewed acquisition"
+        )
+    seen_paths: set[Path] = set()
+    seen_bodies: set[int] = set()
+    selected_bodies = {neuron.body_id for neuron in request.neurons}
+    for record in payload["files"]:
+        if not isinstance(record, dict):
+            raise NeuPrintError("The saved neuPrint checkpoint has a malformed inventory")
+        relative = Path(str(record.get("path") or ""))
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            raise NeuPrintError("The saved neuPrint checkpoint contains an unsafe path")
+        raw_candidate = root / relative
+        cursor = root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise NeuPrintError("The saved neuPrint checkpoint contains a symbolic link")
+        candidate = raw_candidate.resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError as exc:
+            raise NeuPrintError("The saved neuPrint checkpoint escapes its staging folder") from exc
+        if relative in seen_paths or not candidate.is_file() or candidate.is_symlink():
+            raise NeuPrintError("The saved neuPrint checkpoint is incomplete or duplicated")
+        seen_paths.add(relative)
+        try:
+            size = int(record.get("size_bytes", -1))
+        except (TypeError, ValueError) as exc:
+            raise NeuPrintError("The saved neuPrint checkpoint has an invalid file size") from exc
+        if candidate.stat().st_size != size or _sha256_file(candidate) != record.get("sha256"):
+            raise NeuPrintError("A saved neuPrint checkpoint file failed checksum verification")
+        if "body_id" in record:
+            try:
+                body = int(record["body_id"])
+            except (TypeError, ValueError) as exc:
+                raise NeuPrintError("The saved neuPrint checkpoint has an invalid body ID") from exc
+            if body not in selected_bodies or body in seen_bodies:
+                raise NeuPrintError("The saved neuPrint checkpoint has an unexpected body ID")
+            seen_bodies.add(body)
+    return payload
+
+
 def acquire_neuprint_bundle(
     profile: ResourceProfile,
     profile_path: str | Path,
@@ -448,7 +711,7 @@ def acquire_neuprint_bundle(
     cancel: threading.Event | None = None,
     client: NeuPrintClient | None = None,
 ) -> ManagedResource:
-    """Download a reviewed neuron set, audit it, then atomically register it."""
+    """Resume/download a reviewed neuron set, audit it, and atomically register it."""
 
     cancel_event = cancel or threading.Event()
     destination = preview_destination(profile, request)
@@ -456,10 +719,10 @@ def acquire_neuprint_bundle(
         raise FileExistsError(f"A managed neuPrint download already exists at {destination}")
     managed_root = profile.managed_data_root
     managed_root.mkdir(parents=True, exist_ok=True)
-    required_free = min(
-        request.max_total_bytes,
-        request.max_skeleton_bytes * len(request.neurons),
-    )
+    reserve = request.max_skeleton_bytes * len(request.neurons)
+    if request.include_connectivity:
+        reserve += request.max_connectivity_bytes
+    required_free = min(request.max_total_bytes, reserve)
     available_free = shutil.disk_usage(managed_root).free
     if available_free < required_free:
         raise OSError(
@@ -468,18 +731,58 @@ def acquire_neuprint_bundle(
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_root = managed_root / ".staging"
+    if staging_root.is_symlink():
+        raise NeuPrintError("Refusing to acquire through a symbolic-link staging root")
     staging_root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix="neuprint-", dir=staging_root))
+    staging = neuprint_checkpoint_path(profile, request)
+    if staging.is_symlink():
+        raise NeuPrintError("Refusing to use a symbolic-link neuPrint checkpoint")
+    resumed = staging.exists()
+    if resumed:
+        if not staging.is_dir():
+            raise NeuPrintError("The saved neuPrint checkpoint is not a directory")
+        checkpoint = _load_checkpoint(staging, request)
+    else:
+        staging.mkdir()
+        checkpoint = _new_checkpoint(request)
+        _write_checkpoint(staging / NEUPRINT_CHECKPOINT_FILENAME, checkpoint)
+    source_root = staging / "source"
+    swc_root = source_root / "export_swc"
+    connectivity_root = source_root / "connectivity"
+    derived_root = staging / "derived"
+    swc_root.mkdir(parents=True, exist_ok=True)
+    derived_root.mkdir(exist_ok=True)
     provider = client or NeuPrintClient(
         request.server,
         request.token,
         dataset=request.dataset,
     )
     promoted = False
-    transferred = 0
-    inventory: list[dict[str, Any]] = []
-    review_count = 0
-    structural_errors = 0
+    inventory: list[dict[str, Any]] = [dict(item) for item in checkpoint["files"]]
+    transferred = sum(int(record["size_bytes"]) for record in inventory)
+    completed_bodies = {
+        int(record["body_id"])
+        for record in inventory
+        if "body_id" in record
+    }
+    connectivity_record = next(
+        (record for record in inventory if record.get("data_role") == "connectivity"),
+        None,
+    )
+    review_count = sum(
+        int(bool(record.get("swc_quality", {}).get("needs_review")))
+        for record in inventory
+        if isinstance(record.get("swc_quality"), Mapping)
+    )
+    structural_errors = sum(
+        int(record.get("swc_quality", {}).get("error_count", 0))
+        for record in inventory
+        if isinstance(record.get("swc_quality"), Mapping)
+    )
+    total_tasks = len(request.neurons) + int(request.include_connectivity)
+
+    def completed_tasks() -> int:
+        return len(completed_bodies) + int(connectivity_record is not None)
 
     def emit(stage: str, completed: int, current: str = "") -> None:
         if progress is not None:
@@ -488,14 +791,12 @@ def acquire_neuprint_bundle(
                     AcquisitionProgress(
                         stage,
                         completed,
-                        len(request.neurons),
+                        total_tasks,
                         transferred,
                         current,
                     )
                 )
             except Exception:
-                # UI/reporting failures must not corrupt an otherwise valid,
-                # atomically promoted acquisition or its profile registration.
                 pass
 
     def add_bytes(count: int) -> None:
@@ -506,18 +807,24 @@ def acquire_neuprint_bundle(
                 f"The download exceeded its {request.max_total_bytes:,}-byte safety limit"
             )
 
+    def save_checkpoint() -> None:
+        checkpoint["updated_at"] = _utc_text()
+        checkpoint["files"] = inventory
+        _write_checkpoint(staging / NEUPRINT_CHECKPOINT_FILENAME, checkpoint)
+
     try:
-        source_root = staging / "source"
-        swc_root = source_root / "export_swc"
-        derived_root = staging / "derived"
-        swc_root.mkdir(parents=True)
-        derived_root.mkdir()
-        emit("Preparing staged download", 0)
-        for index, neuron in enumerate(request.neurons, 1):
+        emit(
+            "Resuming saved checkpoint" if resumed else "Preparing resumable download",
+            completed_tasks(),
+        )
+        for neuron in request.neurons:
+            if neuron.body_id in completed_bodies:
+                emit("Using verified checkpoint SWC", completed_tasks(), f"body {neuron.body_id}")
+                continue
             if cancel_event.is_set():
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
             current = f"body {neuron.body_id}"
-            emit("Downloading SWC", index - 1, current)
+            emit("Downloading SWC", completed_tasks(), current)
             skeleton: bytes | None = None
             for attempt in range(3):
                 try:
@@ -537,7 +844,9 @@ def acquire_neuprint_bundle(
             try:
                 skeleton.decode("utf-8")
             except UnicodeDecodeError as exc:
-                raise NeuPrintError(f"neuPrint body {neuron.body_id} did not return text SWC data") from exc
+                raise NeuPrintError(
+                    f"neuPrint body {neuron.body_id} did not return text SWC data"
+                ) from exc
             neuron_type = _file_component(neuron.neuron_type, "untyped")
             relative = (
                 Path("source")
@@ -559,25 +868,67 @@ def acquire_neuprint_bundle(
             )
             if report.node_count == 0:
                 raise NeuPrintError(f"neuPrint body {neuron.body_id} returned no valid SWC nodes")
+            record = {
+                "path": relative.as_posix(),
+                "size_bytes": len(skeleton),
+                "sha256": _sha256_bytes(skeleton),
+                "body_id": neuron.body_id,
+                "type": neuron.neuron_type,
+                "instance": neuron.instance,
+                "swc_rows": report.node_count,
+                "swc_quality": {
+                    "needs_review": report.needs_review,
+                    "finding_count": len(report.findings),
+                    "error_count": len(report.errors),
+                },
+            }
+            inventory.append(record)
+            completed_bodies.add(neuron.body_id)
             review_count += int(report.needs_review)
             structural_errors += len(report.errors)
-            inventory.append(
-                {
-                    "path": relative.as_posix(),
-                    "size_bytes": len(skeleton),
-                    "sha256": _sha256_bytes(skeleton),
-                    "body_id": neuron.body_id,
-                    "type": neuron.neuron_type,
-                    "instance": neuron.instance,
-                    "swc_rows": report.node_count,
-                    "swc_quality": {
-                        "needs_review": report.needs_review,
-                        "finding_count": len(report.findings),
-                        "error_count": len(report.errors),
-                    },
-                }
-            )
-            emit("Audited SWC", index, current)
+            save_checkpoint()
+            emit("Audited and checkpointed SWC", completed_tasks(), current)
+
+        if request.include_connectivity and connectivity_record is None:
+            if cancel_event.is_set():
+                raise AcquisitionCancelled("The neuPrint download was cancelled")
+            emit("Downloading selected connectivity", completed_tasks())
+            connections: tuple[NeuPrintConnection, ...] | None = None
+            body_ids = tuple(neuron.body_id for neuron in request.neurons)
+            for attempt in range(3):
+                try:
+                    connections = provider.fetch_connectivity(
+                        body_ids,
+                        cancel=cancel_event,
+                        max_rows=request.max_connectivity_rows,
+                        max_bytes=request.max_connectivity_bytes,
+                        on_bytes=add_bytes,
+                    )
+                    break
+                except NeuPrintNetworkError:
+                    if attempt == 2:
+                        raise
+                    if cancel_event.wait(0.5 * (2**attempt)):
+                        raise AcquisitionCancelled("The neuPrint download was cancelled")
+            assert connections is not None
+            table_buffer = io.StringIO(newline="")
+            writer = csv.writer(table_buffer, lineterminator="\n")
+            writer.writerow(("source_body_id", "target_body_id", "weight"))
+            writer.writerows(connection.to_row() for connection in connections)
+            table_bytes = table_buffer.getvalue().encode("utf-8")
+            connectivity_root.mkdir(parents=True, exist_ok=True)
+            relative = Path("source/connectivity/selected_connections.csv")
+            (staging / relative).write_bytes(table_bytes)
+            connectivity_record = {
+                "path": relative.as_posix(),
+                "size_bytes": len(table_bytes),
+                "sha256": _sha256_bytes(table_bytes),
+                "data_role": "connectivity",
+                "row_count": len(connections),
+            }
+            inventory.append(connectivity_record)
+            save_checkpoint()
+            emit("Checkpointed connectivity table", completed_tasks())
 
         metadata = {
             "schema_version": 1,
@@ -585,19 +936,34 @@ def acquire_neuprint_bundle(
             "dataset": request.dataset,
             "selection": request.selection.to_dict(),
             "neurons": [neuron.to_dict() for neuron in request.neurons],
+            "connectivity_included": bool(request.include_connectivity),
         }
         metadata_bytes = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8")
         metadata_path = source_root / "neurons.json"
         metadata_path.write_bytes(metadata_bytes)
-        inventory.append(
-            {
-                "path": "source/neurons.json",
-                "size_bytes": len(metadata_bytes),
-                "sha256": _sha256_bytes(metadata_bytes),
-            }
-        )
+        final_inventory = [*inventory, {
+            "path": "source/neurons.json",
+            "size_bytes": len(metadata_bytes),
+            "sha256": _sha256_bytes(metadata_bytes),
+        }]
         fetched_at = _utc_text()
-        total_bytes = sum(int(record["size_bytes"]) for record in inventory)
+        total_bytes = sum(int(record["size_bytes"]) for record in final_inventory)
+        connectivity_payload = {
+            "included": bool(request.include_connectivity),
+            "scope": "selected_to_selected",
+            "table_path": (
+                "source/connectivity/selected_connections.csv"
+                if request.include_connectivity
+                else ""
+            ),
+            "row_count": (
+                int(connectivity_record.get("row_count", 0))
+                if connectivity_record is not None
+                else 0
+            ),
+            "columns": ["source_body_id", "target_body_id", "weight"],
+            "row_limit": int(request.max_connectivity_rows),
+        }
         manifest_payload = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "provider": "neuprint",
@@ -609,9 +975,10 @@ def acquire_neuprint_bundle(
             "fetched_at": fetched_at,
             "selection": request.selection.to_dict(),
             "neurons": [neuron.to_dict() for neuron in request.neurons],
+            "connectivity": connectivity_payload,
             "digifly_version": __version__,
             "derived_data_directory": "derived",
-            "file_count": len(inventory),
+            "file_count": len(final_inventory),
             "total_bytes": total_bytes,
             "swc_count": len(request.neurons),
             "post_import_quality": {
@@ -620,7 +987,7 @@ def acquire_neuprint_bundle(
                 "needs_review": review_count,
                 "structural_errors": structural_errors,
             },
-            "files": inventory,
+            "files": final_inventory,
         }
         manifest_path = staging / MANIFEST_FILENAME
         manifest_path.write_text(
@@ -629,16 +996,18 @@ def acquire_neuprint_bundle(
         )
         if cancel_event.is_set():
             raise AcquisitionCancelled("The neuPrint download was cancelled")
-        emit("Promoting validated bundle", len(request.neurons))
+        emit("Promoting validated bundle", total_tasks)
         os.replace(staging, destination)
         promoted = True
+        checkpoint_at_destination = destination / NEUPRINT_CHECKPOINT_FILENAME
+        checkpoint_at_destination.unlink()
         resource = ManagedResource(
             "neuprint",
             safe_component(request.resource_id),
             safe_component(request.source_version),
             destination,
             destination / MANIFEST_FILENAME,
-            len(inventory),
+            len(final_inventory),
             total_bytes,
             len(request.neurons),
             fetched_at,
@@ -648,22 +1017,28 @@ def acquire_neuprint_bundle(
             resource,
             profile_path=profile_path,
             morphology_root=destination / "source" / "export_swc",
+            data_root=(destination / "source" / "connectivity") if request.include_connectivity else None,
+            data_label=f"{request.resource_id} selected connectivity",
             label=request.resource_id,
             dataset=request.dataset,
             metadata={
                 "connectome_key": f"neuprint:{request.dataset}:{safe_component(request.resource_id)}",
                 **({"credential_ref": request.credential_ref} if request.credential_ref else {}),
             },
+            data_metadata={
+                "data_role": "neuprint_connectivity",
+                "connectivity_scope": "selected_to_selected",
+            },
         )
-        emit("Complete", len(request.neurons))
+        emit("Complete", total_tasks)
         return ManagedResource(
             **{**resource.__dict__, "registered_binding": binding_id}
         )
     except Exception:
         if promoted and destination.exists():
+            checkpoint_at_destination = destination / NEUPRINT_CHECKPOINT_FILENAME
+            if not checkpoint_at_destination.exists():
+                _write_checkpoint(checkpoint_at_destination, checkpoint)
             os.replace(destination, staging)
             promoted = False
         raise
-    finally:
-        if not promoted and staging.exists():
-            shutil.rmtree(staging)

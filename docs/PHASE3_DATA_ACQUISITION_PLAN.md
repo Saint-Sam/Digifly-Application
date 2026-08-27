@@ -119,7 +119,7 @@ or mutates them without an explicit import action.
 
 ## Current implementation checkpoint
 
-Implemented through the fourth Phase 3 increment:
+Implemented through the fifth Phase 3 increment:
 
 - schema-v2 resource profiles with one managed-data root, automatic in-memory
   v1 compatibility, and explicit side-by-side migration;
@@ -179,12 +179,28 @@ Implemented through the fourth Phase 3 increment:
   failure rollback, Trash/restore, restart persistence, incomplete relocation,
   and selected-row controls. Missing roots are no longer silently recreated by
   the Reveal action.
+- deterministic, credential-free neuPrint checkpoints keyed to the reviewed
+  server/dataset/selection/body IDs and destination identity; completed SWCs
+  and connectivity tables are checksum-verified before reuse, cancellation
+  preserves resumable work, and explicit discard removes one matching partial
+  acquisition;
+- a bounded `selected_to_selected` neuPrint `ConnectsTo` query with a hard row
+  and response-byte limit, deterministic CSV output, manifest row/schema
+  metadata, and a separate typed read-only `data_source` binding alongside the
+  morphology provider;
+- a native whole-library mover with cancellable inventory/copy progress,
+  rollback-safe same-filesystem rename, and cross-filesystem copy plus reread
+  SHA-256 verification before profile relink and source removal;
+- explicit permanent deletion of one validated direct-child Trash receipt,
+  with symbolic-link rejection and a native irreversible-action confirmation;
+- regression tests for resume/no-redownload behavior, connectivity bounds and
+  registration, move rollback/cancellation/empty libraries, verified-copy
+  cleanup, selected purge, and destructive-path symlink rejection.
 
-Remaining neuPrint work is connectivity-table acquisition, durable resumable
-checkpoints, and broader retry/relink/removal controls. Model-library retry,
-in-app cross-filesystem movement, checksum-verification progress, permanent
-Trash purging, and later separately permissioned simulator validation remain
-future increments.
+Remaining Phase 3 work includes broader provider retry/repair controls,
+checksum-verification progress for large existing bundles, cross-platform move
+acceptance, ModelDB resume/retry, and later separately permissioned simulator
+validation.
 
 ## External interfaces verified during planning
 

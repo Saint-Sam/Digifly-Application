@@ -154,6 +154,15 @@ renames the completed bundle into place. Only a promoted bundle is registered
 as a morphology provider. User-managed folders remain a separate read-only,
 no-copy registration path.
 
+neuPrint acquisitions use a deterministic request digest under `.staging`
+that excludes tokens and credential references. Each completed SWC and optional
+selected-to-selected connectivity CSV is recorded with its size and SHA-256 in
+an atomically replaced checkpoint. A retry validates those files before
+skipping their network requests. Only after every requested artifact, metadata,
+quality result, and final manifest is complete is the checkpoint directory
+promoted and registered; morphology and connectivity receive distinct typed
+read-only bindings.
+
 Computational models use typed `model_source` bindings and live under
 `data/modeldb/<accession>/<version>` or
 `data/models/local/<id>/<version>`. Folder and ZIP/TAR intake is preflighted for
@@ -167,13 +176,18 @@ quality-review paths can consume it.
 Managed-resource lifecycle operations use the manifest as their identity and
 transaction boundary. Registration adds only read-only typed bindings;
 unregistration replaces active provider bindings with an inactive catalog
-record containing their exact definitions, without touching data. Soft removal uses
-a same-library atomic rename into `data/.trash`, records the original relative
+record containing their exact definitions, without touching data. Soft removal
+uses a same-library atomic rename into `data/.trash`, records the original relative
 root and exact prior bindings, and rolls the move back if profile persistence
 fails. Restore reverses the move and reinstates those bindings. Whole-library
 relinking assumes the user has already moved the directory, verifies every
 managed binding and manifest at the equivalent relative path, checks profile
 boundaries, and only then atomically rewrites the machine-local profile.
+An app-managed move uses that same relink validator after either an atomic
+same-filesystem rename or a complete cross-filesystem copy whose files are
+reread and SHA-256 verified. The cross-filesystem source is removed only after
+the new profile is durable. Permanent deletion is limited to one validated
+direct child of `.trash` and rejects symbolic-link roots or entries.
 
 Provider adapters translate registered morphology roots into ordinary
 `ConnectomeRef` records without crawling or copying them. The existing Digifly

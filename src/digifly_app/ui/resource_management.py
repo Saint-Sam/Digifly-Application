@@ -25,6 +25,7 @@ from digifly_app.core.data_library import ManagedResource
 from digifly_app.core.resource_management import (
     TrashEntry,
     list_trash_entries,
+    purge_trashed_resource,
     restore_trashed_resource,
 )
 from digifly_app.core.resource_profile import ResourceProfile
@@ -134,6 +135,7 @@ class ManifestDialog(QDialog):
 
 class TrashDialog(QDialog):
     resource_restored = Signal(object)
+    resource_purged = Signal(str)
 
     def __init__(
         self,
@@ -183,6 +185,10 @@ class TrashDialog(QDialog):
         self.restore_button.setEnabled(False)
         self.restore_button.clicked.connect(self.restore_selected)
         actions.addWidget(self.restore_button)
+        self.purge_button = QPushButton("Permanently delete selected…")
+        self.purge_button.setEnabled(False)
+        self.purge_button.clicked.connect(self.purge_selected)
+        actions.addWidget(self.purge_button)
         actions.addStretch(1)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
@@ -199,7 +205,9 @@ class TrashDialog(QDialog):
 
     @Slot()
     def _selection_changed(self) -> None:
-        self.restore_button.setEnabled(self._current_entry() is not None)
+        selected = self._current_entry() is not None
+        self.restore_button.setEnabled(selected)
+        self.purge_button.setEnabled(selected)
 
     def refresh(self) -> None:
         try:
@@ -252,6 +260,35 @@ class TrashDialog(QDialog):
             return
         self.resource_restored.emit(resource)
         self.refresh()
+
+    @Slot()
+    def purge_selected(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Permanently delete managed resource",
+            f"Permanently delete {entry.provider} / {entry.resource_id} / "
+            f"{entry.source_version}?\n\n"
+            f"Trash location:\n{entry.trash_root}\n\n"
+            "This removes the complete bundle immediately. It cannot be restored from "
+            "Digifly or the system Trash.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            file_count, total_bytes = purge_trashed_resource(self.profile, entry)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not permanently delete resource", str(exc))
+            return
+        detail = (
+            f"Permanently deleted {entry.resource_id}: {file_count:,} file(s), "
+            f"{_human_bytes(total_bytes)}."
+        )
+        self.resource_purged.emit(detail)
+        self.refresh()
+        self.status.setText(detail)
 
     @Slot()
     def reveal_trash(self) -> None:
