@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tarfile
 import threading
+from urllib.error import URLError
 import zipfile
 
 import pytest
@@ -13,13 +14,18 @@ from digifly_app.core.data_library import list_managed_resources
 from digifly_app.core.model_import import (
     ArchiveLimits,
     ModelDBClient,
+    ModelDBMetadata,
     ModelImportCancelled,
     ModelImportError,
+    ModelImportNetworkError,
     ModelImportRequest,
+    discard_modeldb_partial,
     import_model_source,
     inspect_model_source,
+    modeldb_partial_paths,
     modeldb_request,
 )
+from digifly_app.core.remote import RetryPolicy
 from digifly_app.core.resource_profile import ResourceKind, ResourceProfile, make_default_profile
 from digifly_app.core.swc_quality import scan_recent_imports
 
@@ -98,10 +104,15 @@ def test_zip_model_preserves_original_and_uses_modeldb_destination(tmp_path: Pat
     )
 
     resource = import_model_source(profile, profile_path, request)
+    manifest = json.loads(resource.manifest.read_text(encoding="utf-8"))
 
     assert resource.root == profile.managed_data_root / "modeldb" / "245415" / "v9"
     assert (resource.root / "original" / "245415.zip").read_bytes() == archive.read_bytes()
     assert (resource.root / "source" / "upstream" / "README.md").is_file()
+    assert manifest["file_count"] == len(manifest["files"]) == 6
+    assert manifest["total_bytes"] == sum(item["size_bytes"] for item in manifest["files"])
+    assert resource.file_count == manifest["file_count"]
+    assert resource.total_bytes == manifest["total_bytes"]
 
 
 @pytest.mark.parametrize("unsafe", ["../escape.py", "/absolute.py", "C:\\escape.py"])
@@ -184,16 +195,72 @@ def test_cancelled_model_import_removes_partial_staging(tmp_path: Path):
     assert not any((profile.managed_data_root / ".staging").iterdir())
 
 
+def test_model_import_rejects_source_changes_after_inspection(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    folder = _model_folder(tmp_path)
+    folder_inspection = inspect_model_source(folder)
+    (folder / "README.md").write_text("Bad with NEURON.\n", encoding="utf-8")
+
+    with pytest.raises(ModelImportError, match="changed after it was inspected"):
+        import_model_source(
+            profile,
+            profile_path,
+            ModelImportRequest(folder, "local-model", "changed-folder", "v1"),
+            inspection=folder_inspection,
+        )
+
+    second = tmp_path / "second"
+    second.mkdir()
+    archive = _zip_folder(_model_folder(second), tmp_path / "model.zip")
+    archive_inspection = inspect_model_source(archive)
+    changed = bytearray(archive.read_bytes())
+    changed[-8] ^= 1
+    archive.write_bytes(changed)
+    with pytest.raises(ModelImportError, match="archive changed after it was inspected"):
+        import_model_source(
+            profile,
+            profile_path,
+            ModelImportRequest(archive, "local-model", "changed-archive", "v1"),
+            inspection=archive_inspection,
+        )
+
+
+def test_model_import_refuses_symbolic_link_staging_root(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    outside = tmp_path / "outside-staging"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+    staging = profile.managed_data_root / ".staging"
+    staging.parent.mkdir(parents=True)
+    staging.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ModelImportError, match="symbolic-link staging root"):
+        import_model_source(
+            profile,
+            profile_path,
+            ModelImportRequest(
+                _model_folder(tmp_path),
+                "local-model",
+                "unsafe-staging",
+                "v1",
+            ),
+        )
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+
+
 class _Response:
     def __init__(
         self,
         body: bytes = b"",
         headers: dict[str, str] | None = None,
         final_url: str = "",
+        status: int = 200,
     ):
         self._stream = BytesIO(body)
         self.headers = headers or {}
         self.final_url = final_url
+        self.status = status
 
     def __enter__(self):
         return self
@@ -269,6 +336,184 @@ def test_modeldb_lookup_and_download_use_official_metadata(tmp_path: Path):
     request = modeldb_request(downloaded, metadata)
     assert request.resource_id == "245415"
     assert request.metadata["simulators"] == ["NEURON"]
+
+
+def test_modeldb_metadata_retries_transient_network_failures():
+    payload = b'{"id":245415,"name":"Retry fixture","ver_number":1}'
+
+    class RetryingClient(ModelDBClient):
+        def __init__(self):
+            super().__init__(
+                retry_policy=RetryPolicy(
+                    max_attempts=3,
+                    initial_delay=0,
+                    max_delay=0,
+                )
+            )
+            self.calls = 0
+
+        def _open(self, request):
+            self.calls += 1
+            if self.calls < 3:
+                raise URLError("temporary")
+            if request.get_method() == "HEAD":
+                return _Response(headers={"Content-Type": "application/zip"})
+            return _Response(
+                payload,
+                {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(payload)),
+                },
+            )
+
+    client = RetryingClient()
+    assert client.lookup(245415).name == "Retry fixture"
+    assert client.calls == 4
+
+
+def test_modeldb_archive_resumes_a_receipted_range_download(tmp_path: Path):
+    archive_buffer = BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("README", "resumable model")
+    archive_bytes = archive_buffer.getvalue()
+    cutoff = max(8, len(archive_bytes) // 3)
+    destination = tmp_path / "245415.zip"
+    metadata = ModelDBMetadata(
+        accession=245415,
+        name="Resume fixture",
+        version="v1",
+        archive_url="https://modeldb.science/download/245415",
+        archive_available=True,
+        archive_size_bytes=len(archive_bytes),
+    )
+
+    class InterruptedResponse(_Response):
+        def __init__(self):
+            super().__init__(
+                headers={
+                    "Content-Type": "application/zip",
+                    "Content-Length": str(len(archive_bytes)),
+                    "ETag": '"fixture"',
+                }
+            )
+            self.sent = False
+
+        def read(self, _size=-1):
+            if not self.sent:
+                self.sent = True
+                return archive_bytes[:cutoff]
+            raise URLError("interrupted")
+
+    class InterruptedClient(ModelDBClient):
+        def __init__(self):
+            super().__init__(
+                retry_policy=RetryPolicy(
+                    max_attempts=1,
+                    initial_delay=0,
+                    max_delay=0,
+                )
+            )
+
+        def _open(self, _request):
+            return InterruptedResponse()
+
+    with pytest.raises(ModelImportNetworkError, match="complete"):
+        InterruptedClient().download_archive(metadata, destination)
+    partial, receipt = modeldb_partial_paths(destination)
+    assert partial.stat().st_size == cutoff
+    assert receipt.is_file()
+
+    class ResumingClient(ModelDBClient):
+        def __init__(self):
+            super().__init__()
+            self.range_header = ""
+
+        def _open(self, request):
+            self.range_header = str(request.headers.get("Range") or "")
+            start = int(self.range_header.removeprefix("bytes=").removesuffix("-"))
+            remaining = archive_bytes[start:]
+            return _Response(
+                remaining,
+                {
+                    "Content-Type": "application/zip",
+                    "Content-Length": str(len(remaining)),
+                    "Content-Range": (
+                        f"bytes {start}-{len(archive_bytes) - 1}/{len(archive_bytes)}"
+                    ),
+                    "ETag": '"fixture"',
+                },
+                status=206,
+            )
+
+    resumed = ResumingClient()
+    assert resumed.download_archive(metadata, destination) == destination
+    assert resumed.range_header == f"bytes={cutoff}-"
+    assert destination.read_bytes() == archive_bytes
+    assert not partial.exists()
+    assert not receipt.exists()
+
+
+def test_modeldb_partial_discard_is_exact_and_receipt_gated(tmp_path: Path):
+    destination = tmp_path / "model.zip"
+    partial, receipt = modeldb_partial_paths(destination)
+    partial.write_bytes(b"partial")
+    receipt.write_text(
+        json.dumps({"schema_version": 1, "transferred_bytes": 7}),
+        encoding="utf-8",
+    )
+    neighbor = tmp_path / "keep.txt"
+    neighbor.write_text("keep\n", encoding="utf-8")
+
+    assert discard_modeldb_partial(destination)
+    assert not partial.exists()
+    assert not receipt.exists()
+    assert neighbor.read_text(encoding="utf-8") == "keep\n"
+    assert not discard_modeldb_partial(destination)
+
+
+def test_modeldb_rejects_external_archive_url_before_opening(tmp_path: Path):
+    class NoOpenClient(ModelDBClient):
+        def _open(self, _request):
+            raise AssertionError("external URL must be rejected before a request")
+
+    metadata = ModelDBMetadata(
+        accession=1,
+        name="External",
+        version="v1",
+        archive_url="https://untrusted.example/model.zip",
+        archive_available=True,
+    )
+    with pytest.raises(ModelImportError, match="official HTTPS origin"):
+        NoOpenClient().download_archive(metadata, tmp_path / "model.zip")
+
+
+def test_modeldb_download_never_overwrites_an_existing_or_symlinked_destination(
+    tmp_path: Path,
+):
+    class NoOpenClient(ModelDBClient):
+        def _open(self, _request):
+            raise AssertionError("destination checks must happen before a request")
+
+    metadata = ModelDBMetadata(
+        accession=245415,
+        name="Collision",
+        version="v1",
+        archive_url="https://modeldb.science/download/245415",
+        archive_available=True,
+    )
+    destination = tmp_path / "model.zip"
+    destination.write_bytes(b"keep")
+    with pytest.raises(FileExistsError):
+        NoOpenClient().download_archive(metadata, destination)
+    assert destination.read_bytes() == b"keep"
+
+    destination.unlink()
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"outside")
+    destination.symlink_to(outside)
+    with pytest.raises(ModelImportError, match="symbolic-link"):
+        NoOpenClient().download_archive(metadata, destination)
+    assert outside.read_bytes() == b"outside"
 
 
 def test_modeldb_client_refuses_external_download_redirects():

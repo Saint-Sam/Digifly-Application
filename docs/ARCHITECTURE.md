@@ -173,6 +173,28 @@ checksums, and an explicit `execution_performed: false`. A bundle containing
 SWCs also receives a read-only morphology binding so the existing provider and
 quality-review paths can consume it.
 
+All remote providers share a bounded deterministic retry policy. Only transient
+transport failures and the explicitly retryable HTTP status set are retried;
+authentication, not-found, malformed-response, unsafe-redirect, and integrity
+failures are terminal. Backoff is cancellation-aware and capped. neuPrint
+applies this policy to discovery, preview, skeleton, and connectivity requests.
+ModelDB applies it to metadata, archive discovery, and archive transfer.
+
+ModelDB archive transfer uses a receipt-backed `.part` file beside the requested
+destination. A matching receipt can resume with `Range` and `If-Range`; response
+length, range, validator, origin, and compressed-size limits are validated on
+every attempt. A complete ZIP is promoted with a no-clobber filesystem
+operation. Folder files are content-hashed during preflight and compared while
+copied. Archives are hashed during preflight and checked before and after
+extraction and while preserving the original, closing the inspection/import
+time-of-check gap.
+
+Managed bundle verification is a separate cancellable backend operation with
+byte/file progress. It validates contained portable paths, case-insensitive
+uniqueness, symbolic-link exclusion, regular-file identity, declared sizes and
+SHA-256 values, plus manifest file/byte totals. Detailed stability and change
+control are frozen in `BACKEND_CONTRACT_V1.md`.
+
 Managed-resource lifecycle operations use the manifest as their identity and
 transaction boundary. Registration adds only read-only typed bindings;
 unregistration replaces active provider bindings with an inactive catalog

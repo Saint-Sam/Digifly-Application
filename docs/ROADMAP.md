@@ -105,6 +105,9 @@
 - [x] Add resumable neuPrint checkpoints and selected connectivity tables.
 - [x] Add safe ModelDB accession/archive/manual-folder import without executing
   imported model code.
+- [x] Freeze backend contract v1 with transient-only retry, resumable ModelDB
+  partials, inspected-source snapshot enforcement, no-clobber promotion, and
+  cancellable managed-bundle verification progress.
 - [ ] Add cross-platform managed-library relocation, relink, unregister, and
   removal controls. Validation-first relink, unregister/re-register, and
   recoverable Trash/restore, confirmed permanent purge, and the in-app

@@ -163,6 +163,9 @@ same adaptive post-import audit, and the original archive can be retained for
 provenance. When a ModelDB record only links externally hosted code, Workstation
 opens the official page and requires the user to select the downloaded archive
 or folder instead of following an arbitrary external URL automatically.
+The backend applies bounded transient-only retry to metadata and archives,
+supports receipt-backed HTTP range resume when a caller reuses the download
+destination, and refuses to overwrite an existing file.
 
 Each Data Library row now exposes its registration state and selected-resource
 controls. **Inspect manifest** shows human-readable provenance plus a bounded
@@ -180,6 +183,13 @@ rename, while cross-filesystem destinations are copied and SHA-256 verified
 before the profile changes and the source is removed. Trash remains recoverable
 unless the user explicitly chooses **Permanently delete selected**, confirms the
 irreversible deletion, and purges that exact receipt.
+
+The Phase 3 backend interface is now frozen for UI work. Its stable entry
+points, retry/error rules, transaction order, manifest invariants, and change
+control are recorded in
+[Backend contract v1](docs/BACKEND_CONTRACT_V1.md). New UI code must call those
+interfaces instead of manipulating managed files, checkpoints, credentials, or
+profiles directly.
 
 The Workspace page keeps separate **NEURON Python** and **Arbor Python**
 choices. **Find or install NEURON / Arbor** links to the simulators' official

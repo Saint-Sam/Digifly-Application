@@ -57,6 +57,7 @@ where = ["src"]
 [tool.setuptools.data-files]
 "share/digifly-workstation/docs" = [
   "docs/ARCHITECTURE.md",
+  "docs/BACKEND_CONTRACT_V1.md",
   "docs/PACKAGING_BOUNDARY.md",
   "docs/PHASE3_DATA_ACQUISITION_PLAN.md",
   "docs/SWC_IMPORT_QUALITY.md",

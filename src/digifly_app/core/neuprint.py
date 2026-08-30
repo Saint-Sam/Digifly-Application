@@ -15,7 +15,6 @@ import shutil
 import ssl
 import tempfile
 import threading
-import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -32,6 +31,7 @@ from .data_library import (
     safe_component,
 )
 from .resource_profile import ResourceProfile
+from .remote import RetryPolicy, parse_retry_after, run_with_retry
 from .swc_quality import ADAPTIVE_RADIUS_RULE_ID, analyze_swc
 
 
@@ -58,7 +58,18 @@ class NeuPrintError(RuntimeError):
 
 
 class NeuPrintNetworkError(NeuPrintError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 0,
+        retryable: bool = True,
+        retry_after: float | None = None,
+    ):
+        super().__init__(message)
+        self.status = int(status)
+        self.retryable = bool(retryable)
+        self.retry_after = retry_after
 
 
 class AcquisitionCancelled(NeuPrintError):
@@ -212,6 +223,14 @@ def _default_transport(
     request = Request(url, data=payload, headers=dict(headers), method=method)
     try:
         with urlopen(request, timeout=timeout, context=ssl.create_default_context()) as response:
+            declared_text = response.headers.get("Content-Length")
+            if declared_text and not str(declared_text).isdigit():
+                raise NeuPrintError("neuPrint returned an invalid response length")
+            declared = int(declared_text) if declared_text else None
+            if declared is not None and declared > max_bytes:
+                raise NeuPrintError(
+                    f"The neuPrint response exceeded the {max_bytes:,}-byte safety limit"
+                )
             chunks: list[bytes] = []
             transferred = 0
             while True:
@@ -228,6 +247,11 @@ def _default_transport(
                 chunks.append(chunk)
                 if on_bytes is not None:
                     on_bytes(len(chunk))
+            if declared is not None and transferred != declared:
+                raise NeuPrintNetworkError(
+                    "The neuPrint response ended before its declared length",
+                    retryable=True,
+                )
             return b"".join(chunks)
     except HTTPError as exc:
         status = int(getattr(exc, "code", 0) or 0)
@@ -237,9 +261,19 @@ def _default_transport(
             detail = "The requested neuPrint dataset or skeleton was not found"
         else:
             detail = f"neuPrint returned HTTP {status or 'error'}"
-        raise NeuPrintNetworkError(detail) from None
-    except (TimeoutError, URLError, OSError) as exc:
-        raise NeuPrintNetworkError("Could not reach the neuPrint server securely") from None
+        raise NeuPrintNetworkError(
+            detail,
+            status=status,
+            retryable=status in {408, 425, 429, 500, 502, 503, 504},
+            retry_after=parse_retry_after(
+                exc.headers.get("Retry-After") if exc.headers else None
+            ),
+        ) from None
+    except (TimeoutError, URLError, OSError):
+        raise NeuPrintNetworkError(
+            "Could not reach the neuPrint server securely",
+            retryable=True,
+        ) from None
 
 
 class NeuPrintClient:
@@ -253,12 +287,16 @@ class NeuPrintClient:
         dataset: str = "",
         timeout: float = 45.0,
         transport: Transport | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
         self.server = normalize_server(server)
         self.dataset = str(dataset or "").strip()
         self._token = normalize_neuprint_token(token)
         self.timeout = float(timeout)
+        if self.timeout <= 0:
+            raise ValueError("neuPrint timeout must be positive")
         self._transport = transport or _default_transport
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def _request(
         self,
@@ -277,32 +315,51 @@ class NeuPrintClient:
             if payload is not None
             else None
         )
-        return self._transport(
-            method,
-            f"{self.server}{path}",
-            {
-                "Authorization": f"Bearer {self._token}",
-                "Accept": "application/json, text/plain",
-                "Content-Type": "application/json",
-                "User-Agent": f"Digifly-Workstation/{__version__}",
-            },
-            encoded,
-            self.timeout,
-            cancel,
-            max_bytes,
-            on_bytes,
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/json, text/plain",
+            "Content-Type": "application/json",
+            "User-Agent": f"Digifly-Workstation/{__version__}",
+        }
+        return run_with_retry(
+            lambda: self._transport(
+                method,
+                f"{self.server}{path}",
+                headers,
+                encoded,
+                self.timeout,
+                cancel,
+                max_bytes,
+                on_bytes,
+            ),
+            policy=self.retry_policy,
+            retryable=lambda exc: isinstance(exc, NeuPrintNetworkError)
+            and exc.retryable,
+            cancel=cancel,
+            cancelled=lambda: AcquisitionCancelled("The neuPrint download was cancelled"),
         )
 
-    def _json(self, method: str, path: str, *, payload: Mapping[str, Any] | None = None) -> Any:
-        raw = self._request(method, path, payload=payload)
+    def _json(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Mapping[str, Any] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> Any:
+        raw = self._request(method, path, payload=payload, cancel=cancel)
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise NeuPrintError("neuPrint returned an unreadable response") from exc
 
-    def validate_and_list_datasets(self) -> tuple[NeuPrintDataset, ...]:
-        self._json("GET", "/profile")
-        payload = self._json("GET", "/api/dbmeta/datasets")
+    def validate_and_list_datasets(
+        self,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> tuple[NeuPrintDataset, ...]:
+        self._json("GET", "/profile", cancel=cancel)
+        payload = self._json("GET", "/api/dbmeta/datasets", cancel=cancel)
         datasets: list[NeuPrintDataset] = []
         if isinstance(payload, Mapping):
             for name, details in payload.items():
@@ -330,7 +387,12 @@ class NeuPrintClient:
             raise NeuPrintError("The neuPrint server reported no available datasets")
         return tuple(sorted(datasets, key=lambda item: item.name.casefold()))
 
-    def preview_neurons(self, selection: NeuPrintSelection) -> tuple[NeuPrintNeuron, ...]:
+    def preview_neurons(
+        self,
+        selection: NeuPrintSelection,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> tuple[NeuPrintNeuron, ...]:
         if not self.dataset:
             raise ValueError("Choose a neuPrint dataset before previewing neurons")
         cypher = _selection_cypher(selection)
@@ -338,6 +400,7 @@ class NeuPrintClient:
             "POST",
             "/api/custom/custom",
             payload={"cypher": cypher, "dataset": self.dataset},
+            cancel=cancel,
         )
         records = _parse_custom_rows(payload)
         return tuple(records[: selection.limit])
@@ -825,22 +888,12 @@ def acquire_neuprint_bundle(
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
             current = f"body {neuron.body_id}"
             emit("Downloading SWC", completed_tasks(), current)
-            skeleton: bytes | None = None
-            for attempt in range(3):
-                try:
-                    skeleton = provider.fetch_skeleton(
-                        neuron.body_id,
-                        cancel=cancel_event,
-                        max_bytes=request.max_skeleton_bytes,
-                        on_bytes=add_bytes,
-                    )
-                    break
-                except NeuPrintNetworkError:
-                    if attempt == 2:
-                        raise
-                    if cancel_event.wait(0.5 * (2**attempt)):
-                        raise AcquisitionCancelled("The neuPrint download was cancelled")
-            assert skeleton is not None
+            skeleton = provider.fetch_skeleton(
+                neuron.body_id,
+                cancel=cancel_event,
+                max_bytes=request.max_skeleton_bytes,
+                on_bytes=add_bytes,
+            )
             try:
                 skeleton.decode("utf-8")
             except UnicodeDecodeError as exc:
@@ -893,24 +946,14 @@ def acquire_neuprint_bundle(
             if cancel_event.is_set():
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
             emit("Downloading selected connectivity", completed_tasks())
-            connections: tuple[NeuPrintConnection, ...] | None = None
             body_ids = tuple(neuron.body_id for neuron in request.neurons)
-            for attempt in range(3):
-                try:
-                    connections = provider.fetch_connectivity(
-                        body_ids,
-                        cancel=cancel_event,
-                        max_rows=request.max_connectivity_rows,
-                        max_bytes=request.max_connectivity_bytes,
-                        on_bytes=add_bytes,
-                    )
-                    break
-                except NeuPrintNetworkError:
-                    if attempt == 2:
-                        raise
-                    if cancel_event.wait(0.5 * (2**attempt)):
-                        raise AcquisitionCancelled("The neuPrint download was cancelled")
-            assert connections is not None
+            connections = provider.fetch_connectivity(
+                body_ids,
+                cancel=cancel_event,
+                max_rows=request.max_connectivity_rows,
+                max_bytes=request.max_connectivity_bytes,
+                on_bytes=add_bytes,
+            )
             table_buffer = io.StringIO(newline="")
             writer = csv.writer(table_buffer, lineterminator="\n")
             writer.writerow(("source_body_id", "target_body_id", "weight"))

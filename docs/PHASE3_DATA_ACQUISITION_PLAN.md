@@ -119,7 +119,7 @@ or mutates them without an explicit import action.
 
 ## Current implementation checkpoint
 
-Implemented through the fifth Phase 3 increment:
+Implemented through the Phase 3 backend-stabilization cutoff:
 
 - schema-v2 resource profiles with one managed-data root, automatic in-memory
   v1 compatibility, and explicit side-by-side migration;
@@ -196,11 +196,25 @@ Implemented through the fifth Phase 3 increment:
 - regression tests for resume/no-redownload behavior, connectivity bounds and
   registration, move rollback/cancellation/empty libraries, verified-copy
   cleanup, selected purge, and destructive-path symlink rejection.
+- one shared bounded, deterministic, cancellation-aware retry policy across
+  neuPrint discovery/preview/acquisition and ModelDB metadata/archive requests,
+  with transient-only HTTP classification and capped `Retry-After` handling;
+- receipt-backed ModelDB partial archives with validated Range/If-Range resume,
+  no-clobber complete-ZIP promotion, explicit exact-partial discard, official-
+  origin enforcement, and cancellation/failure preservation;
+- inspection-snapshot enforcement for local-model folders and archives,
+  complete manifest inventory totals including preserved originals, symlink-
+  safe staging, and cancellable managed-bundle checksum verification with
+  byte/file progress;
+- a frozen backend-v1 contract covering public UI entry points, package/data
+  boundaries, error/retry behavior, transactions, destructive limits, and the
+  migration requirement for future breaking changes.
 
-Remaining Phase 3 work includes broader provider retry/repair controls,
-checksum-verification progress for large existing bundles, cross-platform move
-acceptance, ModelDB resume/retry, and later separately permissioned simulator
-validation.
+The backend is now frozen for UI integration. Remaining work is intentionally
+outside this cutoff: expose the completed verification/ModelDB-resume contracts
+more clearly in the UI, run the cross-platform acceptance matrix, and later add
+separately permissioned simulator validation. New scientific features begin
+only after that UI/release pass.
 
 ## External interfaces verified during planning
 

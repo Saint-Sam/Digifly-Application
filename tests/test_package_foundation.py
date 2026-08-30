@@ -9,6 +9,7 @@ from digifly_app.packaging.audit import audit_artifact
 def test_declared_application_resources_resolve_from_the_active_installation():
     root = resource_root()
     assert (root / "docs" / "ARCHITECTURE.md").is_file()
+    assert (root / "docs" / "BACKEND_CONTRACT_V1.md").is_file()
     assert resource_path("schemas", "digifly-project-v1.schema.json").is_file()
     assert resource_path("mechanisms", "augustin_2019", "nat.mod").is_file()
     assert resource_path(

@@ -78,7 +78,7 @@ troubleshooting recipes remain future work.
 - Never bundle downloaded scientific data, credentials, or generated indexes
   in the core application or its release artifacts.
 
-Status: in progress. The v2 managed-data profile/migration, staged local-folder
+Status: backend frozen; UI/release acceptance remains. The v2 managed-data profile/migration, staged local-folder
 import, checksum/provenance manifest, atomic promotion, adaptive SWC audit, and
 Data Library foundation are implemented. The first neuPrint slice now includes
 OS-keyring/session/environment credentials, live dataset discovery, bounded
@@ -94,8 +94,11 @@ recoverable Trash/restore, and validation-first relinking after a user moves the
 library. The in-app mover now uses atomic rename on one filesystem or a
 copy/checksum/relink/remove transaction across filesystems, and selected Trash
 entries can be permanently purged only after an explicit irreversible-action
-confirmation. Broader retry/repair flows, checksum-progress UX, and the
-cross-platform acceptance matrix remain.
+confirmation. Transient-only provider retry, receipt-backed ModelDB resume,
+inspection-snapshot enforcement, and cancellable checksum-progress backend
+contracts are complete and frozen in `BACKEND_CONTRACT_V1.md`. The remaining
+Phase 3 work is UI exposure and the cross-platform acceptance matrix, not new
+backend scope.
 See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 
 ## Phase 4 — release automation

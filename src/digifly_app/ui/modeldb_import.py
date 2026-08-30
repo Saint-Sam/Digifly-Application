@@ -387,7 +387,7 @@ class ModelDBImportDialog(QDialog):
             self.status.setText("Looking up official metadata and checking for a hosted archive…")
 
             def lookup_and_inspect() -> tuple[ModelDBMetadata, Path | None, ModelInspection | None]:
-                metadata = self.client.lookup(accession)
+                metadata = self.client.lookup(accession, cancel=self._cancel_event)
                 if not metadata.archive_available:
                     return metadata, None, None
                 archive = self.client.download_archive(

@@ -6,7 +6,7 @@ from a model, compiles mechanisms, or launches a simulator.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -39,6 +39,7 @@ from .resource_profile import (
     ResourceKind,
     ResourceProfile,
 )
+from .remote import RetryPolicy, parse_retry_after, run_with_retry
 from .swc_quality import ADAPTIVE_RADIUS_RULE_ID, analyze_swc
 
 
@@ -55,6 +56,21 @@ _WINDOWS_DRIVE = re.compile(r"^[a-zA-Z]:")
 
 class ModelImportError(RuntimeError):
     """A safe, user-facing model intake failure."""
+
+
+class ModelImportNetworkError(ModelImportError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 0,
+        retryable: bool = True,
+        retry_after: float | None = None,
+    ):
+        super().__init__(message)
+        self.status = int(status)
+        self.retryable = bool(retryable)
+        self.retry_after = retry_after
 
 
 class ModelImportCancelled(ModelImportError):
@@ -87,6 +103,7 @@ class ArchiveLimits:
 class ModelFile:
     path: str
     size_bytes: int
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +119,7 @@ class ModelInspection:
     readme_paths: tuple[str, ...]
     license_paths: tuple[str, ...]
     warnings: tuple[str, ...] = ()
+    source_sha256: str = ""
 
     @property
     def file_count(self) -> int:
@@ -130,6 +148,12 @@ class ModelDBMetadata:
     archive_url: str = ""
     archive_available: bool = False
     archive_size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        if int(self.accession) < 1:
+            raise ValueError("ModelDB accession must be a positive integer")
+        if self.archive_size_bytes is not None and int(self.archive_size_bytes) < 0:
+            raise ValueError("ModelDB archive size cannot be negative")
 
     @property
     def citation(self) -> str:
@@ -179,6 +203,29 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _sha256_regular(path: Path, *, expected_size: int | None = None) -> str:
+    """Hash a regular source file without following a final symbolic link."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ModelImportError(f"Could not safely open source file: {path}") from exc
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ModelImportError(f"Source is not a regular file: {path}")
+        if expected_size is not None and details.st_size != expected_size:
+            raise ModelImportError(f"Source file changed during inspection: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
 
 
 def _check_cancel(cancel: threading.Event | None) -> None:
@@ -332,7 +379,13 @@ def _inspect_folder(
             size = candidate.stat(follow_symlinks=False).st_size
             if size > limits.max_file_bytes:
                 raise ModelImportError(f"File exceeds the per-file safety limit: {relative}")
-            files.append(ModelFile(relative, size))
+            files.append(
+                ModelFile(
+                    relative,
+                    size,
+                    _sha256_regular(candidate, expected_size=size),
+                )
+            )
             total += size
             if len(files) > limits.max_files:
                 raise ModelImportError(f"Model source exceeds the {limits.max_files:,}-file limit")
@@ -434,9 +487,15 @@ def inspect_model_source(
         raise ModelImportError("Archive exceeds the compressed-size safety limit")
     try:
         if zipfile.is_zipfile(path):
-            return _inspect_zip(path, safety, cancel)
+            return replace(
+                _inspect_zip(path, safety, cancel),
+                source_sha256=_sha256_regular(path, expected_size=archive_bytes),
+            )
         if tarfile.is_tarfile(path):
-            return _inspect_tar(path, safety, cancel)
+            return replace(
+                _inspect_tar(path, safety, cancel),
+                source_sha256=_sha256_regular(path, expected_size=archive_bytes),
+            )
     except (OSError, tarfile.TarError, zipfile.BadZipFile, RuntimeError) as exc:
         raise ModelImportError(f"The archive could not be safely inspected: {exc}") from exc
     raise ModelImportError("Choose a ZIP or TAR archive, or an unpacked model folder")
@@ -457,9 +516,11 @@ def _copy_stream(
     destination: Path,
     *,
     expected_size: int,
+    expected_sha256: str = "",
     cancel: threading.Event | None,
-) -> None:
+) -> str:
     written = 0
+    digest = hashlib.sha256()
     with destination.open("xb") as output:
         while True:
             _check_cancel(cancel)
@@ -467,17 +528,23 @@ def _copy_stream(
             if not block:
                 break
             output.write(block)
+            digest.update(block)
             written += len(block)
             if written > expected_size:
                 raise ModelImportError("An archive member expanded beyond its declared size")
     if written != expected_size:
         raise ModelImportError("An archive member was truncated during extraction")
+    actual_sha256 = digest.hexdigest()
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        raise ModelImportError("A source file changed after it was inspected")
+    return actual_sha256
 
 
 def _materialize(
     inspection: ModelInspection,
     source_root: Path,
     *,
+    limits: ArchiveLimits,
     cancel: threading.Event | None,
     progress: Callable[[ModelImportProgress], None] | None,
 ) -> None:
@@ -502,14 +569,20 @@ def _materialize(
                     f"Source file changed after inspection: {item.path}"
                 )
             with os.fdopen(descriptor, "rb") as stream:
-                _copy_stream(stream, destination, expected_size=item.size_bytes, cancel=cancel)
+                _copy_stream(
+                    stream,
+                    destination,
+                    expected_size=item.size_bytes,
+                    expected_sha256=item.sha256,
+                    cancel=cancel,
+                )
             shutil.copystat(source, destination, follow_symlinks=False)
             emit(index, item.path)
         return
     if inspection.source_kind == "zip":
         with zipfile.ZipFile(inspection.source) as archive:
             lookup = {
-                _safe_archive_path(info.filename.rstrip("/"), ArchiveLimits()): info
+                _safe_archive_path(info.filename.rstrip("/"), limits): info
                 for info in archive.infolist()
                 if not info.is_dir()
             }
@@ -525,7 +598,7 @@ def _materialize(
         return
     with tarfile.open(inspection.source, mode="r:*") as archive:
         lookup = {
-            _safe_archive_path(member.name.rstrip("/"), ArchiveLimits()): member
+            _safe_archive_path(member.name.rstrip("/"), limits): member
             for member in archive
             if member.isfile()
         }
@@ -636,6 +709,8 @@ def import_model_source(
         raise OSError(f"The model import needs at least {required:,} free bytes")
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_root = managed_root / ".staging"
+    if staging_root.is_symlink():
+        raise ModelImportError("Refusing to import through a symbolic-link staging root")
     staging_root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="model-", dir=staging_root))
     promoted = False
@@ -646,7 +721,23 @@ def import_model_source(
         source_root.mkdir()
         derived_root.mkdir()
         _check_cancel(cancel)
-        _materialize(reviewed, source_root, cancel=cancel, progress=progress)
+        if reviewed.source_kind != "folder":
+            if not reviewed.source_sha256:
+                raise ModelImportError("The reviewed archive has no source checksum")
+            if _sha256_regular(reviewed.source) != reviewed.source_sha256:
+                raise ModelImportError("The archive changed after it was inspected")
+        _materialize(
+            reviewed,
+            source_root,
+            limits=request.limits,
+            cancel=cancel,
+            progress=progress,
+        )
+        if (
+            reviewed.source_kind != "folder"
+            and _sha256_regular(reviewed.source) != reviewed.source_sha256
+        ):
+            raise ModelImportError("The archive changed while it was being imported")
         inventory: list[dict[str, Any]] = []
         reviews = 0
         errors = 0
@@ -679,14 +770,18 @@ def import_model_source(
             original_root.mkdir()
             original = original_root / reviewed.source.name
             shutil.copy2(reviewed.source, original, follow_symlinks=False)
+            original_sha256 = _sha256(original)
+            if original_sha256 != reviewed.source_sha256:
+                raise ModelImportError("The archive changed while its provenance copy was made")
             inventory.append(
                 {
                     "path": f"original/{reviewed.source.name}",
                     "size_bytes": original.stat().st_size,
-                    "sha256": _sha256(original),
+                    "sha256": original_sha256,
                     "role": "original_archive",
                 }
             )
+        inventory_bytes = sum(int(item["size_bytes"]) for item in inventory)
         manifest_payload = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "provider": request.provider,
@@ -713,8 +808,8 @@ def import_model_source(
                 "warnings": list(reviewed.warnings),
             },
             "provider_metadata": dict(request.metadata),
-            "file_count": reviewed.file_count,
-            "total_bytes": reviewed.total_bytes,
+            "file_count": len(inventory),
+            "total_bytes": inventory_bytes,
             "swc_count": reviewed.swc_count,
             "post_import_quality": {
                 "rule": ADAPTIVE_RADIUS_RULE_ID,
@@ -740,8 +835,8 @@ def import_model_source(
             safe_component(request.source_version),
             destination,
             destination / MANIFEST_FILENAME,
-            reviewed.file_count,
-            reviewed.total_bytes,
+            len(inventory),
+            inventory_bytes,
             reviewed.swc_count,
             imported_at,
         )
@@ -782,14 +877,93 @@ def _object_names(value: Any) -> tuple[str, ...]:
     )
 
 
+MODELDB_PARTIAL_SCHEMA_VERSION = 1
+
+
+def modeldb_partial_paths(destination: str | Path) -> tuple[Path, Path]:
+    """Return the exact data and receipt paths used for a resumable download."""
+
+    selected = Path(destination).expanduser()
+    if selected.is_symlink():
+        raise ValueError("Refusing a symbolic-link ModelDB destination")
+    output = selected.resolve()
+    partial = output.with_name(f".{output.name}.part")
+    receipt = output.with_name(f".{output.name}.part.json")
+    return partial, receipt
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def discard_modeldb_partial(destination: str | Path) -> bool:
+    """Permanently discard one exact, receipt-backed ModelDB partial download."""
+
+    partial, receipt = modeldb_partial_paths(destination)
+    if partial.is_symlink() or receipt.is_symlink():
+        raise ValueError("Refusing to discard a symbolic-link ModelDB partial download")
+    if not partial.exists() and not receipt.exists():
+        return False
+    if not partial.is_file() or not receipt.is_file():
+        raise ValueError("The ModelDB partial download is missing its data or receipt")
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("The ModelDB partial-download receipt is unreadable") from exc
+    try:
+        schema_version = int(payload.get("schema_version", 0))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("The ModelDB partial-download receipt is invalid") from exc
+    if not isinstance(payload, Mapping) or schema_version != MODELDB_PARTIAL_SCHEMA_VERSION:
+        raise ValueError("The ModelDB partial-download receipt is invalid")
+    partial.unlink()
+    receipt.unlink()
+    return True
+
+
 class ModelDBClient:
     """Minimal HTTPS-only client for ModelDB's official API/download routes."""
 
-    def __init__(self, *, timeout: float = 30.0):
-        self.timeout = timeout
+    def __init__(
+        self,
+        *,
+        timeout: float = 30.0,
+        retry_policy: RetryPolicy | None = None,
+    ):
+        self.timeout = float(timeout)
+        if self.timeout <= 0:
+            raise ValueError("ModelDB timeout must be positive")
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def _open(self, request: Request):
         return urlopen(request, timeout=self.timeout, context=ssl.create_default_context())
+
+    @staticmethod
+    def _require_official_url(url: str) -> str:
+        parsed = urlsplit(str(url or ""))
+        if (
+            parsed.scheme.casefold() != "https"
+            or parsed.hostname != "modeldb.science"
+            or parsed.username
+            or parsed.password
+        ):
+            raise ModelImportError("ModelDB downloads must use the official HTTPS origin")
+        return str(url)
 
     @staticmethod
     def _require_official_response(response: Any) -> None:
@@ -803,21 +977,82 @@ class ModelDBClient:
                 "ModelDB redirected to an external host; download that code manually, then choose its archive or folder"
             )
 
-    def _json(self, url: str, *, max_bytes: int = 4 * 1024 * 1024) -> Mapping[str, Any]:
-        request = Request(url, headers={"Accept": "application/json", "User-Agent": "Digifly-Workstation"})
-        try:
-            with self._open(request) as response:
-                self._require_official_response(response)
-                declared = response.headers.get("Content-Length")
-                if declared and int(declared) > max_bytes:
-                    raise ModelImportError("ModelDB metadata exceeded the response limit")
-                body = response.read(max_bytes + 1)
-        except HTTPError as exc:
-            if exc.code == 404:
-                raise ModelImportError("ModelDB accession was not found") from exc
-            raise ModelImportError(f"ModelDB metadata request failed with HTTP {exc.code}") from exc
-        except (URLError, OSError, ValueError) as exc:
-            raise ModelImportError(f"Could not reach ModelDB: {exc}") from exc
+    @staticmethod
+    def _response_status(response: Any) -> int:
+        status = getattr(response, "status", None)
+        if status is None:
+            getcode = getattr(response, "getcode", None)
+            status = getcode() if getcode is not None else 200
+        return int(status or 200)
+
+    def _retry(
+        self,
+        operation: Callable[[], Any],
+        *,
+        cancel: threading.Event | None = None,
+    ) -> Any:
+        return run_with_retry(
+            operation,
+            policy=self.retry_policy,
+            retryable=lambda exc: isinstance(exc, ModelImportNetworkError)
+            and exc.retryable,
+            cancel=cancel,
+            cancelled=lambda: ModelImportCancelled("The ModelDB operation was cancelled"),
+        )
+
+    @staticmethod
+    def _http_failure(exc: HTTPError, context: str) -> ModelImportNetworkError:
+        status = int(getattr(exc, "code", 0) or 0)
+        if status == 404:
+            detail = "ModelDB accession was not found"
+        else:
+            detail = f"{context} failed with HTTP {status or 'error'}"
+        headers = getattr(exc, "headers", None)
+        return ModelImportNetworkError(
+            detail,
+            status=status,
+            retryable=status in {408, 425, 429, 500, 502, 503, 504},
+            retry_after=parse_retry_after(headers.get("Retry-After") if headers else None),
+        )
+
+    def _json(
+        self,
+        url: str,
+        *,
+        max_bytes: int = 4 * 1024 * 1024,
+        cancel: threading.Event | None = None,
+    ) -> Mapping[str, Any]:
+        def request_json() -> bytes:
+            request = Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": "Digifly-Workstation"},
+            )
+            try:
+                with self._open(request) as response:
+                    self._require_official_response(response)
+                    declared = response.headers.get("Content-Length")
+                    if declared:
+                        try:
+                            declared_size = int(declared)
+                        except ValueError as exc:
+                            raise ModelImportError(
+                                "ModelDB returned an invalid metadata length"
+                            ) from exc
+                        if declared_size > max_bytes:
+                            raise ModelImportError("ModelDB metadata exceeded the response limit")
+                    body = response.read(max_bytes + 1)
+                    if declared and len(body) != declared_size:
+                        raise ModelImportNetworkError(
+                            "ModelDB metadata transfer ended before its declared length",
+                            retryable=True,
+                        )
+                    return body
+            except HTTPError as exc:
+                raise self._http_failure(exc, "ModelDB metadata request") from None
+            except (TimeoutError, URLError, OSError):
+                raise ModelImportNetworkError("Could not reach ModelDB securely") from None
+
+        body = self._retry(request_json, cancel=cancel)
         if len(body) > max_bytes:
             raise ModelImportError("ModelDB metadata exceeded the response limit")
         try:
@@ -828,30 +1063,52 @@ class ModelDBClient:
             raise ModelImportError("ModelDB returned an unexpected metadata shape")
         return payload
 
-    def _archive_info(self, accession: int) -> tuple[bool, int | None]:
+    def _archive_info(
+        self,
+        accession: int,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> tuple[bool, int | None]:
         url = f"{MODELDB_ORIGIN}/download/{accession}"
-        request = Request(url, method="HEAD", headers={"Accept": "application/zip", "User-Agent": "Digifly-Workstation"})
-        try:
-            with self._open(request) as response:
-                self._require_official_response(response)
-                content_type = str(response.headers.get("Content-Type") or "").casefold()
-                disposition = str(response.headers.get("Content-Disposition") or "").casefold()
-                available = "zip" in content_type or ".zip" in disposition
-                declared = response.headers.get("Content-Length")
-                return available, int(declared) if declared and declared.isdigit() else None
-        except HTTPError as exc:
-            if exc.code in {404, 405}:
-                return False, None
-            raise ModelImportError(f"ModelDB archive check failed with HTTP {exc.code}") from exc
-        except (URLError, OSError, ValueError) as exc:
-            raise ModelImportError(f"Could not check the ModelDB archive: {exc}") from exc
+        def request_info() -> tuple[bool, int | None]:
+            request = Request(
+                url,
+                method="HEAD",
+                headers={"Accept": "application/zip", "User-Agent": "Digifly-Workstation"},
+            )
+            try:
+                with self._open(request) as response:
+                    self._require_official_response(response)
+                    content_type = str(response.headers.get("Content-Type") or "").casefold()
+                    disposition = str(response.headers.get("Content-Disposition") or "").casefold()
+                    available = "zip" in content_type or ".zip" in disposition
+                    declared = response.headers.get("Content-Length")
+                    return available, int(declared) if declared and declared.isdigit() else None
+            except HTTPError as exc:
+                if exc.code in {404, 405}:
+                    return False, None
+                raise self._http_failure(exc, "ModelDB archive check") from None
+            except (TimeoutError, URLError, OSError):
+                raise ModelImportNetworkError(
+                    "Could not check the ModelDB archive securely"
+                ) from None
 
-    def lookup(self, accession: int) -> ModelDBMetadata:
+        return self._retry(request_info, cancel=cancel)
+
+    def lookup(
+        self,
+        accession: int,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> ModelDBMetadata:
         if int(accession) < 1:
             raise ValueError("ModelDB accession must be a positive integer")
         identifier = int(accession)
-        payload = self._json(f"{MODELDB_ORIGIN}/api/v1/models/{identifier}")
-        available, size = self._archive_info(identifier)
+        payload = self._json(
+            f"{MODELDB_ORIGIN}/api/v1/models/{identifier}",
+            cancel=cancel,
+        )
+        available, size = self._archive_info(identifier, cancel=cancel)
         version_number = str(payload.get("ver_number") or "unknown")
         return ModelDBMetadata(
             accession=identifier,
@@ -882,47 +1139,270 @@ class ModelDBClient:
             raise ModelImportError(
                 "This ModelDB record does not expose a locally hosted ZIP. Follow its upstream code link, then choose the downloaded archive or folder."
             )
-        output = Path(destination).expanduser().resolve()
+        archive_url = self._require_official_url(metadata.archive_url)
+        selected_output = Path(destination).expanduser()
+        if selected_output.is_symlink():
+            raise ModelImportError("Refusing to replace a symbolic-link ModelDB destination")
+        output = selected_output.resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        request = Request(metadata.archive_url, headers={"Accept": "application/zip", "User-Agent": "Digifly-Workstation"})
-        temporary = output.with_name(f".{output.name}.part")
-        transferred = 0
+        if output.exists():
+            raise FileExistsError(f"ModelDB download destination already exists: {output}")
+        partial, receipt = modeldb_partial_paths(output)
+
+        def load_partial() -> dict[str, Any]:
+            if not partial.exists() and not receipt.exists():
+                return {}
+            if partial.is_symlink() or receipt.is_symlink():
+                raise ModelImportError("Refusing to resume a symbolic-link ModelDB partial")
+            if not partial.is_file() or not receipt.is_file():
+                raise ModelImportError(
+                    "The ModelDB partial download is incomplete; discard it before retrying"
+                )
+            try:
+                payload = json.loads(receipt.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ModelImportError(
+                    "The ModelDB partial-download receipt is unreadable; discard it before retrying"
+                ) from exc
+            try:
+                schema_version = int(payload.get("schema_version", 0))
+                receipt_accession = int(payload.get("accession", 0))
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ModelImportError("The ModelDB partial receipt is malformed") from exc
+            if (
+                not isinstance(payload, dict)
+                or schema_version != MODELDB_PARTIAL_SCHEMA_VERSION
+                or payload.get("archive_url") != archive_url
+                or receipt_accession != metadata.accession
+            ):
+                raise ModelImportError(
+                    "The ModelDB partial download belongs to a different request"
+                )
+            try:
+                committed = int(payload.get("transferred_bytes", -1))
+                expected = int(payload.get("expected_size", 0) or 0)
+            except (TypeError, ValueError) as exc:
+                raise ModelImportError("The ModelDB partial receipt is malformed") from exc
+            actual = partial.stat(follow_symlinks=False).st_size
+            if committed < 0 or committed > actual or actual > safety.max_archive_bytes:
+                raise ModelImportError("The ModelDB partial download has an invalid size")
+            if actual > committed:
+                flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(partial, flags)
+                try:
+                    details = os.fstat(descriptor)
+                    if not stat.S_ISREG(details.st_mode):
+                        raise ModelImportError(
+                            "The ModelDB partial download is not a regular file"
+                        )
+                    os.ftruncate(descriptor, committed)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            if (
+                metadata.archive_size_bytes
+                and expected
+                and int(metadata.archive_size_bytes) != expected
+            ):
+                raise ModelImportError(
+                    "The ModelDB archive changed since this partial download was created"
+                )
+            return payload
+
+        def transfer_attempt() -> int:
+            state = load_partial()
+            offset = int(state.get("transferred_bytes", 0) or 0)
+            headers = {
+                "Accept": "application/zip",
+                "User-Agent": "Digifly-Workstation",
+            }
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+                validator = str(state.get("etag") or state.get("last_modified") or "")
+                if validator:
+                    headers["If-Range"] = validator
+            request = Request(archive_url, headers=headers)
+            try:
+                with self._open(request) as response:
+                    self._require_official_response(response)
+                    status = self._response_status(response)
+                    content_type = str(
+                        response.headers.get("Content-Type") or ""
+                    ).casefold()
+                    disposition = str(
+                        response.headers.get("Content-Disposition") or ""
+                    ).casefold()
+                    if "zip" not in content_type and ".zip" not in disposition:
+                        raise ModelImportError("ModelDB did not return a ZIP archive")
+                    content_range = str(
+                        response.headers.get("Content-Range") or ""
+                    ).strip()
+                    total_from_range = 0
+                    range_end = -1
+                    if status == 206:
+                        matched = re.fullmatch(
+                            r"bytes (\d+)-(\d+)/(\d+|\*)",
+                            content_range,
+                        )
+                        if not matched or int(matched.group(1)) != offset:
+                            raise ModelImportError(
+                                "ModelDB returned an invalid resume range"
+                            )
+                        range_end = int(matched.group(2))
+                        if range_end < offset:
+                            raise ModelImportError(
+                                "ModelDB returned an invalid resume range"
+                            )
+                        if matched.group(3) != "*":
+                            total_from_range = int(matched.group(3))
+                            if range_end >= total_from_range:
+                                raise ModelImportError(
+                                    "ModelDB returned an invalid resume range"
+                                )
+                    elif status == 200:
+                        offset = 0
+                    else:
+                        raise ModelImportNetworkError(
+                            f"ModelDB archive download returned HTTP {status}",
+                            status=status,
+                            retryable=status in {408, 425, 429, 500, 502, 503, 504},
+                        )
+                    declared_text = response.headers.get("Content-Length")
+                    if declared_text and not str(declared_text).isdigit():
+                        raise ModelImportError("ModelDB returned an invalid archive length")
+                    declared = int(declared_text or 0)
+                    if status == 206 and declared and range_end - offset + 1 != declared:
+                        raise ModelImportError(
+                            "ModelDB returned an inconsistent resume length"
+                        )
+                    expected = total_from_range or (
+                        offset + declared if declared else int(metadata.archive_size_bytes or 0)
+                    )
+                    if expected > safety.max_archive_bytes:
+                        raise ModelImportError(
+                            "ModelDB archive exceeds the compressed-size safety limit"
+                        )
+                    previous_expected = int(state.get("expected_size", 0) or 0)
+                    if offset and previous_expected and expected and previous_expected != expected:
+                        raise ModelImportError(
+                            "The ModelDB archive changed during the resumed download"
+                        )
+                    etag = str(response.headers.get("ETag") or state.get("etag") or "")
+                    last_modified = str(
+                        response.headers.get("Last-Modified")
+                        or state.get("last_modified")
+                        or ""
+                    )
+                    if offset and status == 206:
+                        previous_etag = str(state.get("etag") or "")
+                        previous_modified = str(state.get("last_modified") or "")
+                        if previous_etag and etag and previous_etag != etag:
+                            raise ModelImportError(
+                                "The ModelDB archive validator changed during resume"
+                            )
+                        if (
+                            not previous_etag
+                            and previous_modified
+                            and last_modified
+                            and previous_modified != last_modified
+                        ):
+                            raise ModelImportError(
+                                "The ModelDB archive validator changed during resume"
+                            )
+                    transferred = offset
+                    response_bytes = 0
+                    mode = "ab" if offset and status == 206 else "wb"
+                    open_flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+                    open_flags |= os.O_APPEND if mode == "ab" else os.O_CREAT | os.O_TRUNC
+                    if not state and mode == "wb":
+                        open_flags |= os.O_EXCL
+                    descriptor = os.open(partial, open_flags, 0o600)
+                    try:
+                        details = os.fstat(descriptor)
+                        if not stat.S_ISREG(details.st_mode):
+                            raise ModelImportError(
+                                "The ModelDB partial download is not a regular file"
+                            )
+                        if mode == "ab" and details.st_size != offset:
+                            raise ModelImportError(
+                                "The ModelDB partial download changed before resume"
+                            )
+                    except Exception:
+                        os.close(descriptor)
+                        raise
+                    with os.fdopen(descriptor, mode) as stream:
+                        checkpoint = {
+                            "schema_version": MODELDB_PARTIAL_SCHEMA_VERSION,
+                            "archive_url": archive_url,
+                            "accession": metadata.accession,
+                            "expected_size": expected,
+                            "etag": etag,
+                            "last_modified": last_modified,
+                            "transferred_bytes": transferred,
+                            "updated_at": _utc_now(),
+                        }
+                        _write_json_atomic(receipt, checkpoint)
+                        while True:
+                            _check_cancel(cancel)
+                            block = response.read(1024 * 1024)
+                            if not block:
+                                break
+                            stream.write(block)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                            transferred += len(block)
+                            response_bytes += len(block)
+                            if transferred > safety.max_archive_bytes:
+                                raise ModelImportError(
+                                    "ModelDB archive exceeded the compressed-size safety limit"
+                                )
+                            checkpoint["transferred_bytes"] = transferred
+                            checkpoint["updated_at"] = _utc_now()
+                            _write_json_atomic(receipt, checkpoint)
+                            if progress is not None:
+                                progress(
+                                    ModelImportProgress(
+                                        "Downloading ModelDB archive",
+                                        transferred,
+                                        expected or transferred,
+                                        transferred,
+                                    )
+                                )
+                    if declared and response_bytes != declared:
+                        raise ModelImportNetworkError(
+                            "ModelDB archive transfer ended before its declared length",
+                            retryable=True,
+                        )
+                    if expected and transferred != expected:
+                        raise ModelImportNetworkError(
+                            "ModelDB archive transfer is incomplete",
+                            retryable=True,
+                        )
+                    return transferred
+            except HTTPError as exc:
+                raise self._http_failure(exc, "ModelDB archive download") from None
+            except ModelImportError:
+                raise
+            except (TimeoutError, URLError, OSError):
+                raise ModelImportNetworkError(
+                    "Could not complete the ModelDB archive download securely"
+                ) from None
+
+        transferred = self._retry(transfer_attempt, cancel=cancel)
+        if transferred < 4 or not zipfile.is_zipfile(partial):
+            discard_modeldb_partial(output)
+            raise ModelImportError("ModelDB did not return a complete ZIP archive")
         try:
-            with self._open(request) as response:
-                self._require_official_response(response)
-                declared_text = response.headers.get("Content-Length")
-                declared = int(declared_text) if declared_text and declared_text.isdigit() else 0
-                if declared > safety.max_archive_bytes:
-                    raise ModelImportError("ModelDB archive exceeds the compressed-size safety limit")
-                with temporary.open("xb") as stream:
-                    while True:
-                        _check_cancel(cancel)
-                        block = response.read(1024 * 1024)
-                        if not block:
-                            break
-                        stream.write(block)
-                        transferred += len(block)
-                        if transferred > safety.max_archive_bytes:
-                            raise ModelImportError("ModelDB archive exceeded the compressed-size safety limit")
-                        if progress is not None:
-                            progress(ModelImportProgress("Downloading ModelDB archive", transferred, declared or transferred, transferred))
-            with temporary.open("rb") as stream:
-                signature = stream.read(4)
-            if transferred < 4 or signature not in {
-                b"PK\x03\x04",
-                b"PK\x05\x06",
-                b"PK\x07\x08",
-            }:
-                raise ModelImportError("ModelDB did not return a ZIP archive")
-            os.replace(temporary, output)
-            return output
-        except HTTPError as exc:
-            raise ModelImportError(f"ModelDB archive download failed with HTTP {exc.code}") from exc
-        except (URLError, OSError) as exc:
-            raise ModelImportError(f"Could not download the ModelDB archive: {exc}") from exc
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+            os.link(partial, output, follow_symlinks=False)
+        except FileExistsError:
+            raise FileExistsError(
+                f"ModelDB download destination already exists: {output}"
+            ) from None
+        except OSError as exc:
+            raise ModelImportError("Could not promote the verified ModelDB archive") from exc
+        receipt.unlink()
+        partial.unlink()
+        return output
 
 
 def modeldb_request(

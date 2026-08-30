@@ -4,6 +4,7 @@ include main.py
 include pyproject.toml
 include pysidedeploy.spec
 include docs/ARCHITECTURE.md
+include docs/BACKEND_CONTRACT_V1.md
 include docs/DEPLOYMENT.md
 include docs/DEVELOPMENT_PLAN.md
 include docs/PACKAGING_BOUNDARY.md

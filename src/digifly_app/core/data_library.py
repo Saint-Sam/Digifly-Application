@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
-from typing import Any, Iterable
+import threading
+from typing import Any, Callable, Iterable, Mapping
 
 from digifly_app import __version__
 
@@ -69,6 +71,19 @@ class ManagedResource:
     @property
     def registered_bindings(self) -> tuple[str, ...]:
         return tuple(value for value in self.registered_binding.split(",") if value)
+
+
+@dataclass(frozen=True)
+class ManagedVerificationProgress:
+    completed_files: int
+    total_files: int
+    checked_bytes: int
+    total_bytes: int
+    current: str = ""
+
+
+class ManagedVerificationCancelled(RuntimeError):
+    pass
 
 
 def safe_component(value: str, *, field: str = "identifier") -> str:
@@ -139,6 +154,32 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _sha256_verified(
+    path: Path,
+    *,
+    cancel: threading.Event | None,
+    on_bytes: Callable[[int], None],
+) -> tuple[str, int]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f"Managed inventory entry is not a regular file: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                if cancel is not None and cancel.is_set():
+                    raise ManagedVerificationCancelled(
+                        "Managed-resource verification was cancelled"
+                    )
+                digest.update(block)
+                on_bytes(len(block))
+        return digest.hexdigest(), details.st_size
+    finally:
+        os.close(descriptor)
 
 
 def _utc_now() -> str:
@@ -453,24 +494,128 @@ def import_local_source(
             shutil.rmtree(staging)
 
 
-def _resource_from_manifest(path: Path, *, verify: bool) -> ManagedResource:
+def _resource_from_manifest(
+    path: Path,
+    *,
+    verify: bool,
+    progress: Callable[[ManagedVerificationProgress], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> ManagedResource:
+    if path.is_symlink():
+        raise ValueError(f"Managed resource manifest cannot be a symbolic link: {path}")
+    path = path.resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Managed resource manifest is not an object: {path}")
     files = payload.get("files")
     if not isinstance(files, list):
         raise ValueError(f"Managed resource manifest has no file inventory: {path}")
+    inventory: list[tuple[Mapping[str, Any], Path, int, str]] = []
+    seen: set[str] = set()
+    for record in files:
+        if not isinstance(record, Mapping):
+            raise ValueError(f"Managed resource manifest has a malformed file record: {path}")
+        raw_relative = str(record.get("path") or "")
+        portable = raw_relative.replace("\\", "/")
+        pure_relative = PurePosixPath(portable)
+        if (
+            not raw_relative
+            or pure_relative.is_absolute()
+            or ".." in pure_relative.parts
+            or not pure_relative.parts
+            or re.fullmatch(r"[A-Za-z]:", pure_relative.parts[0])
+        ):
+            raise ValueError(f"Manifest contains an unsafe path: {raw_relative!r}")
+        folded = pure_relative.as_posix().casefold()
+        if folded in seen:
+            raise ValueError(f"Manifest contains a duplicate path: {raw_relative!r}")
+        seen.add(folded)
+        try:
+            declared_size = int(record.get("size_bytes", record.get("bytes", -1)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Manifest contains an invalid file size: {raw_relative!r}") from exc
+        if declared_size < 0:
+            raise ValueError(f"Manifest contains an invalid file size: {raw_relative!r}")
+        checksum = str(record.get("sha256") or "").casefold()
+        if checksum and not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise ValueError(f"Manifest contains an invalid SHA-256: {raw_relative!r}")
+        inventory.append(
+            (
+                record,
+                Path(*pure_relative.parts),
+                declared_size,
+                checksum,
+            )
+        )
     integrity = "not_checked"
     if verify:
-        integrity = "verified"
-        for record in files:
-            relative = Path(str(record.get("path") or ""))
+        declared_total = sum(item[2] for item in inventory)
+        try:
+            manifest_file_count = int(payload.get("file_count", len(inventory)))
+            manifest_total_bytes = int(payload.get("total_bytes", declared_total))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Managed resource manifest has invalid totals: {path}") from exc
+        integrity = (
+            "verified"
+            if manifest_file_count == len(inventory)
+            and manifest_total_bytes == declared_total
+            and all(item[3] for item in inventory)
+            else "manifest_mismatch"
+        )
+        checked_bytes = 0
+
+        def emit(completed: int, current: str) -> None:
+            if progress is None:
+                return
+            try:
+                progress(
+                    ManagedVerificationProgress(
+                        completed,
+                        len(inventory),
+                        checked_bytes,
+                        declared_total,
+                        current,
+                    )
+                )
+            except Exception:
+                pass
+
+        def add_checked(count: int, completed: int, current: str) -> None:
+            nonlocal checked_bytes
+            checked_bytes += int(count)
+            emit(completed, current)
+
+        for index, (_record, relative, declared_size, checksum) in enumerate(inventory):
+            if cancel is not None and cancel.is_set():
+                raise ManagedVerificationCancelled(
+                    "Managed-resource verification was cancelled"
+                )
+            cursor = path.parent
+            for part in relative.parts:
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    raise ValueError(f"Manifest path traverses a symbolic link: {relative}")
             candidate = (path.parent / relative).resolve()
             try:
                 candidate.relative_to(path.parent.resolve())
             except ValueError as exc:
                 raise ValueError(f"Manifest path escapes resource root: {relative}") from exc
-            if not candidate.is_file() or _sha256(candidate) != str(record.get("sha256") or ""):
+            if not candidate.is_file():
                 integrity = "checksum_mismatch"
                 break
+            actual_checksum, actual_size = _sha256_verified(
+                candidate,
+                cancel=cancel,
+                on_bytes=lambda count, completed=index, current=relative.as_posix(): add_checked(
+                    count,
+                    completed,
+                    current,
+                ),
+            )
+            if actual_size != declared_size or (checksum and actual_checksum != checksum):
+                integrity = "checksum_mismatch"
+                break
+            emit(index + 1, relative.as_posix())
     swc_count = int(
         payload.get(
             "swc_count",
@@ -509,13 +654,46 @@ def load_managed_resource(
     manifest: str | Path,
     *,
     verify: bool = False,
+    progress: Callable[[ManagedVerificationProgress], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> ManagedResource:
     """Load one provider-neutral managed bundle from its manifest."""
 
-    path = Path(manifest).expanduser().resolve()
+    selected = Path(manifest).expanduser()
+    if selected.is_symlink():
+        raise ValueError(f"Managed resource manifest cannot be a symbolic link: {selected}")
+    path = selected.resolve()
     if not path.is_file():
         raise ValueError(f"Managed resource manifest does not exist: {path}")
-    return _resource_from_manifest(path, verify=verify)
+    return _resource_from_manifest(
+        path,
+        verify=verify,
+        progress=progress,
+        cancel=cancel,
+    )
+
+
+def verify_managed_resource(
+    resource: ManagedResource,
+    *,
+    progress: Callable[[ManagedVerificationProgress], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> ManagedResource:
+    """Checksum one managed bundle with cancellable byte/file progress."""
+
+    verified = load_managed_resource(
+        resource.manifest,
+        verify=True,
+        progress=progress,
+        cancel=cancel,
+    )
+    return ManagedResource(
+        **{
+            **verified.__dict__,
+            "resource_id": resource.resource_id,
+            "registered_binding": resource.registered_binding,
+        }
+    )
 
 
 def list_managed_resources(

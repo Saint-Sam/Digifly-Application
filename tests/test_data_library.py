@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
 from digifly_app.core.data_library import (
+    ManagedVerificationCancelled,
     import_local_source,
     list_managed_resources,
     preview_local_source,
     register_existing_morphology,
+    verify_managed_resource,
 )
 from digifly_app.core.resource_profile import ResourceKind, ResourceProfile, make_default_profile
 from digifly_app.core.swc_quality import scan_recent_imports
@@ -132,6 +135,55 @@ def test_inventory_verification_flags_changed_managed_bytes(tmp_path: Path):
         list_managed_resources(ResourceProfile.load(profile_path), verify=True)[0].integrity
         == "checksum_mismatch"
     )
+
+
+def test_managed_verification_reports_progress_cancels_and_checks_manifest_totals(
+    tmp_path: Path,
+):
+    profile, profile_path = _profile(tmp_path)
+    resource = import_local_source(
+        profile,
+        _source(tmp_path),
+        provider="local",
+        resource_id="progress",
+        source_version="v1",
+        profile_path=profile_path,
+    )
+    progress = []
+    verified = verify_managed_resource(resource, progress=progress.append)
+    assert verified.integrity == "verified"
+    assert progress[-1].completed_files == resource.file_count
+    assert progress[-1].checked_bytes == resource.total_bytes
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ManagedVerificationCancelled):
+        verify_managed_resource(resource, cancel=cancel)
+
+    manifest = json.loads(resource.manifest.read_text(encoding="utf-8"))
+    manifest["file_count"] += 1
+    resource.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    assert verify_managed_resource(resource).integrity == "manifest_mismatch"
+
+
+def test_managed_verification_refuses_inventory_symlinks(tmp_path: Path):
+    profile, profile_path = _profile(tmp_path)
+    resource = import_local_source(
+        profile,
+        _source(tmp_path),
+        provider="local",
+        resource_id="symlinked-inventory",
+        source_version="v1",
+        profile_path=profile_path,
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_text("source bytes stay unchanged\n", encoding="utf-8")
+    managed_file = resource.root / "source" / "notes.txt"
+    managed_file.unlink()
+    managed_file.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        verify_managed_resource(resource)
 
 
 def test_preview_rejects_empty_folder(tmp_path: Path):

@@ -19,6 +19,7 @@ from digifly_app.core.neuprint import (
     NeuPrintConnection,
     NeuPrintDataset,
     NeuPrintError,
+    NeuPrintNetworkError,
     NeuPrintNeuron,
     NeuPrintSelection,
     acquire_neuprint_bundle,
@@ -27,6 +28,7 @@ from digifly_app.core.neuprint import (
     preview_destination,
 )
 from digifly_app.core.data_library import list_managed_resources
+from digifly_app.core.remote import RetryPolicy
 from digifly_app.core.resource_profile import ResourceKind, ResourceProfile, make_default_profile
 from digifly_app.core.swc_quality import scan_recent_imports
 
@@ -126,6 +128,65 @@ def test_minimal_client_validates_lists_and_previews_without_exposing_token():
     assert "LIMIT 10" in query
     assert all(call[2]["Authorization"] == f"Bearer {SECRET}" for call in calls)
     assert SECRET not in repr(client)
+
+
+def test_neuprint_client_retries_only_transient_failures_and_honors_cancellation():
+    transient_calls = 0
+
+    def transient(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        nonlocal transient_calls
+        transient_calls += 1
+        if url.endswith("/profile") and transient_calls < 3:
+            raise NeuPrintNetworkError("temporary", retryable=True)
+        if url.endswith("/profile"):
+            return b'{"user":"fixture"}'
+        return b'{"manc:v1.2.1":{"description":"MANC"}}'
+
+    client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        transport=transient,
+        retry_policy=RetryPolicy(max_attempts=3, initial_delay=0, max_delay=0),
+    )
+    assert client.validate_and_list_datasets()[0].name == "manc:v1.2.1"
+    assert transient_calls == 4
+
+    rejected_calls = 0
+
+    def rejected(*_args):
+        nonlocal rejected_calls
+        rejected_calls += 1
+        raise NeuPrintNetworkError("rejected", status=401, retryable=False)
+
+    rejected_client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        transport=rejected,
+        retry_policy=RetryPolicy(max_attempts=3, initial_delay=0, max_delay=0),
+    )
+    with pytest.raises(NeuPrintNetworkError, match="rejected"):
+        rejected_client.validate_and_list_datasets()
+    assert rejected_calls == 1
+
+    cancel = threading.Event()
+    cancelled_calls = 0
+
+    def cancelled_transport(*_args):
+        nonlocal cancelled_calls
+        cancelled_calls += 1
+        cancel.set()
+        raise NeuPrintNetworkError("temporary", retryable=True)
+
+    cancelled_client = NeuPrintClient(
+        "https://neuprint.janelia.org",
+        SECRET,
+        dataset="manc:v1.2.1",
+        transport=cancelled_transport,
+        retry_policy=RetryPolicy(max_attempts=3, initial_delay=10, max_delay=10),
+    )
+    with pytest.raises(AcquisitionCancelled):
+        cancelled_client.fetch_skeleton(42, cancel=cancel)
+    assert cancelled_calls == 1
     assert SECRET not in repr(_request())
 
 
