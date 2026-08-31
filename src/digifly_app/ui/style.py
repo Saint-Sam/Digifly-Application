@@ -35,6 +35,35 @@ QWidget#HHSidePanel {
     background: #0e172b;
     border-left: 1px solid #253451;
 }
+QWidget[collapsibleSection="true"] {
+    background: #101b31;
+    border: 1px solid #2a3b59;
+    border-radius: 8px;
+}
+QToolButton#CollapsibleSectionHeader {
+    min-height: 38px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 7px;
+    background: #14213a;
+    color: #edf3ff;
+    font-weight: 650;
+    text-align: left;
+}
+QToolButton#CollapsibleSectionHeader:hover {
+    background: #1c2d4c;
+    color: #ffffff;
+}
+QToolButton#CollapsibleSectionHeader:checked {
+    background: #192a48;
+    color: #ffffff;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QWidget#CollapsibleSectionBody {
+    background: #0d172a;
+    border-top: 1px solid #263a5a;
+}
 QOpenGLWidget#CircuitViewport {
     background: #071021;
     border: 1px solid #263b5e;

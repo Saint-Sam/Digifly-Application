@@ -219,6 +219,53 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         application.processEvents()
 
 
+def test_hh_settings_use_expandable_sections_without_losing_values(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        assert tuple(page.hh_sections) == (
+            "membrane_profile",
+            "sodium_channels",
+            "potassium_channels",
+            "calcium_channels",
+            "passive_properties",
+            "soma_hh",
+            "branch_hh",
+            "gap_junctions",
+            "apply_save",
+        )
+        assert page.hh_sections["membrane_profile"].is_expanded
+        assert not page.hh_sections["membrane_profile"].body.isHidden()
+        assert all(
+            not section.is_expanded
+            for key, section in page.hh_sections.items()
+            if key != "membrane_profile"
+        )
+
+        sodium = page.hh_sections["sodium_channels"]
+        assert sodium.body.isHidden()
+        assert "Collapsed" in sodium.toggle_button.accessibleDescription()
+        sodium.toggle_button.click()
+        assert sodium.is_expanded
+        assert not sodium.body.isHidden()
+        assert "Expanded" in sodium.toggle_button.accessibleDescription()
+
+        page.channel_soma_editors["augustin_nat"].setValue(0.314)
+        sodium.toggle_button.click()
+        sodium.toggle_button.click()
+        assert page.channel_soma_editors["augustin_nat"].value() == pytest.approx(0.314)
+
+        passive = page.hh_sections["passive_properties"]
+        passive.set_expanded(True)
+        page.hh_editors["cm_uF_cm2"].setValue(1.7)
+        passive.set_expanded(False)
+        passive.set_expanded(True)
+        assert page.hh_editors["cm_uF_cm2"].value() == pytest.approx(1.7)
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def test_missing_manc_type_uses_prefilled_neuprint_import_and_loads_result(
     tmp_path, monkeypatch
 ):

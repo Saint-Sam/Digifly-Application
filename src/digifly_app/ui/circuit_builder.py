@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -201,6 +202,70 @@ class _ScrollSafeDoubleSpinBox(QDoubleSpinBox):
 
     def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt virtual name
         event.ignore()
+
+
+class _CollapsibleSection(QWidget):
+    """Compact disclosure section for the dense HH editor sidebar."""
+
+    def __init__(
+        self,
+        title: str,
+        key: str,
+        *,
+        expanded: bool = False,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.title = str(title)
+        self.key = str(key)
+        self.setObjectName(f"HHSection_{self.key}")
+        self.setProperty("collapsibleSection", True)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("CollapsibleSectionHeader")
+        self.toggle_button.setProperty("sectionKey", self.key)
+        self.toggle_button.setText(self.title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(bool(expanded))
+        self.toggle_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.toggle_button.setAccessibleName(f"{self.title} settings")
+        shell.addWidget(self.toggle_button)
+
+        self.body = QWidget()
+        self.body.setObjectName("CollapsibleSectionBody")
+        self.content_layout = QVBoxLayout(self.body)
+        self.content_layout.setContentsMargins(12, 10, 12, 12)
+        self.content_layout.setSpacing(8)
+        shell.addWidget(self.body)
+
+        self.toggle_button.toggled.connect(self.set_expanded)
+        self.set_expanded(bool(expanded))
+
+    @property
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        if self.toggle_button.isChecked() != expanded:
+            self.toggle_button.setChecked(expanded)
+            return
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.body.setVisible(expanded)
+        action = "collapse" if expanded else "expand"
+        state = "Expanded" if expanded else "Collapsed"
+        self.toggle_button.setToolTip(f"Click to {action} {self.title}")
+        self.toggle_button.setAccessibleDescription(
+            f"{state} settings section. Activate to {action}."
+        )
 
 
 class CircuitBuilderPage(QWidget):
@@ -441,7 +506,19 @@ class CircuitBuilderPage(QWidget):
         self.pair_panel.setVisible(False)
         side_layout.addWidget(self.pair_panel)
 
-        side_layout.addWidget(_section_label("Native Digifly membrane channels"))
+        self.hh_sections: dict[str, _CollapsibleSection] = {}
+
+        def add_hh_section(
+            key: str, title: str, *, expanded: bool = False
+        ) -> QVBoxLayout:
+            section = _CollapsibleSection(title, key, expanded=expanded)
+            self.hh_sections[key] = section
+            side_layout.addWidget(section)
+            return section.content_layout
+
+        profile_layout = add_hh_section(
+            "membrane_profile", "Membrane profile", expanded=True
+        )
         channel_help = QLabel(
             "Mechanism identity is saved separately from built-in HH values. The list includes "
             "the provenance-locked Augustin GF membrane and exploratory Phase 2 surrogates; "
@@ -449,7 +526,7 @@ class CircuitBuilderPage(QWidget):
         )
         channel_help.setObjectName("Muted")
         channel_help.setWordWrap(True)
-        side_layout.addWidget(channel_help)
+        profile_layout.addWidget(channel_help)
 
         channel_profile_form = QFormLayout()
         self.channel_profile_combo = QComboBox()
@@ -463,21 +540,30 @@ class CircuitBuilderPage(QWidget):
         self.replace_hh_check.setObjectName("ReplaceBuiltinHHCheck")
         self.replace_hh_check.toggled.connect(self._mechanism_controls_edited)
         channel_profile_form.addRow("Base mechanism", self.replace_hh_check)
-        side_layout.addLayout(channel_profile_form)
+        profile_layout.addLayout(channel_profile_form)
         self.channel_profile_summary = QLabel()
         self.channel_profile_summary.setObjectName("Muted")
         self.channel_profile_summary.setWordWrap(True)
-        side_layout.addWidget(self.channel_profile_summary)
+        profile_layout.addWidget(self.channel_profile_summary)
+
+        scope_form = QFormLayout()
+        self.active_scope_combo = QComboBox()
+        self.active_scope_combo.addItem("All morphology regions", "all")
+        self.active_scope_combo.addItem("Soma + AIS draft", "soma_ais")
+        self.active_scope_combo.addItem("Soma-only draft", "soma")
+        self.active_scope_combo.currentIndexChanged.connect(self._hh_controls_edited)
+        scope_form.addRow("Active-channel distribution", self.active_scope_combo)
+        profile_layout.addLayout(scope_form)
 
         self.channel_checks: dict[str, QCheckBox] = {}
         self.channel_soma_editors: dict[str, QDoubleSpinBox] = {}
         self.channel_branch_editors: dict[str, QDoubleSpinBox] = {}
-        for family, family_label in (
-            ("sodium", "Na+ mechanisms"),
-            ("potassium", "K+ mechanisms"),
-            ("calcium", "Ca2+ mechanisms"),
+        for family, family_label, family_key in (
+            ("sodium", "Sodium channels (Na⁺)", "sodium_channels"),
+            ("potassium", "Potassium channels (K⁺)", "potassium_channels"),
+            ("calcium", "Calcium channels (Ca²⁺)", "calcium_channels"),
         ):
-            side_layout.addWidget(_section_label(family_label))
+            family_layout = add_hh_section(family_key, family_label)
             grid = QGridLayout()
             grid.setHorizontalSpacing(6)
             mechanism_header = QLabel("Enable / mechanism")
@@ -511,25 +597,33 @@ class CircuitBuilderPage(QWidget):
                 grid.addWidget(soma_editor, row, 1)
                 grid.addWidget(branch_editor, row, 2)
             grid.setColumnStretch(0, 1)
-            side_layout.addLayout(grid)
-
-        scope_form = QFormLayout()
-        self.active_scope_combo = QComboBox()
-        self.active_scope_combo.addItem("All morphology regions", "all")
-        self.active_scope_combo.addItem("Soma + AIS draft", "soma_ais")
-        self.active_scope_combo.addItem("Soma-only draft", "soma")
-        self.active_scope_combo.currentIndexChanged.connect(self._hh_controls_edited)
-        scope_form.addRow("Active-channel distribution", self.active_scope_combo)
-        side_layout.addLayout(scope_form)
+            family_layout.addLayout(grid)
 
         self.hh_editors: dict[str, QDoubleSpinBox] = {}
         groups = (
-            ("Passive & adapter-dependent", HH_PARAMETER_DEFINITIONS[:9]),
-            ("Built-in soma HH (off when replaced)", HH_PARAMETER_DEFINITIONS[9:13]),
-            ("Built-in branch HH (off when replaced)", HH_PARAMETER_DEFINITIONS[13:]),
+            (
+                "passive_properties",
+                "Passive & global properties",
+                HH_PARAMETER_DEFINITIONS[:9],
+            ),
+            (
+                "soma_hh",
+                "Built-in soma HH",
+                HH_PARAMETER_DEFINITIONS[9:13],
+            ),
+            (
+                "branch_hh",
+                "Built-in branch HH",
+                HH_PARAMETER_DEFINITIONS[13:],
+            ),
         )
-        for title, definitions in groups:
-            side_layout.addWidget(_section_label(title))
+        for group_key, title, definitions in groups:
+            group_layout = add_hh_section(group_key, title)
+            if group_key in {"soma_hh", "branch_hh"}:
+                note = QLabel("Disabled when the membrane profile replaces built-in HH Na/K.")
+                note.setObjectName("Muted")
+                note.setWordWrap(True)
+                group_layout.addWidget(note)
             form = QFormLayout()
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             for definition in definitions:
@@ -542,16 +636,16 @@ class CircuitBuilderPage(QWidget):
                 editor.valueChanged.connect(self._hh_controls_edited)
                 self.hh_editors[definition.key] = editor
                 form.addRow(definition.label, editor)
-            side_layout.addLayout(form)
+            group_layout.addLayout(form)
 
-        side_layout.addWidget(_section_label("Gap-junction connection policy"))
+        gap_layout = add_hh_section("gap_junctions", "Gap-junction policy")
         gap_help = QLabel(
             "GJs join two electrical-edge endpoints, so they cannot be attached to a neuron alone. "
             "This saves a mass-apply policy for all electrical edges once connectivity is loaded."
         )
         gap_help.setObjectName("Muted")
         gap_help.setWordWrap(True)
-        side_layout.addWidget(gap_help)
+        gap_layout.addWidget(gap_help)
         gap_form = QFormLayout()
         self.gap_mode_combo = QComboBox()
         self.gap_mode_combo.setObjectName("GapModeCombo")
@@ -614,44 +708,45 @@ class CircuitBuilderPage(QWidget):
             self.gap_tau_close_editor,
         ):
             editor.valueChanged.connect(self._gap_controls_changed)
-        side_layout.addLayout(gap_form)
+        gap_layout.addLayout(gap_form)
         self.gap_effective_floor_label = QLabel()
         self.gap_effective_floor_label.setObjectName("Muted")
         self.gap_effective_floor_label.setWordWrap(True)
-        side_layout.addWidget(self.gap_effective_floor_label)
+        gap_layout.addWidget(self.gap_effective_floor_label)
         save_gap_policy = QPushButton("Set mass-apply policy for all electrical edges")
         save_gap_policy.setObjectName("ApplyGapPolicyButton")
         save_gap_policy.clicked.connect(self.apply_gap_policy)
-        side_layout.addWidget(save_gap_policy)
+        gap_layout.addWidget(save_gap_policy)
 
+        apply_layout = add_hh_section("apply_save", "Apply & save")
         self.mechanism_capability_label = QLabel()
         self.mechanism_capability_label.setObjectName("Muted")
         self.mechanism_capability_label.setWordWrap(True)
-        side_layout.addWidget(self.mechanism_capability_label)
+        apply_layout.addWidget(self.mechanism_capability_label)
 
         apply_defaults = QPushButton("Set HH + channels as cell-set defaults")
         apply_defaults.clicked.connect(self.apply_cell_set_defaults)
-        side_layout.addWidget(apply_defaults)
+        apply_layout.addWidget(apply_defaults)
         self.apply_neuron_button = QPushButton("Apply HH + channels to selected neuron")
         self.apply_neuron_button.clicked.connect(self.apply_neuron_override)
-        side_layout.addWidget(self.apply_neuron_button)
+        apply_layout.addWidget(self.apply_neuron_button)
         self.apply_compartments_button = QPushButton(
             "Apply HH + channels to selected SWC segments"
         )
         self.apply_compartments_button.setProperty("primary", True)
         self.apply_compartments_button.clicked.connect(self.apply_compartment_overrides)
-        side_layout.addWidget(self.apply_compartments_button)
+        apply_layout.addWidget(self.apply_compartments_button)
         self.mass_apply_button = QPushButton("Mass apply HH + channels to all loaded neurons")
         self.mass_apply_button.setObjectName("MassApplyChannelsButton")
         self.mass_apply_button.clicked.connect(self.mass_apply_to_loaded_neurons)
-        side_layout.addWidget(self.mass_apply_button)
+        apply_layout.addWidget(self.mass_apply_button)
         save = QPushButton("Save unchanged SWC + biophysics bundle")
         save.clicked.connect(self.save_custom_neuron)
-        side_layout.addWidget(save)
+        apply_layout.addWidget(save)
         self.override_summary = QLabel("No local overrides")
         self.override_summary.setObjectName("Muted")
         self.override_summary.setWordWrap(True)
-        side_layout.addWidget(self.override_summary)
+        apply_layout.addWidget(self.override_summary)
         side_layout.addStretch(1)
         side.setMinimumWidth(440)
         side_scroll.setWidget(side)
