@@ -2,23 +2,22 @@
 
 Digifly Workstation is a standalone desktop application for configuring, validating,
 running, and reviewing Digifly experiments. It does not modify Digifly's source
-code. Instead, it opens a Digifly workspace; the implemented Escape-SIZ
-workflows delegate execution through explicit NEURON and Arbor adapters, while
-the generic Circuit Builder remains a preview until each requested mechanism
-and mapping passes an adapter's capability and comparison gates.
+code. Instead, it opens a Digifly workspace. Circuit Builder owns morphology,
+connectivity, and biophysics; the notebook-independent Experiment Builder owns
+stimuli, runtime manipulations, timing, recording, and compute controls. Generic
+execution remains gated until each requested mechanism and mapping passes an
+adapter's capability and comparison checks.
 
-The first guided workflow configures and wraps the documented Escape-SIZ NEURON
-GFC/contact-site sodium recipe and is intended to reproduce the work described
-by `ESCAPE_SIZ_AGENT_HANDOFF.md`. The app now also
-has a backend-unbound Circuit Builder preview. It discovers local SWC
+The app has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders
 soma-point or full-skeleton representations, and stores a classic-HH draft plus
 stable SWC child-node selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
 identities, regional conductance densities, and a separate gap-junction edge
 policy. It does not yet load chemical/gap connectivity or translate an
 arbitrary Circuit Builder design into an executable Arbor, NEURON, or BMTK
-model. The dedicated Escape-SIZ Arbor comparison is a separate, locked adapter
-for the active 49-cell Ablation-notebook recipe.
+model. The dormant Escape-SIZ NEURON and Arbor adapters remain available as
+versioned scientific backends and provenance references, but Escape-SIZ is no
+longer an application tab or project model.
 
 ## What the first milestone includes
 
@@ -27,6 +26,10 @@ for the active 49-cell Ablation-notebook recipe.
 - A Circuit Builder preview with Arbor as its default saved intent and selectors
   for future NEURON or BMTK adapter targets; these selectors do not create a
   runnable plan yet.
+- A notebook-independent Experiment Builder that receives a read-only
+  `CircuitSpec` snapshot and serializes simulation timing, pulse protocols,
+  conditions, ablations, runtime mechanism scales, recordings, seeds,
+  repetitions, and worker allocation in a separate `ExperimentSpec`.
 - Local SWC-source discovery and neuron queries by ID, type, or family, such as
   `10000, 10002`, `type:GFC2`, `family:DN`, and `all:IN`.
 - A default one-marker-per-neuron soma overview with an obvious **Soma points** /
@@ -59,7 +62,8 @@ for the active 49-cell Ablation-notebook recipe.
   no GJ is attached until a two-endpoint connectivity source is loaded.
 - Non-destructive reusable morphology bundles containing an unchanged SWC,
   biophysics sidecar, provenance manifest, and SHA-256 identity.
-- An Escape-SIZ preset matching the latest documented GFC2 experiment.
+- An app-owned pulse-train comparison template translated from useful Escape-SIZ
+  runtime controls without importing or executing a notebook.
 - A dedicated Arbor 0.12.2 adapter for the locked 49-cell Escape-SIZ Ablation
   comparison, with paired gap-enabled/gap-disabled plans and app-owned outputs.
 - App-owned Arbor NMODL sources for `Gap`, `RectGap`, and `HeteroRectGap`, plus

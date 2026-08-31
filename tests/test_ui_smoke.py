@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -9,6 +10,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
+from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
 from digifly_app.core.models import ResultRecord
 from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resource_profile import (
@@ -16,7 +18,6 @@ from digifly_app.core.resource_profile import (
     ResourceProfile,
     make_default_profile,
 )
-from digifly_app.engines.arbor_escape_siz import ArborEscapeSizAdapter
 from digifly_app.ui.circuit_builder import CIRCUIT_BUILDER_WORKFLOW
 from digifly_app.ui.main_window import (
     APPLICATION_NAME,
@@ -115,7 +116,9 @@ def test_main_window_constructs_without_importing_simulators():
         assert window.experiment_page.run_button.isEnabled() is False
         assert window.data_library_page.import_in_progress is False
         assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
-        assert window.experiment_page.arbor_config().python_executable == window.overview_page.arbor_python_edit.text()
+        assert window.experiment_page.config().engine == "arbor"
+        assert "Experiment Builder" in window.nav_buttons[3].text()
+        assert "Escape-SIZ" not in window.nav_buttons[3].text()
 
         window.nav_buttons[2].setChecked(True)
         application.processEvents()
@@ -171,57 +174,55 @@ def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path,
         application.processEvents()
 
 
-def test_ablation_notebook_preset_applies_exact_active_controls():
+def test_app_owned_pulse_template_exposes_runtime_controls_without_a_notebook():
     application = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
         page = window.experiment_page
-        page.preset_combo.setCurrentIndex(page.preset_combo.findData("ablation_notebook_active"))
+        page.template_combo.setCurrentIndex(
+            page.template_combo.findData("pulse_train_comparison")
+        )
         application.processEvents()
         config = page.config()
-        assert config.preset == "ablation_notebook_active"
-        assert config.gfc2_ohmic is False
-        assert config.nproc == 1
-        assert config.postsynaptic_only_3d_plots is True
-        assert set(config.stimulus_by_condition["gap_enabled"].values()) == {0.9}
+        assert config.template_key == "pulse_train_comparison"
+        assert config.integration_dt_ms == 0.01
+        assert config.recording.sample_dt_ms == 0.05
+        assert config.stimuli[0].frequency_hz == 100.0
+        assert config.stimuli[0].pulse_count == 10
+        assert config.conditions[1].gap_junctions_enabled is False
     finally:
         window.close()
         application.processEvents()
 
 
-def test_experiment_page_exposes_arbor_comparison_without_claiming_parity():
+def test_experiment_builder_receives_circuit_without_mutating_network_design():
     application = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
         page = window.experiment_page
-        page.backend_combo.setCurrentIndex(page.backend_combo.findData("arbor"))
+        circuit = CircuitSpec(
+            connectome=ConnectomeRef("manc:v1.2.1", "MANC v1.2.1", "/data/swc"),
+            neuron_ids=("10000", "10002"),
+        )
+        before = circuit.to_dict()
+        window.circuit_builder_page.circuit_changed.emit(circuit)
         application.processEvents()
-        config = page.active_config()
-        assert page.backend_combo.currentData() == "arbor"
-        assert config.static_reverse_fraction == 0.2
-        assert config.requested_tau_open_ms == 6.0
-        assert config.requested_tau_close_ms == 2.0
-        assert page.run_button.text() == "Run Arbor custom-gap comparison"
-        assert "custom HeteroRectGap" in page.plan_state.text()
-        assert page.parallelism_label.text() == "Arbor CPU threads"
-        assert page.nproc.value() == 4
-        assert page.nproc.isEnabled()
-        assert "Arbor's vectorized simulation" in page.nproc.toolTip()
-        assert page.parallelism_label.toolTip() == page.nproc.toolTip()
-
-        page.backend_combo.setCurrentIndex(page.backend_combo.findData("neuron"))
-        application.processEvents()
-        assert page.parallelism_label.text() == "NEURON workers"
-        assert page.nproc.value() == 1
-        assert not page.nproc.isEnabled()
-        assert "historical multi-rank launches segfaulted" in page.nproc.toolTip()
-        assert page.parallelism_label.toolTip() == page.nproc.toolTip()
+        assert page.circuit_spec().neuron_ids == ("10000", "10002")
+        assert "2 neuron(s)" in page.circuit_summary.text()
+        page.disabled_neurons.setText("10002")
+        page.engine_combo.setCurrentIndex(page.engine_combo.findData("neuron"))
+        window.show_page(window.pages.indexOf(window.circuit_builder_page))
+        window.show_page(window.pages.indexOf(page))
+        config = page.config()
+        assert config.conditions[1].disabled_neuron_ids == ("10002",)
+        assert config.engine == "neuron"
+        assert circuit.to_dict() == before
     finally:
         window.close()
         application.processEvents()
 
 
-def test_results_load_latest_uses_selected_arbor_backend(monkeypatch):
+def test_results_load_latest_uses_completed_job_summary(tmp_path, monkeypatch):
     application = QApplication.instance() or QApplication([])
     called = {}
     expected = ResultRecord(
@@ -233,20 +234,27 @@ def test_results_load_latest_uses_selected_arbor_backend(monkeypatch):
         artifacts=(),
     )
 
-    def fake_latest(self, config=None, *, output_root=None):
-        called["config"] = config
-        called["output_root"] = output_root
+    def fake_load(path):
+        called["path"] = path
         return expected
-
-    monkeypatch.setattr(ArborEscapeSizAdapter, "latest_result", fake_latest)
     window = MainWindow()
     try:
-        page = window.experiment_page
-        page.backend_combo.setCurrentIndex(page.backend_combo.findData("arbor"))
-        application.processEvents()
+        output = tmp_path / "runs"
+        summary = output / "scientific" / "summary.json"
+        summary.parent.mkdir(parents=True)
+        summary.write_text("{}\n", encoding="utf-8")
+        job = output / "jobs" / "20260831_120000_experiment"
+        job.mkdir(parents=True)
+        (job / "status.json").write_text(
+            json.dumps({"state": "completed"}), encoding="utf-8"
+        )
+        (job / "resolved_plan.json").write_text(
+            json.dumps({"expected_summary_path": str(summary)}), encoding="utf-8"
+        )
+        window.overview_page.output_edit.setText(str(output))
+        monkeypatch.setattr(window.results_page, "_load_result", fake_load)
         window.results_page.load_latest()
-        assert called["config"].preset == "ablation_notebook_arbor_comparison"
-        assert called["output_root"] == window.overview_page.output_edit.text()
+        assert called["path"] == summary
         assert window.results_page.result_status.text().startswith("complete")
         metadata_values = {
             window.results_page.metadata.item(row, 1).text()
@@ -258,25 +266,25 @@ def test_results_load_latest_uses_selected_arbor_backend(monkeypatch):
         application.processEvents()
 
 
-def test_switching_editors_cannot_overwrite_a_different_workflow(tmp_path, monkeypatch):
+def test_switching_editors_saves_one_unified_project(tmp_path):
     application = QApplication.instance() or QApplication([])
-    original = tmp_path / "escape.digifly.json"
-    original.write_text("do not replace", encoding="utf-8")
-    replacement = tmp_path / "circuit.digifly.json"
-    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        QFileDialog,
-        "getSaveFileName",
-        lambda *args, **kwargs: (str(replacement), "Digifly projects (*.digifly.json)"),
-    )
+    original = DigiflyProject(
+        name="unified",
+        digifly_public_root=str(tmp_path),
+        output_root=str(tmp_path / "runs"),
+        selected_workflow=EXPERIMENT_BUILDER_WORKFLOW,
+        experiment=ExperimentSpec().to_dict(),
+    ).save(tmp_path / "unified.digifly.json")
     window = MainWindow()
     try:
         window.current_project_path = original
-        window._project_workflow = "escape_siz_gfc_contact_na"
+        window._project_workflow = EXPERIMENT_BUILDER_WORKFLOW
         window.show_page(window.pages.indexOf(window.circuit_builder_page))
         window.save_project()
-        assert original.read_text(encoding="utf-8") == "do not replace"
-        assert DigiflyProject.load(replacement).selected_workflow == CIRCUIT_BUILDER_WORKFLOW
+        saved = DigiflyProject.load(original)
+        assert saved.selected_workflow == CIRCUIT_BUILDER_WORKFLOW
+        assert saved.circuit["schema_version"] == 2
+        assert saved.experiment["schema_version"] == 1
     finally:
         window.close()
         application.processEvents()
@@ -297,7 +305,8 @@ def test_failed_circuit_open_detaches_previous_project_path(tmp_path, monkeypatc
         output_root=str(tmp_path / "runs"),
         selected_engine="arbor",
         selected_workflow=CIRCUIT_BUILDER_WORKFLOW,
-        experiment=spec.to_dict(),
+        circuit=spec.to_dict(),
+        experiment=ExperimentSpec().to_dict(),
     ).save(tmp_path / "unavailable.digifly.json")
     monkeypatch.setattr(
         QFileDialog,

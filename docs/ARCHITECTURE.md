@@ -18,8 +18,10 @@ and the VND handoff remain planned.
 ```mermaid
 flowchart LR
     UI[Qt desktop UI] --> DESIGN[CircuitSpec and native asset catalogs]
+    UI --> EXPERIMENT[ExperimentSpec run protocol]
     UI --> CORE[Project, preflight, jobs, results]
     DESIGN --> CONTRACT
+    EXPERIMENT --> CONTRACT
     CORE --> CONTRACT[Engine adapter contract]
     CONTRACT --> N[Escape-SIZ NEURON adapter · implemented]
     CONTRACT --> A[Escape-SIZ Arbor comparison adapter · implemented]
@@ -42,6 +44,23 @@ inputs, build commands, declare build-time versus runtime-safe fields, and
 validate results. The Arbor adapter is deliberately recipe-specific rather than
 a generic `CircuitSpec` translator. Future generic adapters must satisfy the
 same contract. Commands are passed as argument arrays rather than shell strings.
+
+## Notebook-independent experiment model
+
+`ExperimentSpec` is the run-time counterpart to `CircuitSpec`. Circuit Builder
+owns the immutable network design: neurons, morphology assets, membrane
+biophysics, and connection intent. Experiment Builder receives a read-only copy
+and owns only what changes how that design is run: simulation timing, initial
+state, stimulus protocols, control/manipulation conditions, ablations, runtime
+mechanism scales, recording requests, random seeds, repetitions, and compute
+allocation.
+
+The app-owned pulse-train comparison template translates useful values from the
+Escape-SIZ notebooks into this schema, but the schema and UI never import or
+execute a notebook. The generic Run action remains capability-gated until a
+CircuitSpec-plus-ExperimentSpec adapter can produce a validated execution plan.
+The legacy Escape-SIZ adapters remain isolated recipe-specific backends and
+result readers; they are no longer a navigation or project-format boundary.
 
 ## Backend-unbound circuit-design model
 
@@ -122,14 +141,19 @@ and saved settings remain in the loaded cell set.
 
 ## Project format
 
-A `.digifly.json` file contains:
+A schema-v2 `.digifly.json` file contains:
 
 - schema version and project name;
 - the selected Digifly workspace and app output root;
 - runtime executable paths;
 - selected engine/workflow;
-- the full experiment configuration;
+- a full circuit document and a separate full experiment document;
 - timestamps and optional notes.
+
+Schema-v1 circuit-only projects migrate their former `experiment` payload into
+the circuit field. Schema-v1 Escape-SIZ projects migrate reusable timing,
+stimulus, and compute values into an `ExperimentSpec`; source data is never
+moved during migration.
 
 Run manifests copy the resolved plan, environment overrides, preflight report,
 and final exit status. Generated scientific data remains in native formats such

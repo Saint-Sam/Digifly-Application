@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from digifly_app import __version__
 from digifly_app.core.jobs import JobStore
 from digifly_app.core.circuit import CircuitSpec
+from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
 from digifly_app.core.models import CheckState, ExecutionPlan, PreflightReport, ResultRecord
 from digifly_app.core.process_environment import EXTERNAL_PYTHON_ENV_REMOVE
 from digifly_app.core.project import DigiflyProject
@@ -67,6 +68,7 @@ from digifly_app.engines.neuron_escape_siz import (
 from .style import APP_STYLE
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .data_library import DataLibraryPage
+from .experiment_builder import ExperimentBuilderPage
 from .runtime_setup import RuntimeSetupDialog
 from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_label_copyable
 
@@ -983,7 +985,12 @@ class ExperimentPage(QWidget):
 class ResultsPage(QWidget):
     status_message = Signal(str)
 
-    def __init__(self, overview: OverviewPage, experiment: ExperimentPage, parent: QWidget | None = None):
+    def __init__(
+        self,
+        overview: OverviewPage,
+        experiment: ExperimentBuilderPage,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.overview = overview
         self.experiment = experiment
@@ -998,7 +1005,7 @@ class ResultsPage(QWidget):
             _page_header(
                 "Results",
                 "Review scientific evidence",
-                "Completed summaries are opened read-only and checked against the Escape-SIZ contact and plotting contract.",
+                "Completed run summaries are opened read-only. Recipe-specific evidence checks remain available for compatible legacy results.",
             )
         )
         action_row = QHBoxLayout()
@@ -1081,56 +1088,63 @@ class ResultsPage(QWidget):
         experiment.result_ready.connect(self.display_result)
 
     def load_latest(self) -> None:
-        try:
-            if self.experiment.backend_combo.currentData() == "arbor":
-                result = ArborEscapeSizAdapter(self.overview.workspace()).latest_result(
-                    self.experiment.arbor_config(),
-                    output_root=self.overview.output_edit.text(),
-                )
-            else:
-                result = NeuronEscapeSizAdapter(self.overview.workspace()).latest_result(
-                    self.experiment.config(),
-                    output_root=self.overview.output_edit.text(),
-                )
-        except Exception as exc:
-            QMessageBox.critical(self, "Could not load result", str(exc))
-            return
-        if result is None:
-            backend = "Arbor" if self.experiment.backend_combo.currentData() == "arbor" else "NEURON"
+        output_root = Path(self.overview.output_edit.text()).expanduser().resolve()
+        candidates: list[Path] = []
+        for job_dir in sorted((output_root / "jobs").glob("*"), reverse=True):
+            status_path = job_dir / "status.json"
+            plan_path = job_dir / "resolved_plan.json"
+            if not status_path.is_file() or not plan_path.is_file():
+                continue
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                summary = Path(str(plan.get("expected_summary_path") or ""))
+            except (OSError, ValueError, TypeError):
+                continue
+            if status.get("state") == "completed" and summary.is_file():
+                candidates.append(summary)
+        if not candidates:
             QMessageBox.information(
                 self,
                 "No result found",
-                f"No matching {backend} Escape-SIZ summary was found.",
+                "No completed job with an existing summary was found under the configured output root.",
             )
             return
-        self.display_result(result)
+        try:
+            self.display_result(self._load_result(candidates[0]))
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not load result", str(exc))
 
     def open_summary(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Escape-SIZ summary",
+            "Open run summary",
             str(Path(self.overview.output_edit.text()).expanduser()),
             "JSON files (*.json)",
         )
         if not selected:
             return
         try:
-            payload = json.loads(Path(selected).read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("Escape-SIZ summary must contain a JSON object.")
-            is_arbor = (
-                payload.get("backend") == "arbor"
-                or payload.get("recipe") == "ablation_notebook_arbor_comparison_v1"
-            )
-            result = (
-                load_arbor_ablation_result(selected)
-                if is_arbor
-                else load_escape_siz_result(selected)
-            )
+            result = self._load_result(Path(selected))
         except Exception as exc:
             QMessageBox.critical(self, "Invalid summary", str(exc))
             return
         self.display_result(result)
+
+    @staticmethod
+    def _load_result(path: Path) -> ResultRecord:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Run summary must contain a JSON object.")
+        is_arbor = (
+            payload.get("backend") == "arbor"
+            or payload.get("recipe") == "ablation_notebook_arbor_comparison_v1"
+        )
+        return (
+            load_arbor_ablation_result(path)
+            if is_arbor
+            else load_escape_siz_result(path)
+        )
 
     def display_result(self, result: ResultRecord) -> None:
         self.result_status.setText(f"{result.status} · {result.completed_at}")
@@ -1277,7 +1291,7 @@ class MainWindow(QMainWindow):
                 ("Workspace", "⌂"),
                 ("Data Library", "▤"),
                 ("Circuit Builder", "⌁"),
-                ("Escape-SIZ", "◉"),
+                ("Experiment Builder", "◉"),
                 ("Results", "▦"),
                 ("Engines", "◇"),
             )
@@ -1318,7 +1332,7 @@ class MainWindow(QMainWindow):
         self.overview_page = OverviewPage()
         self.data_library_page = DataLibraryPage()
         self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
-        self.experiment_page = ExperimentPage(self.overview_page)
+        self.experiment_page = ExperimentBuilderPage()
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
         self.engines_page = EnginesPage(self.overview_page)
         for page in (
@@ -1342,6 +1356,9 @@ class MainWindow(QMainWindow):
         self.circuit_builder_page.managed_data_changed.connect(
             self.data_library_page.refresh
         )
+        self.circuit_builder_page.circuit_changed.connect(
+            self.experiment_page.set_circuit_spec
+        )
         self.data_library_page.quality_review_requested.connect(
             self.circuit_builder_page.review_recent_imports
         )
@@ -1350,6 +1367,7 @@ class MainWindow(QMainWindow):
         self.experiment_page.result_ready.connect(
             lambda _result: self.show_page(self.pages.indexOf(self.results_page))
         )
+        self.experiment_page.set_circuit_spec(self.circuit_builder_page.circuit_spec())
         self._last_editor_page: QWidget = self.circuit_builder_page
         self._project_workflow: str | None = None
         self._build_menu()
@@ -1370,6 +1388,8 @@ class MainWindow(QMainWindow):
         current = self.pages.widget(index)
         if current in (self.circuit_builder_page, self.experiment_page):
             self._last_editor_page = current
+        if current is self.experiment_page:
+            self.experiment_page.set_circuit_spec(self.circuit_builder_page.circuit_spec())
         if current is self.engines_page:
             self.engines_page.refresh()
         if current is self.data_library_page:
@@ -1416,7 +1436,7 @@ class MainWindow(QMainWindow):
         self._project_workflow = None
         self.project_label.setText("Unsaved project")
         self.circuit_builder_page.reset()
-        self.experiment_page.set_config(EscapeSizConfig.ablation_notebook_active())
+        self.experiment_page.reset()
         self._last_editor_page = self.circuit_builder_page
         self.show_page(0)
 
@@ -1438,16 +1458,19 @@ class MainWindow(QMainWindow):
         self.overview_page.output_edit.setText(project.output_root)
         self.overview_page.python_edit.setText(project.python_executable)
         try:
-            if project.selected_workflow == CIRCUIT_BUILDER_WORKFLOW:
-                spec = CircuitSpec.from_dict(project.experiment)
-                self.circuit_builder_page.refresh_connectomes()
-                self.circuit_builder_page.set_selected_engine_key(project.selected_engine)
-                self.circuit_builder_page.set_circuit_spec(spec)
+            circuit_spec = CircuitSpec.from_dict(project.circuit or {})
+            experiment_spec = ExperimentSpec.from_dict(project.experiment or {})
+            self.circuit_builder_page.refresh_connectomes()
+            self.circuit_builder_page.set_selected_engine_key(project.selected_engine)
+            self.circuit_builder_page.set_circuit_spec(circuit_spec)
+            if circuit_spec.neuron_ids:
                 self.circuit_builder_page.load_saved_assets()
+            self.experiment_page.set_config(experiment_spec)
+            self.experiment_page.set_circuit_spec(circuit_spec)
+            if project.selected_workflow == CIRCUIT_BUILDER_WORKFLOW:
                 self._last_editor_page = self.circuit_builder_page
                 target_page = self.circuit_builder_page
-            elif project.selected_workflow == "escape_siz_gfc_contact_na":
-                self.experiment_page.set_config(EscapeSizConfig.from_dict(project.experiment))
+            elif project.selected_workflow == EXPERIMENT_BUILDER_WORKFLOW:
                 self._last_editor_page = self.experiment_page
                 target_page = self.experiment_page
             else:
@@ -1470,39 +1493,19 @@ class MainWindow(QMainWindow):
     def save_project(self, *, save_as: bool = False) -> None:
         current = self.pages.currentWidget()
         editor = current if current in (self.circuit_builder_page, self.experiment_page) else self._last_editor_page
+        try:
+            circuit = self.circuit_builder_page.circuit_spec().to_dict()
+            experiment = self.experiment_page.config().to_dict()
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid project", f"Fix the project controls before saving:\n{exc}")
+            return
         if editor is self.circuit_builder_page:
             selected_workflow = CIRCUIT_BUILDER_WORKFLOW
-            selected_engine = self.circuit_builder_page.selected_engine_key()
-            try:
-                experiment = self.circuit_builder_page.circuit_spec().to_dict()
-            except Exception as exc:
-                QMessageBox.warning(self, "Invalid circuit design", str(exc))
-                return
-            suggested_name = "circuit.digifly.json"
         else:
-            try:
-                config = self.experiment_page.config()
-            except Exception as exc:
-                QMessageBox.warning(self, "Invalid controls", f"Fix the experiment controls before saving:\n{exc}")
-                return
-            selected_workflow = "escape_siz_gfc_contact_na"
-            selected_engine = "neuron"
-            experiment = config.to_dict()
-            suggested_name = "escape-siz.digifly.json"
+            selected_workflow = EXPERIMENT_BUILDER_WORKFLOW
+        selected_engine = self.circuit_builder_page.selected_engine_key()
+        suggested_name = "experiment.digifly.json"
         destination = self.current_project_path
-        if (
-            destination is not None
-            and not save_as
-            and self._project_workflow is not None
-            and self._project_workflow != selected_workflow
-        ):
-            QMessageBox.information(
-                self,
-                "Save as a new project",
-                "This editor uses a different workflow from the opened project. Choose a new file so the original project is not converted or overwritten.",
-            )
-            self.save_project(save_as=True)
-            return
         if save_as or destination is None:
             selected, _ = QFileDialog.getSaveFileName(
                 self,
@@ -1522,6 +1525,7 @@ class MainWindow(QMainWindow):
             python_executable=self.overview_page.python_edit.text(),
             selected_engine=selected_engine,
             selected_workflow=selected_workflow,
+            circuit=circuit,
             experiment=experiment,
         )
         try:
@@ -1615,11 +1619,12 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
-        if self.experiment_page._process is not None:
+        active_process = getattr(self.experiment_page, "_process", None)
+        if active_process is not None:
             QMessageBox.warning(
                 self,
                 "A scientific worker is still running",
-                "The GUI will remain open while the worker is active. Return to Escape-SIZ and use Stop safely "
+                "The GUI will remain open while the worker is active. Return to Experiment Builder and use Stop safely "
                 "so the cancellation request and partial-artifact state are recorded.",
             )
             event.ignore()
