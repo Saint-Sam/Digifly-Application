@@ -52,7 +52,8 @@ REFERENCE_CAMERA_FOCAL_POINT = (25.071576505154095, 29.67979647636857, 55.241755
 REFERENCE_CAMERA_VIEW_UP = (0.04896257747685693, -0.04997499392139454, 0.9975495807173593)
 DEFAULT_YAW_DEGREES = 0.0
 DEFAULT_PITCH_DEGREES = 0.0
-MALE_CNS_YAW_DEGREES = 180.0
+DEFAULT_ROLL_DEGREES = 0.0
+MALE_CNS_ROLL_DEGREES = 180.0
 
 
 def _rgba(color: str) -> QVector4D:
@@ -279,7 +280,9 @@ class CircuitViewport(QOpenGLWidget):
 
         self.yaw_degrees = DEFAULT_YAW_DEGREES
         self.pitch_degrees = DEFAULT_PITCH_DEGREES
+        self.roll_degrees = DEFAULT_ROLL_DEGREES
         self._home_yaw_degrees = DEFAULT_YAW_DEGREES
+        self._home_roll_degrees = DEFAULT_ROLL_DEGREES
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.distance = 10.0
@@ -433,8 +436,9 @@ class CircuitViewport(QOpenGLWidget):
         self.selected_neuron_ids.clear()
         self.selected_compartments.clear()
         self.isolated = False
-        self._home_yaw_degrees = (
-            MALE_CNS_YAW_DEGREES
+        self._home_yaw_degrees = DEFAULT_YAW_DEGREES
+        self._home_roll_degrees = (
+            MALE_CNS_ROLL_DEGREES
             if items
             and all(
                 item.record.connectome_key.casefold().startswith("male-cns")
@@ -443,10 +447,11 @@ class CircuitViewport(QOpenGLWidget):
                 )
                 for item in items
             )
-            else DEFAULT_YAW_DEGREES
+            else DEFAULT_ROLL_DEGREES
         )
         self.yaw_degrees = self._home_yaw_degrees
         self.pitch_degrees = DEFAULT_PITCH_DEGREES
+        self.roll_degrees = self._home_roll_degrees
         self._rebuild_selection_data()
         self.fit_all()
         self.neurons_selected.emit(())
@@ -832,6 +837,10 @@ class CircuitViewport(QOpenGLWidget):
         view.translate(self.pan_x, self.pan_y, -camera_depth)
         view.rotate(self.pitch_degrees, 1.0, 0.0, 0.0)
         view.rotate(self.yaw_degrees, 0.0, 1.0, 0.0)
+        # Dataset-specific display correction belongs in camera space. A 180°
+        # roll turns an upside-down Male CNS render upright; yaw would only
+        # rotate the anatomy around a vertical 3-D axis.
+        view.rotate(self.roll_degrees, 0.0, 0.0, 1.0)
         camera_position = QVector3D(*REFERENCE_CAMERA_POSITION)
         camera_focal = QVector3D(*REFERENCE_CAMERA_FOCAL_POINT)
         reference_forward = (camera_focal - camera_position).normalized()
@@ -1354,6 +1363,7 @@ class CircuitViewport(QOpenGLWidget):
             if key == Qt.Key.Key_R:
                 self.yaw_degrees = self._home_yaw_degrees
                 self.pitch_degrees = DEFAULT_PITCH_DEGREES
+                self.roll_degrees = self._home_roll_degrees
             if self.isolated and self.selected_neuron_id is not None:
                 self.focus_neuron(self.selected_neuron_id, isolate=True)
             else:

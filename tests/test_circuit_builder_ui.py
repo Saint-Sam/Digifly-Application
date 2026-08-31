@@ -49,7 +49,8 @@ from digifly_app.ui.circuit_viewport import (
     DEFAULT_YAW_DEGREES,
     DISPLAY_MODE_FULL_SKELETONS,
     DISPLAY_MODE_SOMA_POINTS,
-    MALE_CNS_YAW_DEGREES,
+    DEFAULT_ROLL_DEGREES,
+    MALE_CNS_ROLL_DEGREES,
     REFERENCE_CAMERA_FOCAL_POINT,
     REFERENCE_CAMERA_POSITION,
     REFERENCE_CAMERA_VIEW_UP,
@@ -353,7 +354,7 @@ def test_matching_machine_profile_prefers_legacy_full_manc_source(tmp_path, monk
         application.processEvents()
 
 
-def test_male_cns_morphology_defaults_and_resets_to_180_degree_yaw():
+def test_male_cns_morphology_defaults_and_resets_to_180_degree_roll():
     application = QApplication.instance() or QApplication([])
     record = NeuronRecord(
         "57245",
@@ -370,12 +371,18 @@ def test_male_cns_morphology_defaults_and_resets_to_180_degree_yaw():
     )
     viewport = CircuitViewport()
     try:
+        viewport.resize(640, 480)
+        viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
         viewport.set_morphologies((morphology,))
-        assert viewport.yaw_degrees == MALE_CNS_YAW_DEGREES
+        assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
+        assert viewport.roll_degrees == MALE_CNS_ROLL_DEGREES
+        male_projection = viewport._project((2.0, 1.0, 0.0), viewport._mvp())
         viewport.yaw_degrees = 23.0
+        viewport.roll_degrees = 42.0
         viewport.setFocus()
         QTest.keyClick(viewport, Qt.Key.Key_R)
-        assert viewport.yaw_degrees == MALE_CNS_YAW_DEGREES
+        assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
+        assert viewport.roll_degrees == MALE_CNS_ROLL_DEGREES
 
         manc = Morphology(
             NeuronRecord("16900", "AN", "AN08B098", "/16900.swc", "manc:v1.2.1"),
@@ -385,6 +392,12 @@ def test_male_cns_morphology_defaults_and_resets_to_180_degree_yaw():
         )
         viewport.set_morphologies((manc,))
         assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
+        assert viewport.roll_degrees == DEFAULT_ROLL_DEGREES
+        manc_projection = viewport._project((2.0, 1.0, 0.0), viewport._mvp())
+        assert male_projection is not None
+        assert manc_projection is not None
+        assert male_projection[0] == pytest.approx(viewport.width() - manc_projection[0])
+        assert male_projection[1] == pytest.approx(viewport.height() - manc_projection[1])
     finally:
         viewport.close()
         application.processEvents()
