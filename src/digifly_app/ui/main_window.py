@@ -51,6 +51,7 @@ from digifly_app.core.paths import resource_path
 from digifly_app.core.resource_profile import ResourceKind, load_default_profile
 from digifly_app.core.resource_profile import (
     default_profile_path,
+    make_default_profile,
     update_runtime_bindings,
 )
 from digifly_app.engines.arbor_escape_siz import (
@@ -78,6 +79,36 @@ LEGACY_APPLICATION_NAME = "Digifly App"
 def _workspace_home() -> Path:
     """Keep projects and large simulation artifacts outside the app bundle."""
     return Path.home() / "Digifly Workstation Workspace"
+
+
+def _valid_workspace_path(value: Any) -> bool:
+    if value is None or not str(value).strip():
+        return False
+    path = Path(str(value)).expanduser()
+    return path.is_dir() and (path / "README.md").is_file()
+
+
+def _valid_output_path(value: Any) -> bool:
+    if value is None or not str(value).strip():
+        return False
+    path = Path(str(value)).expanduser()
+    if path.is_dir():
+        return os.access(path, os.W_OK)
+    return not path.exists() and path.parent.is_dir() and os.access(path.parent, os.W_OK)
+
+
+def _valid_runtime_path(value: Any) -> bool:
+    if value is None or not str(value).strip():
+        return False
+    path = Path(str(value)).expanduser()
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _first_valid_path(*values: Any, validator: Any) -> str | None:
+    for value in values:
+        if validator(value):
+            return str(Path(str(value)).expanduser().resolve())
+    return None
 
 
 def _scroll_page(content: QWidget) -> QScrollArea:
@@ -247,15 +278,19 @@ class OverviewPage(QWidget):
         try:
             profile = load_default_profile()
             if profile is None:
-                self.doctor_summary.setText(
-                    "Runtime detected. Create a resource profile to persist it machine-wide."
+                profile = make_default_profile(
+                    workspace_root=self.workspace_edit.text(),
+                    output_root=self.output_edit.text(),
+                    neuron_runtime=neuron_python or None,
+                    arbor_runtime=arbor_python or None,
                 )
-                return
-            updated = update_runtime_bindings(
-                profile,
-                neuron_runtime=neuron_python or None,
-                arbor_runtime=arbor_python or None,
-            )
+                updated = profile
+            else:
+                updated = update_runtime_bindings(
+                    profile,
+                    neuron_runtime=neuron_python or None,
+                    arbor_runtime=arbor_python or None,
+                )
             destination = (
                 profile_path.with_name("resources-v2.json")
                 if profile_path.name == "resources-v1.json"
@@ -266,6 +301,7 @@ class OverviewPage(QWidget):
             QMessageBox.warning(self, "Could not save runtime choices", str(exc))
             return
         self.doctor_summary.setText(f"Saved verified runtimes to {destination}")
+        self.refresh()
 
     def workspace(self) -> DigiflyWorkspace:
         return DigiflyWorkspace(self.workspace_edit.text())
@@ -1496,33 +1532,60 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved {self.current_project_path}")
 
     def _restore_settings(self) -> None:
-        workspace = self.settings.value("workspace_root")
-        output = self.settings.value("output_root")
-        worker_python = self.settings.value("neuron_python")
-        arbor_python = self.settings.value("arbor_python")
+        saved_workspace = self.settings.value("workspace_root")
+        saved_output = self.settings.value("output_root")
+        saved_worker_python = self.settings.value("neuron_python")
+        saved_arbor_python = self.settings.value("arbor_python")
         try:
             profile = load_default_profile()
         except (OSError, ValueError):
             profile = None
+        profile_workspace: Path | None = None
+        profile_output: Path | None = None
+        profile_neuron: Path | None = None
+        profile_arbor: Path | None = None
         if profile is not None:
-            if not workspace:
-                workspace = str(profile.workspace_root)
-            if not output:
-                output = str(profile.output_root)
-            if not worker_python:
-                runtime = profile.runtime_path(ResourceKind.NEURON_RUNTIME)
-                worker_python = str(runtime) if runtime is not None else None
-            if not arbor_python:
-                runtime = profile.runtime_path(ResourceKind.ARBOR_RUNTIME)
-                arbor_python = str(runtime) if runtime is not None else None
+            profile_workspace = profile.workspace_root
+            profile_output = profile.output_root
+            profile_neuron = profile.runtime_path(ResourceKind.NEURON_RUNTIME)
+            profile_arbor = profile.runtime_path(ResourceKind.ARBOR_RUNTIME)
+
+        workspace = _first_valid_path(
+            saved_workspace,
+            profile_workspace,
+            validator=_valid_workspace_path,
+        )
+        output = _first_valid_path(
+            saved_output,
+            profile_output,
+            validator=_valid_output_path,
+        )
+        # Runtime-setup choices are verified before they enter the versioned
+        # machine profile. Prefer those bindings over stale GUI preferences.
+        worker_python = _first_valid_path(
+            profile_neuron,
+            saved_worker_python,
+            validator=_valid_runtime_path,
+        )
+        arbor_python = _first_valid_path(
+            profile_arbor,
+            saved_arbor_python,
+            validator=_valid_runtime_path,
+        )
         # Import only read-only input/runtime bindings from the legacy app on
         # first launch. Workstation outputs deliberately remain in their new
         # default root so the two applications cannot overwrite each other's
         # jobs, caches, or results.
         if not workspace:
-            workspace = self.legacy_settings.value("workspace_root")
+            workspace = _first_valid_path(
+                self.legacy_settings.value("workspace_root"),
+                validator=_valid_workspace_path,
+            )
         if not worker_python:
-            worker_python = self.legacy_settings.value("neuron_python")
+            worker_python = _first_valid_path(
+                self.legacy_settings.value("neuron_python"),
+                validator=_valid_runtime_path,
+            )
         if workspace:
             self.overview_page.workspace_edit.setText(str(workspace))
         if output:
@@ -1531,6 +1594,13 @@ class MainWindow(QMainWindow):
             self.overview_page.python_edit.setText(str(worker_python))
         if arbor_python:
             self.overview_page.arbor_python_edit.setText(str(arbor_python))
+        if (
+            (saved_workspace and not _valid_workspace_path(saved_workspace))
+            or (saved_output and not _valid_output_path(saved_output))
+        ) and profile is not None:
+            self.overview_page.doctor_summary.setText(
+                "Recovered unavailable saved paths from the machine resource profile."
+            )
 
     def closeEvent(self, event: Any) -> None:
         if self.data_library_page.import_in_progress:

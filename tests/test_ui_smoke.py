@@ -4,11 +4,18 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.models import ResultRecord
 from digifly_app.core.project import DigiflyProject
+from digifly_app.core.resource_profile import (
+    ResourceKind,
+    ResourceProfile,
+    make_default_profile,
+)
 from digifly_app.engines.arbor_escape_siz import ArborEscapeSizAdapter
 from digifly_app.ui.circuit_builder import CIRCUIT_BUILDER_WORKFLOW
 from digifly_app.ui.main_window import (
@@ -24,6 +31,20 @@ from digifly_app.ui.runtime_setup import (
     NEURON_INSTALL_URL,
     RuntimeSetupDialog,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_machine_settings(tmp_path, monkeypatch):
+    """GUI tests must never read or overwrite the user's machine bindings."""
+    previous_format = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    monkeypatch.setenv(
+        "DIGIFLY_WORKSTATION_PROFILE",
+        str(tmp_path / "no-machine-profile.json"),
+    )
+    yield
+    QSettings.setDefaultFormat(previous_format)
 
 
 def test_workstation_identity_and_writable_root_are_distinct():
@@ -52,6 +73,35 @@ def test_runtime_setup_requires_consent_before_search(monkeypatch):
         dialog.close()
 
 
+def test_runtime_selection_creates_machine_profile(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    public = tmp_path / "Digifly Public"
+    public.mkdir()
+    (public / "README.md").write_text("Digifly Public\n", encoding="utf-8")
+    output = tmp_path / "workspace" / "runs"
+    output.parent.mkdir()
+    runtime = tmp_path / "simulators" / "bin" / "python"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("#!/bin/sh\n", encoding="utf-8")
+    runtime.chmod(0o755)
+    profile_path = tmp_path / "resources-v2.json"
+    monkeypatch.setenv("DIGIFLY_WORKSTATION_PROFILE", str(profile_path))
+    page = OverviewPage()
+    page.workspace_edit.setText(str(public))
+    page.output_edit.setText(str(output))
+    refreshed: list[bool] = []
+    monkeypatch.setattr(page, "refresh", lambda: refreshed.append(True))
+    try:
+        page._runtime_selected(str(runtime), str(runtime))
+        profile = ResourceProfile.load(profile_path)
+        assert profile.runtime_path(ResourceKind.NEURON_RUNTIME) == runtime.resolve()
+        assert profile.runtime_path(ResourceKind.ARBOR_RUNTIME) == runtime.resolve()
+        assert refreshed == [True]
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def test_main_window_constructs_without_importing_simulators():
     application = QApplication.instance() or QApplication([])
     overview = OverviewPage()
@@ -76,6 +126,46 @@ def test_main_window_constructs_without_importing_simulators():
         application.processEvents()
         assert window.pages.currentWidget() is window.results_page
         assert window.nav_buttons[2].isChecked() is False
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    public = tmp_path / "Digifly Public"
+    public.mkdir()
+    (public / "README.md").write_text("Digifly Public\n", encoding="utf-8")
+    output = tmp_path / "workspace" / "runs"
+    output.parent.mkdir()
+    neuron_python = tmp_path / "neuron-env" / "bin" / "python"
+    arbor_python = tmp_path / "arbor-env" / "bin" / "python"
+    for executable in (neuron_python, arbor_python):
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+    profile_path = tmp_path / "resources-v2.json"
+    make_default_profile(
+        workspace_root=public,
+        output_root=output,
+        neuron_runtime=neuron_python,
+        arbor_runtime=arbor_python,
+    ).save(profile_path)
+    monkeypatch.setenv("DIGIFLY_WORKSTATION_PROFILE", str(profile_path))
+    settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
+    settings.setValue("workspace_root", tmp_path / "deleted-test-workspace")
+    settings.setValue("output_root", tmp_path / "deleted-test-output" / "runs")
+    settings.setValue("neuron_python", "/usr/bin/python3")
+    settings.setValue("arbor_python", "/usr/bin/python3")
+    settings.sync()
+
+    window = MainWindow()
+    try:
+        assert window.overview_page.workspace_edit.text() == str(public.resolve())
+        assert window.overview_page.output_edit.text() == str(output.resolve())
+        assert window.overview_page.python_edit.text() == str(neuron_python.resolve())
+        assert window.overview_page.arbor_python_edit.text() == str(arbor_python.resolve())
+        assert "Recovered unavailable" in window.overview_page.doctor_summary.text()
     finally:
         window.close()
         application.processEvents()
