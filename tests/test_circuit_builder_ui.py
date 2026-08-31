@@ -10,10 +10,10 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QVector3D
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QPushButton
 
 from digifly_app.core.circuit import (
     CircuitSpec,
@@ -22,6 +22,7 @@ from digifly_app.core.circuit import (
     NeuronQuery,
 )
 from digifly_app.core.connectomes import NeuronRecord
+from digifly_app.core.data_library import ManagedResource
 from digifly_app.core.mechanisms import (
     ChannelAssignment,
     MembraneMechanismSpec,
@@ -34,6 +35,13 @@ from digifly_app.core.morphology import (
     load_swc,
     save_custom_morphology,
 )
+from digifly_app.core.resource_profile import (
+    AccessMode,
+    ResourceBinding,
+    ResourceKind,
+    ResourceProfile,
+    make_default_profile,
+)
 from digifly_app.ui.circuit_builder import CircuitBuilderPage
 from digifly_app.ui.circuit_viewport import (
     CircuitViewport,
@@ -41,6 +49,7 @@ from digifly_app.ui.circuit_viewport import (
     DEFAULT_YAW_DEGREES,
     DISPLAY_MODE_FULL_SKELETONS,
     DISPLAY_MODE_SOMA_POINTS,
+    MALE_CNS_YAW_DEGREES,
     REFERENCE_CAMERA_FOCAL_POINT,
     REFERENCE_CAMERA_POSITION,
     REFERENCE_CAMERA_VIEW_UP,
@@ -206,6 +215,178 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
             page.set_selected_engine_key("made-up-engine")
     finally:
         page.close()
+        application.processEvents()
+
+
+def test_missing_manc_type_uses_prefilled_neuprint_import_and_loads_result(
+    tmp_path, monkeypatch
+):
+    public = tmp_path / "Digifly Public"
+    (public / "Phase 1" / "manc_v1.2.1" / "export_swc").mkdir(parents=True)
+    (public / "README.md").write_text("Digifly Public\n", encoding="utf-8")
+    profile = make_default_profile(
+        workspace_root=public,
+        output_root=tmp_path / "workspace" / "runs",
+        managed_data_root=tmp_path / "workspace" / "data",
+    )
+    profile_path = profile.save(tmp_path / "resources-v2.json")
+    monkeypatch.setenv("DIGIFLY_WORKSTATION_PROFILE", str(profile_path))
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(public))
+    try:
+        page.query_edit.setText("AN08B098")
+        page.assemble_circuit()
+        assert page.viewport.neuron_count == 0
+        assert not page.download_missing_button.isHidden()
+        assert page._missing_neuprint_request is not None
+        dataset, selection, expression = page._missing_neuprint_request
+        assert dataset == "manc:v1.2.1"
+        assert selection.mode == "type_exact"
+        assert selection.value == "AN08B098"
+        assert expression == "AN08B098"
+
+        bundle = tmp_path / "workspace" / "data" / "neuprint-bundle"
+        swc_root = bundle / "source" / "export_swc"
+        swc = swc_root / "AN" / "AN08B098" / "16900" / "16900_neuprint_raw.swc"
+        swc.parent.mkdir(parents=True)
+        swc.write_text(
+            "1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n",
+            encoding="utf-8",
+        )
+        binding = ResourceBinding(
+            "an08b098",
+            ResourceKind.MORPHOLOGY_SOURCE,
+            str(swc_root),
+            AccessMode.READ_ONLY,
+            "AN08B098",
+            False,
+            {
+                "dataset": "manc:v1.2.1",
+                "connectome_key": "neuprint:manc:v1.2.1:an08b098",
+            },
+        )
+        ResourceProfile(
+            profile_id=profile.profile_id,
+            resources=(*profile.resources, binding),
+            label=profile.label,
+        ).save(profile_path, replace=True)
+        resource = ManagedResource(
+            "neuprint",
+            "an08b098",
+            "fixture",
+            bundle,
+            bundle / "digifly-resource.json",
+            1,
+            swc.stat().st_size,
+            1,
+            "2026-08-31T00:00:00Z",
+            "an08b098",
+        )
+        dialog_args: dict[str, object] = {}
+
+        class _ImportedDialog(QDialog):
+            resource_imported = Signal(object)
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(kwargs.get("parent"))
+                dialog_args.update(kwargs)
+
+            def exec(self):
+                self.resource_imported.emit(resource)
+                return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            "digifly_app.ui.circuit_builder.NeuPrintImportDialog",
+            _ImportedDialog,
+        )
+        reviews: list[bool] = []
+        changes: list[bool] = []
+        monkeypatch.setattr(page, "review_recent_imports", lambda: reviews.append(True))
+        page.managed_data_changed.connect(lambda: changes.append(True))
+        page.open_missing_neuprint_import()
+
+        assert dialog_args["preferred_dataset"] == "manc:v1.2.1"
+        assert dialog_args["initial_selection"] == selection
+        assert page.viewport.neuron_count == 1
+        assert page.circuit_spec().neuron_ids == ("16900",)
+        assert Path(page._selected_source().root).resolve() == swc_root.resolve()
+        assert page.download_missing_button.isHidden()
+        assert reviews == [True]
+        assert changes == [True]
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_matching_machine_profile_prefers_legacy_full_manc_source(tmp_path, monkeypatch):
+    public = tmp_path / "Digifly Public"
+    subset = public / "Phase 1" / "manc_v1.2.1" / "export_swc"
+    subset.mkdir(parents=True)
+    male_cns = public / "Phase 1" / "male-cns_v0.9" / "export_swc"
+    male_cns.mkdir(parents=True)
+    full = tmp_path / "Digifly_NEW" / "Phase 2" / "data" / "export_swc"
+    swc = full / "DN" / "DNp01" / "10000" / "10000_axodendro_with_synapses.swc"
+    swc.parent.mkdir(parents=True)
+    swc.write_text("1 1 0 0 0 1 -1\n", encoding="utf-8")
+    (full / ".phase2_export_index.json").write_text("{}\n", encoding="utf-8")
+    (full / "edges").mkdir()
+    (full / "edges" / "master_edges_cache.sqlite").write_bytes(b"fixture")
+    profile = make_default_profile(
+        workspace_root=public,
+        output_root=tmp_path / "runs",
+        morphology_sources=(("external-swcs", full, "External morphology"),),
+    )
+    profile_path = profile.save(tmp_path / "resources-v2.json")
+    monkeypatch.setenv("DIGIFLY_WORKSTATION_PROFILE", str(profile_path))
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(public))
+    try:
+        assert page._selected_source().key == "manc:v1.2.1:full-local"
+        assert page.connectome_combo.currentText() == "MANC v1.2.1 · full local SWCs"
+        assert page.connectome_combo.count() == 2
+        assert [
+            page.connectome_combo.itemText(index)
+            for index in range(page.connectome_combo.count())
+        ] == ["MANC v1.2.1 · full local SWCs", "Male CNS v0.9"]
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_male_cns_morphology_defaults_and_resets_to_180_degree_yaw():
+    application = QApplication.instance() or QApplication([])
+    record = NeuronRecord(
+        "57245",
+        "AN",
+        "AN08B098",
+        "/57245.swc",
+        "male-cns:v0.9",
+    )
+    morphology = Morphology(
+        record,
+        (),
+        (SwcSegment(2, 1, (2.0, 1.0, 0.0), (0.0, 0.0, 0.0), 0.5, 2),),
+        (0.0, 2.0, 0.0, 1.0, 0.0, 0.0),
+    )
+    viewport = CircuitViewport()
+    try:
+        viewport.set_morphologies((morphology,))
+        assert viewport.yaw_degrees == MALE_CNS_YAW_DEGREES
+        viewport.yaw_degrees = 23.0
+        viewport.setFocus()
+        QTest.keyClick(viewport, Qt.Key.Key_R)
+        assert viewport.yaw_degrees == MALE_CNS_YAW_DEGREES
+
+        manc = Morphology(
+            NeuronRecord("16900", "AN", "AN08B098", "/16900.swc", "manc:v1.2.1"),
+            (),
+            morphology.segments,
+            morphology.bounds,
+        )
+        viewport.set_morphologies((manc,))
+        assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
+    finally:
+        viewport.close()
         application.processEvents()
 
 

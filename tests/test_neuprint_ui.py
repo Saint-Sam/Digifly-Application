@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from digifly_app.core.neuprint import NeuPrintNeuron
+from digifly_app.core.neuprint import NeuPrintDataset, NeuPrintNeuron, NeuPrintSelection
 from digifly_app.core.resource_profile import make_default_profile
 from digifly_app.ui.neuprint_import import NeuPrintImportDialog
 
@@ -52,6 +52,42 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         assert "dnp01" in dialog.destination_label.text()
         assert dialog.snapshot_edit.text().casefold() in dialog.destination_label.text().casefold()
         assert dialog._request().include_connectivity
+    finally:
+        dialog.close()
+        application.processEvents()
+
+
+def test_neuprint_dialog_prefills_circuit_builder_dataset_and_selection(tmp_path: Path):
+    application = QApplication.instance() or QApplication([])
+    workspace = tmp_path / "Digifly Public"
+    workspace.mkdir()
+    profile = make_default_profile(
+        workspace_root=workspace,
+        output_root=tmp_path / "runs",
+        managed_data_root=tmp_path / "library",
+    )
+    profile_path = profile.save(tmp_path / "resources-v2.json")
+    selection = NeuPrintSelection("type_exact", "AN08B098", 64)
+    dialog = NeuPrintImportDialog(
+        profile,
+        profile_path,
+        credential_store=_NoCredentialStore(),
+        preferred_dataset="male-cns:v0.9",
+        initial_selection=selection,
+        initial_resource_id="AN08B098",
+    )
+    try:
+        assert dialog.selection_mode.currentData() == "type_exact"
+        assert dialog.selection_edit.text() == "AN08B098"
+        assert dialog.limit_spin.value() == 64
+        assert dialog.name_edit.text() == "an08b098"
+        dialog._connected(
+            (
+                NeuPrintDataset("manc:v1.2.1"),
+                NeuPrintDataset("male-cns:v0.9"),
+            )
+        )
+        assert dialog.dataset_combo.currentData() == "male-cns:v0.9"
     finally:
         dialog.close()
         application.processEvents()

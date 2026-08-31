@@ -104,6 +104,27 @@ def test_profile_provider_registers_external_morphologies_without_copying(tmp_pa
     assert Path(discovered[0].root) == external.resolve()
 
 
+def test_profile_provider_recognizes_legacy_full_manc_export(tmp_path: Path):
+    workspace = _workspace(tmp_path / "Digifly Public")
+    external = tmp_path / "Digifly_NEW" / "Phase 2" / "data" / "export_swc"
+    (external / "edges").mkdir(parents=True)
+    (external / ".phase2_export_index.json").write_text("{}\n", encoding="utf-8")
+    (external / "edges" / "master_edges_cache.sqlite").write_bytes(b"fixture")
+    _write = external / "DN" / "DNp01" / "10000" / "10000_axodendro_with_synapses.swc"
+    _write.parent.mkdir(parents=True)
+    _write.write_text("1 1 0 0 0 1 -1\n", encoding="utf-8")
+    profile = make_default_profile(
+        workspace_root=workspace,
+        output_root=tmp_path / "runs",
+        morphology_sources=(("external-swcs", external, "External morphology"),),
+    )
+
+    source = profile_connectome_sources(profile)[0]
+    assert source.key == "manc:v1.2.1:full-local"
+    assert source.dataset == "manc:v1.2.1"
+    assert source.label == "MANC v1.2.1 · full local SWCs"
+
+
 def test_resource_cli_creates_and_validates_profile(tmp_path: Path, capsys):
     workspace = _workspace(tmp_path / "Digifly Public")
     output = tmp_path / "runs"

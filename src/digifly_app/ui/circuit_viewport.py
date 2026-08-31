@@ -52,6 +52,7 @@ REFERENCE_CAMERA_FOCAL_POINT = (25.071576505154095, 29.67979647636857, 55.241755
 REFERENCE_CAMERA_VIEW_UP = (0.04896257747685693, -0.04997499392139454, 0.9975495807173593)
 DEFAULT_YAW_DEGREES = 0.0
 DEFAULT_PITCH_DEGREES = 0.0
+MALE_CNS_YAW_DEGREES = 180.0
 
 
 def _rgba(color: str) -> QVector4D:
@@ -278,6 +279,7 @@ class CircuitViewport(QOpenGLWidget):
 
         self.yaw_degrees = DEFAULT_YAW_DEGREES
         self.pitch_degrees = DEFAULT_PITCH_DEGREES
+        self._home_yaw_degrees = DEFAULT_YAW_DEGREES
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.distance = 10.0
@@ -431,7 +433,19 @@ class CircuitViewport(QOpenGLWidget):
         self.selected_neuron_ids.clear()
         self.selected_compartments.clear()
         self.isolated = False
-        self.yaw_degrees = DEFAULT_YAW_DEGREES
+        self._home_yaw_degrees = (
+            MALE_CNS_YAW_DEGREES
+            if items
+            and all(
+                item.record.connectome_key.casefold().startswith("male-cns")
+                or item.record.connectome_key.casefold().startswith(
+                    "neuprint:male-cns"
+                )
+                for item in items
+            )
+            else DEFAULT_YAW_DEGREES
+        )
+        self.yaw_degrees = self._home_yaw_degrees
         self.pitch_degrees = DEFAULT_PITCH_DEGREES
         self._rebuild_selection_data()
         self.fit_all()
@@ -1338,7 +1352,7 @@ class CircuitViewport(QOpenGLWidget):
                 self.focus_neuron(self.selected_neuron_id, isolate=True)
         elif key in (Qt.Key.Key_F, Qt.Key.Key_R):
             if key == Qt.Key.Key_R:
-                self.yaw_degrees = DEFAULT_YAW_DEGREES
+                self.yaw_degrees = self._home_yaw_degrees
                 self.pitch_degrees = DEFAULT_PITCH_DEGREES
             if self.isolated and self.selected_neuron_id is not None:
                 self.focus_neuron(self.selected_neuron_id, isolate=True)

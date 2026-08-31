@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+import errno
 import hashlib
 import json
 import os
@@ -192,7 +193,25 @@ def _sha256(path: Path) -> str:
 
 
 def _is_manc_v121(source: ConnectomeRef) -> bool:
-    return source.key.casefold() == _MANC_KEY or source.dataset.casefold() == _MANC_DATASET
+    return source.key.casefold() == _MANC_KEY or source.dataset.casefold() in {
+        _MANC_DATASET,
+        _MANC_KEY,
+    }
+
+
+def _is_legacy_full_manc_root(source: ConnectomeRef, root: Path) -> bool:
+    return (
+        source.key.casefold() == "manc:v1.2.1:full-local"
+        and (root / ".phase2_export_index.json").is_file()
+        and (root / "edges" / "master_edges_cache.sqlite").is_file()
+        and (
+            root
+            / "DN"
+            / "DNp01"
+            / "10000"
+            / "10000_axodendro_with_synapses.swc"
+        ).is_file()
+    )
 
 
 def _derive_public_root(source_root: Path) -> Path | None:
@@ -251,8 +270,13 @@ class ConnectomeEdgeCatalog:
         self.public_root = explicit_root or _derive_public_root(self.root)
         self._canonical_manc = bool(
             _is_manc_v121(source)
-            and self.public_root is not None
-            and self.root == (self.public_root / _MANC_RELATIVE_ROOT).resolve()
+            and (
+                (
+                    self.public_root is not None
+                    and self.root == (self.public_root / _MANC_RELATIVE_ROOT).resolve()
+                )
+                or _is_legacy_full_manc_root(source, self.root)
+            )
         )
         self.chemical_db = self.root / "edges" / "master_edges_cache.sqlite"
         self.arbor_gap_root = (
@@ -407,7 +431,7 @@ def _slug(value: str) -> str:
 
 def _label_for_dataset(name: str) -> str:
     labels = {
-        "manc_v1.2.1": "MANC v1.2.1",
+        "manc_v1.2.1": "MANC v1.2.1 · curated Phase 1 subset",
         "male-cns_v0.9": "Male CNS v0.9",
         "fafb": "FAFB",
         "banc": "BANC",
@@ -509,7 +533,16 @@ def discover_connectomes(
             )
             seen.add(resolved)
 
-    sources.sort(key=lambda item: (0 if item.key.startswith("manc:") else 1, item.label.casefold()))
+    sources.sort(
+        key=lambda item: (
+            0
+            if item.key == "manc:v1.2.1:full-local"
+            else 1
+            if item.key.startswith("manc:")
+            else 2,
+            item.label.casefold(),
+        )
+    )
     return tuple(sources)
 
 
@@ -560,33 +593,49 @@ def _structured_swc_paths(root: Path) -> Iterable[Path]:
     # Native exports use family/type/id/file. Scanning that shape with cached
     # DirEntry metadata is much faster than a generic pathlib walk for Male
     # CNS, while nonstandard siblings still receive a recursive fallback.
+    def is_file(entry: os.DirEntry[str]) -> bool:
+        try:
+            return entry.is_file(follow_symlinks=True)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+                return False
+            raise
+
+    def is_dir(entry: os.DirEntry[str]) -> bool:
+        try:
+            return entry.is_dir(follow_symlinks=True)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+                return False
+            raise
+
     with os.scandir(root) as top_entries:
         for top in top_entries:
             if top.name.startswith("."):
                 continue
-            if top.is_file(follow_symlinks=True):
+            if is_file(top):
                 if top.name.casefold().endswith(".swc"):
                     yield Path(top.path)
                 continue
-            if not top.is_dir(follow_symlinks=True):
+            if not is_dir(top):
                 continue
             if top.name.upper() not in {*NEURON_FAMILIES, "UNKNOWN", "UNCLASSIFIED"}:
                 yield from Path(top.path).rglob("*.swc")
                 continue
             with os.scandir(top.path) as type_entries:
                 for neuron_type in type_entries:
-                    if neuron_type.name.startswith(".") or not neuron_type.is_dir(follow_symlinks=True):
+                    if neuron_type.name.startswith(".") or not is_dir(neuron_type):
                         continue
                     with os.scandir(neuron_type.path) as id_entries:
                         for neuron_dir in id_entries:
-                            if neuron_dir.name.startswith(".") or not neuron_dir.is_dir(follow_symlinks=True):
+                            if neuron_dir.name.startswith(".") or not is_dir(neuron_dir):
                                 continue
                             if not neuron_dir.name.isdigit():
                                 yield from Path(neuron_dir.path).rglob("*.swc")
                                 continue
                             with os.scandir(neuron_dir.path) as files:
                                 for file in files:
-                                    if file.is_file(follow_symlinks=True) and file.name.casefold().endswith(".swc"):
+                                    if is_file(file) and file.name.casefold().endswith(".swc"):
                                         yield Path(file.path)
 
 

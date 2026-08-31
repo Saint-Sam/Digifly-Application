@@ -20,7 +20,9 @@ def test_discovery_catalog_and_local_queries(tmp_path):
     _write_swc(swc_root / "IN" / "GFC2" / "14662" / "14662_axodendro_with_synapses.swc")
 
     sources = discover_connectomes(tmp_path / "Digifly Public")
-    assert [source.label for source in sources] == ["MANC v1.2.1"]
+    assert [source.label for source in sources] == [
+        "MANC v1.2.1 · curated Phase 1 subset"
+    ]
     assert sources[0].key == "manc:v1.2.1"
     catalog = ConnectomeCatalog.scan(sources[0])
     assert catalog.by_id["10000"].swc_path == str(preferred.resolve())
@@ -65,3 +67,15 @@ def test_structured_catalog_includes_symlinked_overlay_swc(tmp_path):
     overlay.symlink_to(target)
     source = ConnectomeRef("overlay", "Overlay", str(root))
     assert ConnectomeCatalog.scan(source).by_id["10000"].swc_path == str(overlay)
+
+
+def test_structured_catalog_skips_self_referential_legacy_symlink(tmp_path):
+    root = tmp_path / "export_swc"
+    valid = root / "AN" / "AN08B098" / "16900" / "16900_healed.swc"
+    _write_swc(valid)
+    loop = root / "MN" / "Legacy" / "152642" / "152642_healed_final.swc"
+    loop.parent.mkdir(parents=True)
+    loop.symlink_to(loop)
+
+    catalog = ConnectomeCatalog.scan(ConnectomeRef("manc", "MANC", str(root)))
+    assert tuple(catalog.by_id) == ("16900",)

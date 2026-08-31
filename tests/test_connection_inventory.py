@@ -169,6 +169,38 @@ def test_custom_source_is_unavailable_without_scanning_arbitrary_edges(tmp_path)
     assert "unknown, not zero" in summary.gap_junction.status_text
 
 
+def test_explicit_legacy_full_manc_source_uses_its_own_edge_cache(tmp_path):
+    workspace, _, _ = _manc_fixture(tmp_path)
+    full_root = tmp_path / "Digifly_NEW" / "Phase 2" / "data" / "export_swc"
+    canonical_swc = (
+        full_root
+        / "DN"
+        / "DNp01"
+        / "10000"
+        / "10000_axodendro_with_synapses.swc"
+    )
+    canonical_swc.parent.mkdir(parents=True)
+    canonical_swc.write_text("1 1 0 0 0 1 -1\n", encoding="utf-8")
+    (full_root / ".phase2_export_index.json").write_text("{}\n", encoding="utf-8")
+    database = full_root / "edges" / "master_edges_cache.sqlite"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE edges (pre_id INTEGER, post_id INTEGER)")
+        connection.executemany("INSERT INTO edges VALUES (?, ?)", ((100, 200), (100, 200)))
+    source = ConnectomeRef(
+        "manc:v1.2.1:full-local",
+        "MANC v1.2.1 · full local SWCs",
+        str(full_root),
+        "manc:v1.2.1",
+    )
+
+    summary = ConnectomeEdgeCatalog(source, workspace).pair_summary(100, 200)
+
+    assert summary.chemical.available
+    assert summary.chemical.a_to_b_count == 2
+    assert summary.chemical.b_to_a_count == 0
+
+
 def test_manifest_mismatch_makes_gap_status_unavailable_not_zero(tmp_path):
     workspace, source, _ = _manc_fixture(tmp_path)
     gap_csv, _ = _gap_fixture(workspace, rows=[])

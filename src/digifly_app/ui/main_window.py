@@ -1339,6 +1339,9 @@ class MainWindow(QMainWindow):
         self.data_library_page.sources_changed.connect(
             self.circuit_builder_page.refresh_connectomes
         )
+        self.circuit_builder_page.managed_data_changed.connect(
+            self.data_library_page.refresh
+        )
         self.data_library_page.quality_review_requested.connect(
             self.circuit_builder_page.review_recent_imports
         )

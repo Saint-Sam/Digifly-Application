@@ -99,6 +99,9 @@ class NeuPrintImportDialog(QDialog):
         *,
         client_factory: Callable[..., NeuPrintClient] = NeuPrintClient,
         credential_store: NeuPrintCredentialStore | None = None,
+        preferred_dataset: str = "",
+        initial_selection: NeuPrintSelection | None = None,
+        initial_resource_id: str = "",
     ):
         super().__init__(parent)
         self.profile = profile
@@ -113,6 +116,7 @@ class NeuPrintImportDialog(QDialog):
         self._preview: tuple[NeuPrintNeuron, ...] = ()
         self._cancel_event = threading.Event()
         self._operation_kind = ""
+        self._preferred_dataset = str(preferred_dataset).strip()
         self._worker_progress.connect(self._show_progress)
 
         self.setWindowTitle("Download from neuPrint")
@@ -290,6 +294,20 @@ class NeuPrintImportDialog(QDialog):
         actions.addWidget(self.close_button)
         root.addLayout(actions)
 
+        if initial_selection is not None:
+            selection_index = self.selection_mode.findData(initial_selection.mode)
+            if selection_index >= 0:
+                self.selection_mode.setCurrentIndex(selection_index)
+            self.selection_edit.setText(initial_selection.value)
+            self.limit_spin.setValue(initial_selection.limit)
+        if initial_resource_id:
+            try:
+                self.name_edit.setText(
+                    safe_component(initial_resource_id, field="download name")
+                )
+            except ValueError:
+                pass
+
         self.server_edit.textChanged.connect(self._connection_invalidated)
         self.token_edit.textChanged.connect(self._connection_invalidated)
         self.environment_token.toggled.connect(self._connection_invalidated)
@@ -450,6 +468,9 @@ class NeuPrintImportDialog(QDialog):
         for dataset in datasets:
             description = f" — {dataset.description}" if dataset.description else ""
             self.dataset_combo.addItem(f"{dataset.name}{description}", dataset.name)
+        preferred_index = self.dataset_combo.findData(self._preferred_dataset)
+        if preferred_index >= 0:
+            self.dataset_combo.setCurrentIndex(preferred_index)
         self.dataset_combo.blockSignals(False)
         self.dataset_combo.setEnabled(True)
         self.preview_button.setEnabled(True)

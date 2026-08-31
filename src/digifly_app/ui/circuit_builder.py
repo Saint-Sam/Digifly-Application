@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from PySide6.QtCore import QItemSelectionModel, Qt, Signal
@@ -35,6 +36,8 @@ from digifly_app.core.circuit import (
     NeuronQuery,
     cell_design_profile,
 )
+from digifly_app.core.data_library import ManagedResource
+from digifly_app.core.neuprint import NeuPrintSelection
 from digifly_app.core.connectomes import (
     ConnectionClassSummary,
     ConnectomeCatalog,
@@ -52,7 +55,7 @@ from digifly_app.core.morphology import (
 )
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.providers import profile_connectome_sources
-from digifly_app.core.resource_profile import load_default_profile
+from digifly_app.core.resource_profile import default_profile_path, load_default_profile
 from digifly_app.core.swc_quality import (
     heal_swc,
     record_review_decision,
@@ -72,10 +75,17 @@ from .circuit_viewport import (
     DISPLAY_MODE_SOMA_POINTS,
     CircuitViewport,
 )
+from .neuprint_import import NeuPrintImportDialog
 from .widgets import Card, make_label_copyable
 
 
 CIRCUIT_BUILDER_WORKFLOW = "circuit_builder_v1"
+
+_NEUPRINT_DATASETS = ("manc:v1.2.1", "male-cns:v0.9")
+_NEUPRINT_DATASET_ALIASES = {
+    "manc_v1.2.1": "manc:v1.2.1",
+    "male-cns_v0.9": "male-cns:v0.9",
+}
 
 
 ENGINE_PROFILES = (
@@ -95,6 +105,71 @@ def _source_identity(source: ConnectomeRef) -> tuple[str, str, str]:
         source.dataset,
         str(Path(source.root).expanduser().resolve()),
     )
+
+
+def _neuprint_dataset(source: ConnectomeRef) -> str | None:
+    for candidate in (source.dataset, source.key):
+        if candidate in _NEUPRINT_DATASETS:
+            return candidate
+        if candidate in _NEUPRINT_DATASET_ALIASES:
+            return _NEUPRINT_DATASET_ALIASES[candidate]
+    return next(
+        (
+            dataset
+            for dataset in _NEUPRINT_DATASETS
+            if source.key.startswith(f"neuprint:{dataset}:")
+        ),
+        None,
+    )
+
+
+def _neuprint_selection(expression: str, limit: int) -> NeuPrintSelection | None:
+    body_tokens = [
+        token for token in re.split(r"[\s,;\n]+", expression.strip()) if token
+    ]
+    if body_tokens and all(token.isdigit() for token in body_tokens):
+        return NeuPrintSelection("body_ids", ", ".join(body_tokens), limit)
+
+    parts = [part.strip() for part in re.split(r"[,;\n]+", expression) if part.strip()]
+    if len(parts) != 1:
+        return None
+    token = parts[0]
+    if ":" in token:
+        key, value = (part.strip() for part in token.split(":", 1))
+        if key.casefold() in {"id", "body", "bodyid", "rootid"} and value.isdigit():
+            return NeuPrintSelection("body_ids", value, limit)
+        if key.casefold() not in {"type", "celltype"}:
+            return None
+        token = value
+    if not token or token.upper() in {"AN", "DN", "IN", "MN", "SN"}:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", token):
+        return None
+    return NeuPrintSelection("type_exact", token, limit)
+
+
+def _primary_circuit_sources(
+    sources: tuple[ConnectomeRef, ...],
+) -> tuple[ConnectomeRef, ...]:
+    """Keep the main selector focused when both complete local datasets exist.
+
+    Curated subsets, managed download bundles, custom morphologies, and scratch
+    exports remain registered in the Data Library.  They are useful provenance
+    and fallback resources, but should not masquerade as peer connectomes next
+    to the authoritative full MANC and Male CNS morphology trees.
+    """
+
+    full_manc = next(
+        (source for source in sources if source.key == "manc:v1.2.1:full-local"),
+        None,
+    )
+    male_cns = next(
+        (source for source in sources if source.key == "male-cns:v0.9"),
+        None,
+    )
+    if full_manc is not None and male_cns is not None:
+        return full_manc, male_cns
+    return sources
 
 
 def _header() -> QVBoxLayout:
@@ -131,6 +206,7 @@ class _ScrollSafeDoubleSpinBox(QDoubleSpinBox):
 class CircuitBuilderPage(QWidget):
     status_message = Signal(str)
     circuit_changed = Signal(object)
+    managed_data_changed = Signal()
 
     def __init__(self, overview: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -149,6 +225,9 @@ class CircuitBuilderPage(QWidget):
         self._mixed_selection_design = False
         self._setting_connection_controls = False
         self._syncing_neuron_table_selection = False
+        self._missing_neuprint_request: tuple[
+            str, NeuPrintSelection, str
+        ] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 22, 28, 24)
@@ -201,6 +280,13 @@ class CircuitBuilderPage(QWidget):
         self.assemble_button.setProperty("primary", True)
         self.assemble_button.clicked.connect(self.assemble_circuit)
         query_row.addWidget(self.assemble_button)
+        self.download_missing_button = QPushButton("Get missing SWCs…")
+        self.download_missing_button.setToolTip(
+            "Open the credential-safe neuPrint importer with this dataset and query prefilled"
+        )
+        self.download_missing_button.setVisible(False)
+        self.download_missing_button.clicked.connect(self.open_missing_neuprint_import)
+        query_row.addWidget(self.download_missing_button)
         controls_layout.addLayout(query_row)
 
         self.engine_note = QLabel()
@@ -649,10 +735,12 @@ class CircuitBuilderPage(QWidget):
             profile = load_default_profile()
         except (OSError, ValueError):
             profile = None
-        discovered = discover_connectomes(
-            self.overview.workspace_edit.text(),
-            morphology_library_root=morphology_library_root(),
-            external_sources=profile_connectome_sources(profile),
+        discovered = _primary_circuit_sources(
+            discover_connectomes(
+                self.overview.workspace_edit.text(),
+                morphology_library_root=morphology_library_root(),
+                external_sources=profile_connectome_sources(profile),
+            )
         )
         if (
             previous_source is not None
@@ -679,6 +767,43 @@ class CircuitBuilderPage(QWidget):
                 )
                 if index >= 0:
                     self.connectome_combo.setCurrentIndex(index)
+            elif self._sources:
+                workspace_root = Path(
+                    self.overview.workspace_edit.text()
+                ).expanduser().resolve()
+                profile_matches_workspace = bool(
+                    profile is not None and profile.workspace_root == workspace_root
+                )
+                preferred_index = next(
+                    (
+                        index
+                        for index, source in enumerate(self._sources)
+                        if profile_matches_workspace
+                        and source.key == "manc:v1.2.1:full-local"
+                    ),
+                    -1,
+                )
+                if preferred_index < 0:
+                    preferred_index = next(
+                        (
+                            index
+                            for index, source in enumerate(self._sources)
+                            if Path(source.root).expanduser().resolve().is_relative_to(
+                                workspace_root
+                            )
+                        ),
+                        -1,
+                    )
+                if preferred_index < 0:
+                    preferred_index = next(
+                        (
+                            index
+                            for index, source in enumerate(self._sources)
+                            if source.dataset == "custom"
+                        ),
+                        0,
+                    )
+                self.connectome_combo.setCurrentIndex(preferred_index)
         finally:
             self._restoring_controls = prior_guard
         self.assemble_button.setEnabled(bool(self._sources))
@@ -792,6 +917,7 @@ class CircuitBuilderPage(QWidget):
     def _selection_controls_changed(self, *_args: Any) -> None:
         if self._restoring_controls:
             return
+        self._clear_missing_neuprint_request()
         if self.spec.neuron_ids or self.loaded_morphologies:
             self._clear_loaded_assets("Cell-set controls changed · click Load cell set")
             self.status_message.emit("Cell-set controls changed; reload morphologies before saving")
@@ -831,12 +957,76 @@ class CircuitBuilderPage(QWidget):
             self._catalog_cache[cache_key] = catalog
         return catalog
 
+    def _clear_missing_neuprint_request(self) -> None:
+        self._missing_neuprint_request = None
+        self.download_missing_button.setVisible(False)
+
+    def open_missing_neuprint_import(self) -> None:
+        pending = self._missing_neuprint_request
+        if pending is None:
+            return
+        dataset, selection, expression = pending
+        try:
+            profile_path = default_profile_path()
+            profile = load_default_profile()
+            if profile is None:
+                raise ValueError(
+                    "No Workstation resource profile is configured. Set up the Workspace first."
+                )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Data Library is not configured", str(exc))
+            return
+
+        imported: list[ManagedResource] = []
+        dialog = NeuPrintImportDialog(
+            profile,
+            profile_path,
+            self,
+            preferred_dataset=dataset,
+            initial_selection=selection,
+            initial_resource_id=selection.value,
+        )
+        dialog.resource_imported.connect(imported.append)
+        dialog.exec()
+        if not imported:
+            return
+
+        resource = imported[-1]
+        target_root = (resource.root / "source" / "export_swc").resolve()
+        self.refresh_connectomes()
+        source_index = next(
+            (
+                index
+                for index, source in enumerate(self._sources)
+                if Path(source.root).expanduser().resolve() == target_root
+            ),
+            -1,
+        )
+        if source_index < 0:
+            self.status_message.emit(
+                "The neuPrint download completed, but its registered SWC source was not found. "
+                "Refresh sources or inspect the Data Library."
+            )
+            self.managed_data_changed.emit()
+            return
+        self._restoring_controls = True
+        try:
+            self.connectome_combo.setCurrentIndex(source_index)
+            self.query_edit.setText(expression)
+        finally:
+            self._restoring_controls = False
+        self._clear_missing_neuprint_request()
+        self.assemble_circuit()
+        self.managed_data_changed.emit()
+        self.review_recent_imports()
+
     def assemble_circuit(self) -> None:
         source = self._selected_source()
         if source is None:
             self.status_message.emit("Choose an available SWC morphology source first")
             return
         expression = self.query_edit.text().strip()
+        self._clear_missing_neuprint_request()
         self.assemble_button.setEnabled(False)
         self.viewport_summary.setText(f"Indexing {source.label}…")
         QApplication.processEvents()
@@ -845,7 +1035,18 @@ class CircuitBuilderPage(QWidget):
             result = catalog.query(expression, limit=self.limit_spin.value())
             if not result.records:
                 detail = ", ".join(result.unmatched) if result.unmatched else expression
-                self._clear_loaded_assets(f"No local SWCs matched: {detail or 'empty query'}")
+                dataset = _neuprint_dataset(source)
+                selection = _neuprint_selection(expression, self.limit_spin.value())
+                if dataset is not None and selection is not None:
+                    self._missing_neuprint_request = (dataset, selection, expression)
+                    self.download_missing_button.setVisible(True)
+                    summary = (
+                        f"No local SWCs matched: {detail or 'empty query'}. "
+                        f"Use Get missing SWCs to download this bounded {dataset} selection."
+                    )
+                else:
+                    summary = f"No local SWCs matched: {detail or 'empty query'}"
+                self._clear_loaded_assets(summary)
                 self.status_message.emit(self.viewport_summary.text())
                 return
             morphologies: list[Morphology] = []
