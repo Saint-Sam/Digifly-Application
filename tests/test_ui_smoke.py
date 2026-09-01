@@ -125,7 +125,7 @@ def test_main_window_constructs_without_importing_simulators():
     try:
         assert window.pages.count() == 6
         assert window.windowTitle() == "Digifly Workstation"
-        assert window.experiment_page.run_button.isEnabled() is False
+        assert window.experiment_page.run_button.isEnabled() is True
         assert window.data_library_page.import_in_progress is False
         assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
         assert window.experiment_page.config().engine == "arbor"
@@ -151,6 +151,9 @@ def test_main_window_constructs_without_importing_simulators():
 
 def test_sun_toggle_switches_and_persists_the_application_theme():
     application = QApplication.instance() or QApplication([])
+    settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
+    settings.setValue("theme", DARK_THEME)
+    settings.sync()
     window = MainWindow()
     try:
         assert window.theme == DARK_THEME
@@ -194,6 +197,8 @@ def test_theme_styles_are_complete_and_use_distinct_canvas_palettes():
     assert dark_style != light_style
     assert "@root@" not in dark_style
     assert "@root@" not in light_style
+    assert "QMessageBox QLabel" in dark_style
+    assert "QMessageBox QLabel" in light_style
     assert theme_color(DARK_THEME, "viewport_background") != theme_color(
         LIGHT_THEME, "viewport_background"
     )
@@ -261,6 +266,74 @@ def test_app_owned_pulse_template_exposes_runtime_controls_without_a_notebook():
         page.reset()
         assert page.template_combo.currentData() == "blank"
         assert page.name_edit.text() == "Untitled experiment"
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_experiment_run_button_warns_before_reusing_a_saved_name(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    output = tmp_path / "runs"
+    saved = output / "jobs" / "20260901_120000_experiment_builder_v1"
+    saved.mkdir(parents=True)
+    (saved / "request.json").write_text(
+        json.dumps({"experiment": {"name": "Untitled experiment"}}),
+        encoding="utf-8",
+    )
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    window = MainWindow()
+    try:
+        window.overview_page.output_edit.setText(str(output))
+        assert window.experiment_page.run_button.isEnabled()
+        window.experiment_page.run_button.click()
+        application.processEvents()
+        assert warnings and warnings[0][0] == "Experiment name already used"
+        assert "Untitled experiment" in warnings[0][1]
+        assert str(saved.resolve()) in warnings[0][1]
+        assert "No files were changed" in warnings[0][1]
+        assert "Name already used" in window.experiment_page.validation_state.text()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_unique_experiment_name_passes_name_gate_without_starting_backend(
+    tmp_path, monkeypatch
+):
+    application = QApplication.instance() or QApplication([])
+    messages: list[tuple[str, str]] = []
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    window = MainWindow()
+    try:
+        window.overview_page.output_edit.setText(str(tmp_path / "runs"))
+        window.experiment_page.name_edit.setText("First unique run")
+        window.experiment_page.set_circuit_spec(
+            CircuitSpec(
+                connectome=ConnectomeRef("manc:v1.2.1", "MANC", "/data/swc"),
+                neuron_ids=("10000",),
+            )
+        )
+        window.experiment_page.run_button.click()
+        application.processEvents()
+        assert warnings == []
+        assert messages and messages[0][0] == "Experiment name available"
+        assert "no simulation started" in messages[0][1].lower()
+        assert not (tmp_path / "runs").exists()
     finally:
         window.close()
         application.processEvents()

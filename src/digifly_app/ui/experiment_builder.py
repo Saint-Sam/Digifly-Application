@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Iterable
 
 from PySide6.QtCore import Qt, Signal
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -28,6 +30,7 @@ from digifly_app.core.experiment import (
     RecordingSpec,
     StimulusSpec,
 )
+from digifly_app.core.jobs import JobStore
 from digifly_app.core.models import CheckState
 from digifly_app.core.morphology import Morphology, locate_soma
 from .circuit_viewport import (
@@ -193,8 +196,18 @@ class ExperimentBuilderPage(QWidget):
     experiment_changed = Signal(object)
     result_ready = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        output_root: str | Path | None = None,
+    ):
         super().__init__(parent)
+        self._configured_output_root = Path(
+            output_root
+            if output_root is not None
+            else Path.home() / "Digifly Workstation Workspace" / "runs"
+        ).expanduser()
         self._circuit = CircuitSpec()
         self._morphologies: tuple[Morphology, ...] = ()
         self._morphology_signature: tuple[tuple[str, str, int], ...] = ()
@@ -603,10 +616,10 @@ class ExperimentBuilderPage(QWidget):
         self.validate_button.setProperty("primary", True)
         self.validate_button.clicked.connect(self.validate_draft)
         self.run_button = QPushButton("Run experiment")
-        self.run_button.setEnabled(False)
         self.run_button.setToolTip(
-            "A generic CircuitSpec execution adapter is required before this draft can launch."
+            "Check this draft and its experiment name against saved runs before launch"
         )
+        self.run_button.clicked.connect(self.request_run)
         action_row.addWidget(self.validate_button)
         action_row.addWidget(self.run_button)
         action_row.addStretch(1)
@@ -1033,6 +1046,61 @@ class ExperimentBuilderPage(QWidget):
             "Draft valid · generic execution adapter is the next backend milestone"
         )
         self.status_message.emit(self.validation_state.text())
+
+    def request_run(self) -> None:
+        """Exercise launch gates without starting the unfinished generic adapter."""
+
+        try:
+            config = self.config()
+        except Exception as exc:
+            self._show_not_ready(str(exc))
+            return
+        output_root = self._output_root()
+        matches = JobStore(output_root).matching_experiment_runs(config.name)
+        if matches:
+            existing = matches[0]
+            self.validation_state.setText(
+                f"Name already used · rename {config.name!r} before running"
+            )
+            self.status_message.emit(self.validation_state.text())
+            QMessageBox.warning(
+                self,
+                "Experiment name already used",
+                f'A saved run named "{config.name.strip()}" already exists.\n\n'
+                f"Existing run: {existing}\n\n"
+                "Choose a different experiment name before running. No files were changed.",
+            )
+            return
+        errors = config.errors(self._circuit)
+        if errors:
+            self._show_not_ready(errors[0])
+            return
+        self.validation_state.setText(
+            "Name available · execution adapter is not connected yet"
+        )
+        self.status_message.emit(self.validation_state.text())
+        QMessageBox.information(
+            self,
+            "Experiment name available",
+            f'No saved run named "{config.name.strip()}" was found under:\n'
+            f"{output_root}\n\n"
+            "The duplicate-name gate passed. The generic execution adapter is not connected yet, so no simulation started and no files were created.",
+        )
+
+    def set_output_root(self, value: str | Path) -> None:
+        self._configured_output_root = Path(value).expanduser()
+
+    def _output_root(self) -> Path:
+        return self._configured_output_root.resolve()
+
+    def _show_not_ready(self, detail: str) -> None:
+        self.validation_state.setText(f"Experiment not ready · {detail}")
+        self.status_message.emit(self.validation_state.text())
+        QMessageBox.warning(
+            self,
+            "Experiment is not ready",
+            f"{detail}\n\nNo simulation started and no files were created.",
+        )
 
     def _template_changed(self) -> None:
         if self._restoring:

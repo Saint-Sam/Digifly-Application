@@ -1353,7 +1353,12 @@ class MainWindow(QMainWindow):
         self.overview_page = OverviewPage()
         self.data_library_page = DataLibraryPage()
         self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
-        self.experiment_page = ExperimentBuilderPage()
+        self.experiment_page = ExperimentBuilderPage(
+            output_root=self.overview_page.output_edit.text()
+        )
+        self.overview_page.output_edit.textChanged.connect(
+            self.experiment_page.set_output_root
+        )
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
         self.engines_page = EnginesPage(self.overview_page)
         for page in (

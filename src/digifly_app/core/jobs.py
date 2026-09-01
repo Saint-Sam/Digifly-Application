@@ -38,6 +38,36 @@ class JobStore:
         self.append_event(job_dir, "queued", "Execution plan created.")
         return job_dir
 
+    def matching_experiment_runs(self, experiment_name: str) -> tuple[Path, ...]:
+        """Return saved run folders whose recorded experiment name matches."""
+
+        expected = _normalized_experiment_name(experiment_name)
+        if not expected:
+            return ()
+        documents: set[Path] = set()
+        for pattern in (
+            "jobs/*/request.json",
+            "jobs/*/experiment.json",
+            "jobs/*/run_manifest.json",
+            "experiments/*/experiment.json",
+            "experiments/*/run_manifest.json",
+            "experiments/*/*/experiment.json",
+            "experiments/*/*/run_manifest.json",
+        ):
+            documents.update(self.output_root.glob(pattern))
+        matches: set[Path] = set()
+        for document in documents:
+            try:
+                payload = json.loads(document.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            saved_name = _saved_experiment_name(payload)
+            if _normalized_experiment_name(saved_name) == expected:
+                matches.add(document.parent.resolve())
+        return tuple(sorted(matches, key=str))
+
     def update_status(
         self,
         job_dir: str | Path,
@@ -58,3 +88,20 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(path)
+
+
+def _normalized_experiment_name(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _saved_experiment_name(payload: Mapping[str, Any]) -> str:
+    candidates: list[Mapping[str, Any]] = [payload]
+    for key in ("experiment", "recipe", "request"):
+        nested = payload.get(key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    for candidate in candidates:
+        value = candidate.get("name")
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""

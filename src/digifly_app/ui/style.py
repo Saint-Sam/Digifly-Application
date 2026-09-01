@@ -189,6 +189,8 @@ QWidget {
     font-size: 13px;
 }
 QMainWindow, QWidget#RootWindow { background: @root@; }
+QDialog, QMessageBox { background: @root@; }
+QMessageBox QLabel { color: @text@; background: transparent; }
 QWidget#PageContent, QScrollArea > QWidget > QWidget, QAbstractScrollArea::viewport { background: @root@; }
 QFrame#Sidebar { background: @sidebar@; border-right: 1px solid @sidebar_border@; }
 QFrame#Topbar { background: @topbar@; border-bottom: 1px solid @topbar_border@; }

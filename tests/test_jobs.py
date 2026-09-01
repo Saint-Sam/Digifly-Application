@@ -21,3 +21,29 @@ def test_job_store_persists_reproducibility_bundle(tmp_path):
     ]
     assert json.loads((job / "status.json").read_text())["state"] == "queued"
     assert (job / "events.jsonl").is_file()
+
+
+def test_job_store_finds_saved_experiment_names_without_scanning_datasets(tmp_path):
+    job = tmp_path / "jobs" / "20260901_120000_experiment_builder_v1"
+    job.mkdir(parents=True)
+    (job / "request.json").write_text(
+        json.dumps({"experiment": {"name": "Wing steering response"}}),
+        encoding="utf-8",
+    )
+    run = tmp_path / "experiments" / "wing-steering" / "run-002"
+    run.mkdir(parents=True)
+    (run / "experiment.json").write_text(
+        json.dumps({"name": "Different experiment"}),
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "managed-data" / "request.json"
+    unrelated.parent.mkdir()
+    unrelated.write_text(
+        json.dumps({"experiment": {"name": "Wing steering response"}}),
+        encoding="utf-8",
+    )
+
+    assert JobStore(tmp_path).matching_experiment_runs(
+        "  wing   STEERING response "
+    ) == (job.resolve(),)
+    assert JobStore(tmp_path).matching_experiment_runs("new name") == ()
