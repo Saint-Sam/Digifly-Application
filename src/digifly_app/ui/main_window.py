@@ -1292,7 +1292,6 @@ class MainWindow(QMainWindow):
         brand_row.addStretch(1)
         self.theme_toggle = QToolButton()
         self.theme_toggle.setObjectName("ThemeToggle")
-        self.theme_toggle.setText("☀")
         self.theme_toggle.setCheckable(True)
         self.theme_toggle.setChecked(self.theme == LIGHT_THEME)
         self.theme_toggle.setAccessibleName("Color theme")
@@ -1423,11 +1422,14 @@ class MainWindow(QMainWindow):
 
     def _update_theme_toggle_text(self) -> None:
         if self.theme == LIGHT_THEME:
+            icon = "☀"
             tooltip = "Switch to dark theme"
             description = "Light theme active. Activate to switch to dark theme."
         else:
+            icon = "☾"
             tooltip = "Switch to light theme"
             description = "Dark theme active. Activate to switch to light theme."
+        self.theme_toggle.setText(icon)
         self.theme_toggle.setToolTip(tooltip)
         self.theme_toggle.setAccessibleDescription(description)
 

@@ -154,7 +154,7 @@ def test_sun_toggle_switches_and_persists_the_application_theme():
     window = MainWindow()
     try:
         assert window.theme == DARK_THEME
-        assert window.theme_toggle.text() == "☀"
+        assert window.theme_toggle.text() == "☾"
         assert window.theme_toggle.isChecked() is False
         assert window.theme_toggle.toolTip() == "Switch to light theme"
         assert application.property("digiflyTheme") == DARK_THEME
@@ -162,6 +162,7 @@ def test_sun_toggle_switches_and_persists_the_application_theme():
         window.theme_toggle.click()
         application.processEvents()
         assert window.theme == LIGHT_THEME
+        assert window.theme_toggle.text() == "☀"
         assert window.theme_toggle.isChecked() is True
         assert window.theme_toggle.toolTip() == "Switch to dark theme"
         assert application.property("digiflyTheme") == LIGHT_THEME
@@ -174,10 +175,12 @@ def test_sun_toggle_switches_and_persists_the_application_theme():
     restored = MainWindow()
     try:
         assert restored.theme == LIGHT_THEME
+        assert restored.theme_toggle.text() == "☀"
         assert restored.theme_toggle.isChecked() is True
         restored.theme_toggle.click()
         application.processEvents()
         assert restored.theme == DARK_THEME
+        assert restored.theme_toggle.text() == "☾"
     finally:
         restored.close()
         application.processEvents()
