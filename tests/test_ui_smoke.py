@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QSettings
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
@@ -235,6 +236,14 @@ def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview(
         assert page.stimulus_preview.intervals() == ((5.0, 7.0), (25.0, 27.0))
         assert "1.5 nA" in page.stimulus_preview_summary.text()
         assert "simulation ends at 40 ms" in page.stimulus_preview_summary.text()
+
+        page.selector_sections["primary_stimulus"].set_expanded(True)
+        page.frequency.lineEdit().selectAll()
+        QTest.keyClicks(page.frequency.lineEdit(), "75")
+        application.processEvents()
+        assert page.frequency.value() == 75.0
+        assert page.stimulus_preview.protocol()["frequency_hz"] == 75.0
+        assert "3 pulses @ 75 Hz" in page.stimulus_preview_summary.text()
 
         simulation_section = page.selector_sections["simulation_compute"]
         simulation_section.toggle_button.click()

@@ -243,6 +243,15 @@ class ExperimentBuilderPage(QWidget):
         self.pulse_count = QSpinBox()
         self.pulse_count.setRange(1, 1_000_000)
         self.pulse_count.setValue(10)
+        for live_control in (
+            self.duration,
+            self.amplitude,
+            self.delay,
+            self.pulse_width,
+            self.frequency,
+            self.pulse_count,
+        ):
+            live_control.setKeyboardTracking(True)
         stimulus_form.addRow("Target neuron IDs", self.stimulus_targets)
         stimulus_form.addRow("Target region", self.stimulus_region)
         stimulus_form.addRow("Waveform", self.waveform_combo)
