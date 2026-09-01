@@ -211,8 +211,9 @@ def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview(
         page = window.experiment_page
         assert tuple(page.selector_sections) == (
             "experiment_identity",
-            "simulation_compute",
+            "circuit_input",
             "primary_stimulus",
+            "simulation_compute",
             "runtime_conditions",
             "recording_outputs",
         )

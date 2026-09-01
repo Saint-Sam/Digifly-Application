@@ -195,27 +195,6 @@ class ExperimentBuilderPage(QWidget):
         layout.addWidget(title)
         layout.addWidget(detail)
 
-        circuit_card = Card()
-        circuit_layout = QVBoxLayout(circuit_card)
-        circuit_layout.setContentsMargins(17, 14, 17, 15)
-        circuit_layout.setSpacing(8)
-        circuit_top = QHBoxLayout()
-        circuit_top.addWidget(_section_title("Circuit input"))
-        circuit_top.addStretch(1)
-        self.circuit_state = StatusPill(CheckState.WARNING, "NO CIRCUIT")
-        circuit_top.addWidget(self.circuit_state)
-        circuit_layout.addLayout(circuit_top)
-        self.circuit_summary = QLabel(
-            "Assemble and load neurons in Circuit Builder. This page will receive a read-only snapshot automatically."
-        )
-        self.circuit_summary.setObjectName("Muted")
-        self.circuit_summary.setWordWrap(True)
-        circuit_layout.addWidget(self.circuit_summary)
-        self.circuit_detail = QLabel("No circuit snapshot attached")
-        self.circuit_detail.setWordWrap(True)
-        circuit_layout.addWidget(self.circuit_detail)
-        layout.addWidget(circuit_card)
-
         workspace = QGridLayout()
         workspace.setHorizontalSpacing(16)
         workspace.setVerticalSpacing(0)
@@ -300,6 +279,23 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(identity_form, "engine", "Execution engine", self.engine_combo)
         identity_layout.addLayout(identity_form)
 
+        circuit_layout = add_selector("circuit_input", "Circuit input")
+        circuit_top = QHBoxLayout()
+        circuit_top.addStretch(1)
+        self.circuit_state = StatusPill(CheckState.WARNING, "NO CIRCUIT")
+        circuit_top.addWidget(self.circuit_state)
+        circuit_layout.addLayout(circuit_top)
+        self.circuit_summary = QLabel(
+            "Assemble and load neurons in Circuit Builder. This page will receive a read-only snapshot automatically."
+        )
+        self.circuit_summary.setObjectName("Muted")
+        self.circuit_summary.setWordWrap(True)
+        circuit_layout.addWidget(self.circuit_summary)
+        self.circuit_detail = QLabel("No circuit snapshot attached")
+        self.circuit_detail.setWordWrap(True)
+        circuit_layout.addWidget(self.circuit_detail)
+
+        stimulus_layout = add_selector("primary_stimulus", "Primary stimulus")
         run_layout = add_selector("simulation_compute", "Simulation & compute")
         run_form = QFormLayout()
         run_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -330,7 +326,6 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(run_form, "workers", "Workers / threads", self.workers)
         run_layout.addLayout(run_form)
 
-        stimulus_layout = add_selector("primary_stimulus", "Primary stimulus")
         stimulus_hint = QLabel(
             "Blank target IDs means every neuron in the circuit. The execution adapter will resolve simulator locations after validation."
         )
