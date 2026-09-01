@@ -84,15 +84,27 @@ class HelpLabel(QWidget):
     ):
         super().__init__(parent)
         self.setObjectName(f"HelpLabel_{key}" if key else "HelpLabel")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(5)
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(5)
         self.text_label = QLabel(str(text))
         if buddy is not None:
             self.text_label.setBuddy(buddy)
-        row.addWidget(self.text_label)
+        self.row.addWidget(self.text_label)
         self.help_button = HelpButton(text, help_text, key=key)
-        row.addWidget(self.help_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.row.addWidget(
+            self.help_button,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+
+    def add_trailing_widget(self, widget: QWidget) -> None:
+        """Place supplemental form-label feedback before the help button."""
+
+        self.row.insertWidget(
+            self.row.count() - 1,
+            widget,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
 
 
 class CollapsibleSection(QWidget):

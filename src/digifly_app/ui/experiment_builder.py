@@ -254,12 +254,13 @@ class ExperimentBuilderPage(QWidget):
             key: str,
             label: str,
             field: QWidget,
-        ) -> None:
+        ) -> HelpLabel:
             help_text = EXPERIMENT_SETTING_HELP[key]
             help_label = HelpLabel(label, help_text, key=key, buddy=field)
             self.help_labels[key] = help_label
             self.help_buttons[key] = help_label.help_button
             form.addRow(help_label, field)
+            return help_label
 
         def helped_control(control: QWidget, key: str) -> QWidget:
             help_text = EXPERIMENT_SETTING_HELP[key]
@@ -311,7 +312,16 @@ class ExperimentBuilderPage(QWidget):
         self.engine_combo.addItem("Arbor", "arbor")
         self.engine_combo.addItem("NEURON", "neuron")
         self.engine_combo.addItem("BMTK / SONATA", "bmtk")
-        add_help_row(identity_form, "experiment_name", "Name", self.name_edit)
+        self.name_availability = QLabel()
+        self.name_availability.setObjectName("ExperimentNameAvailability")
+        self.name_availability.setAccessibleName("Experiment name availability")
+        name_help_label = add_help_row(
+            identity_form,
+            "experiment_name",
+            "Name",
+            self.name_edit,
+        )
+        name_help_label.add_trailing_widget(self.name_availability)
         add_help_row(identity_form, "template", "Template", self.template_combo)
         add_help_row(identity_form, "engine", "Execution engine", self.engine_combo)
         identity_layout.addLayout(identity_form)
@@ -702,6 +712,7 @@ class ExperimentBuilderPage(QWidget):
             self.make_plots,
         ):
             self._connect_change(control)
+        self.name_edit.textChanged.connect(self._update_name_availability)
         self.set_config(ExperimentSpec())
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
@@ -1055,8 +1066,7 @@ class ExperimentBuilderPage(QWidget):
         except Exception as exc:
             self._show_not_ready(str(exc))
             return
-        output_root = self._output_root()
-        matches = JobStore(output_root).matching_experiment_runs(config.name)
+        matches = self._update_name_availability()
         if matches:
             existing = matches[0]
             self.validation_state.setText(
@@ -1079,19 +1089,45 @@ class ExperimentBuilderPage(QWidget):
             "Name available · execution adapter is not connected yet"
         )
         self.status_message.emit(self.validation_state.text())
-        QMessageBox.information(
-            self,
-            "Experiment name available",
-            f'No saved run named "{config.name.strip()}" was found under:\n'
-            f"{output_root}\n\n"
-            "The duplicate-name gate passed. The generic execution adapter is not connected yet, so no simulation started and no files were created.",
-        )
 
     def set_output_root(self, value: str | Path) -> None:
         self._configured_output_root = Path(value).expanduser()
+        self._update_name_availability()
 
     def _output_root(self) -> Path:
         return self._configured_output_root.resolve()
+
+    def _update_name_availability(self, *_args: Any) -> tuple[Path, ...]:
+        """Keep the name field aligned with the duplicate-name launch gate."""
+
+        name = " ".join(self.name_edit.text().split())
+        matches = (
+            JobStore(self._output_root()).matching_experiment_runs(name)
+            if name
+            else ()
+        )
+        available = bool(name) and not matches
+        state = "available" if available else "unavailable"
+        text = "✓ Available" if available else "✕ Unavailable"
+        if not name:
+            detail = "Enter an experiment name before running."
+        elif matches:
+            detail = f"A saved run with this name already exists at {matches[0]}."
+        else:
+            detail = f"No saved run with this name exists under {self._output_root()}."
+
+        self.name_availability.setText(text)
+        self.name_availability.setProperty("availability", state)
+        self.name_availability.setToolTip(detail)
+        self.name_availability.setAccessibleDescription(detail)
+        self.name_edit.setProperty("nameAvailability", state)
+        self.name_edit.setToolTip(detail)
+        self.name_edit.setAccessibleDescription(f"{text}. {detail}")
+        for widget in (self.name_availability, self.name_edit):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+        return matches
 
     def _show_not_ready(self, detail: str) -> None:
         self.validation_state.setText(f"Experiment not ready · {detail}")

@@ -60,6 +60,12 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "input": "#0b1325",
         "input_border": "#30415f",
         "focus": "#5791ef",
+        "name_available_bg": "#0d251c",
+        "name_available_border": "#3aa875",
+        "name_available_text": "#76dfa9",
+        "name_unavailable_bg": "#2a121c",
+        "name_unavailable_border": "#c85872",
+        "name_unavailable_text": "#ff8fa8",
         "selection": "#2d67c8",
         "checkbox_text": "#cbd6e9",
         "scrollbar": "#0b1020",
@@ -140,6 +146,12 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "input": "#ffffff",
         "input_border": "#aebdd0",
         "focus": "#3474ca",
+        "name_available_bg": "#ecf8f1",
+        "name_available_border": "#2f8f62",
+        "name_available_text": "#22704d",
+        "name_unavailable_bg": "#fff0f3",
+        "name_unavailable_border": "#c94e69",
+        "name_unavailable_text": "#a8324e",
         "selection": "#3474ca",
         "checkbox_text": "#2c405b",
         "scrollbar": "#edf2f7",
@@ -263,6 +275,20 @@ QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget {
     selection-background-color: @selection@; selection-color: white; padding: 6px 9px;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: @focus@; }
+QLineEdit#ExperimentName[nameAvailability="available"] {
+    color: @name_available_text@; background: @name_available_bg@; border-color: @name_available_border@;
+}
+QLineEdit#ExperimentName[nameAvailability="available"]:focus { border-color: @name_available_text@; }
+QLineEdit#ExperimentName[nameAvailability="unavailable"] {
+    color: @name_unavailable_text@; background: @name_unavailable_bg@; border-color: @name_unavailable_border@;
+}
+QLineEdit#ExperimentName[nameAvailability="unavailable"]:focus { border-color: @name_unavailable_text@; }
+QLabel#ExperimentNameAvailability[availability="available"] {
+    color: @name_available_text@; font-size: 11px; font-weight: 700;
+}
+QLabel#ExperimentNameAvailability[availability="unavailable"] {
+    color: @name_unavailable_text@; font-size: 11px; font-weight: 700;
+}
 QComboBox::drop-down { border: 0; width: 24px; }
 QComboBox QAbstractItemView { color: @text@; background: @card@; selection-background-color: @selection@; }
 QCheckBox { spacing: 8px; color: @checkbox_text@; }

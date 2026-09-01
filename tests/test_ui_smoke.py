@@ -205,6 +205,14 @@ def test_theme_styles_are_complete_and_use_distinct_canvas_palettes():
     assert theme_color(DARK_THEME, "stimulus_surface") != theme_color(
         LIGHT_THEME, "stimulus_surface"
     )
+    assert theme_color(DARK_THEME, "name_available_bg") != theme_color(
+        LIGHT_THEME, "name_available_bg"
+    )
+    assert theme_color(DARK_THEME, "name_unavailable_bg") != theme_color(
+        LIGHT_THEME, "name_unavailable_bg"
+    )
+    assert 'QLineEdit#ExperimentName[nameAvailability="available"]' in dark_style
+    assert 'QLineEdit#ExperimentName[nameAvailability="unavailable"]' in light_style
 
 
 def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path, monkeypatch):
@@ -289,6 +297,16 @@ def test_experiment_run_button_warns_before_reusing_a_saved_name(tmp_path, monke
     window = MainWindow()
     try:
         window.overview_page.output_edit.setText(str(output))
+        application.processEvents()
+        assert window.experiment_page.name_availability.text() == "✕ Unavailable"
+        assert (
+            window.experiment_page.name_availability.property("availability")
+            == "unavailable"
+        )
+        assert (
+            window.experiment_page.name_edit.property("nameAvailability")
+            == "unavailable"
+        )
         assert window.experiment_page.run_button.isEnabled()
         window.experiment_page.run_button.click()
         application.processEvents()
@@ -322,6 +340,12 @@ def test_unique_experiment_name_passes_name_gate_without_starting_backend(
     try:
         window.overview_page.output_edit.setText(str(tmp_path / "runs"))
         window.experiment_page.name_edit.setText("First unique run")
+        application.processEvents()
+        assert window.experiment_page.name_availability.text() == "✓ Available"
+        assert (
+            window.experiment_page.name_edit.property("nameAvailability")
+            == "available"
+        )
         window.experiment_page.set_circuit_spec(
             CircuitSpec(
                 connectome=ConnectomeRef("manc:v1.2.1", "MANC", "/data/swc"),
@@ -331,9 +355,44 @@ def test_unique_experiment_name_passes_name_gate_without_starting_backend(
         window.experiment_page.run_button.click()
         application.processEvents()
         assert warnings == []
-        assert messages and messages[0][0] == "Experiment name available"
-        assert "no simulation started" in messages[0][1].lower()
+        assert messages == []
+        assert "Name available" in window.experiment_page.validation_state.text()
         assert not (tmp_path / "runs").exists()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_experiment_name_availability_updates_during_typing(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    output = tmp_path / "runs"
+    saved = output / "jobs" / "20260901_120000_experiment_builder_v1"
+    saved.mkdir(parents=True)
+    (saved / "request.json").write_text(
+        json.dumps({"experiment": {"name": "Untitled experiment"}}),
+        encoding="utf-8",
+    )
+    window = MainWindow()
+    try:
+        page = window.experiment_page
+        window.overview_page.output_edit.setText(str(output))
+        application.processEvents()
+        assert page.name_availability.text() == "✕ Unavailable"
+
+        page.name_edit.selectAll()
+        QTest.keyClicks(page.name_edit, "Fresh typed run")
+        application.processEvents()
+        assert page.name_availability.text() == "✓ Available"
+        assert page.name_availability.property("availability") == "available"
+        assert page.name_edit.property("nameAvailability") == "available"
+
+        page.name_edit.selectAll()
+        QTest.keyClicks(page.name_edit, "  UNTITLED   EXPERIMENT  ")
+        application.processEvents()
+        assert page.name_availability.text() == "✕ Unavailable"
+        assert page.name_availability.property("availability") == "unavailable"
+        assert page.name_edit.property("nameAvailability") == "unavailable"
+        assert str(saved.resolve()) in page.name_edit.toolTip()
     finally:
         window.close()
         application.processEvents()
