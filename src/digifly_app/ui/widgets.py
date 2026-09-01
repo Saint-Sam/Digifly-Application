@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -25,7 +26,9 @@ class Card(QFrame):
 
 
 class HelpButton(QToolButton):
-    """Small, accessible hover target for contextual setting help."""
+    """Small, accessible button that opens contextual setting help."""
+
+    help_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -37,17 +40,38 @@ class HelpButton(QToolButton):
     ):
         super().__init__(parent)
         self.setObjectName("HelpButton")
-        self.setProperty("helpKey", str(key))
+        self.setting_name = str(setting_name)
+        self.help_key = str(key)
+        self.help_text = str(help_text)
+        self.setProperty("helpKey", self.help_key)
         self.setText("?")
         self.setFixedSize(18, 18)
-        self.setCursor(Qt.CursorShape.WhatsThisCursor)
-        self.setToolTip(str(help_text))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click for help")
         self.setAccessibleName(f"Help for {setting_name}")
-        self.setAccessibleDescription(str(help_text))
+        self.setAccessibleDescription(f"Click for help. {self.help_text}")
+        self.help_popup: QMessageBox | None = None
+        self.clicked.connect(self.show_help)
+
+    def show_help(self) -> None:
+        self.help_requested.emit(self.help_key, self.help_text)
+        if self.help_popup is not None:
+            self.help_popup.close()
+        popup = QMessageBox(self)
+        popup.setObjectName("SettingHelpPopover")
+        popup.setWindowTitle(f"{self.setting_name} help")
+        popup.setIcon(QMessageBox.Icon.Information)
+        popup.setText(self.help_text)
+        popup.setTextFormat(Qt.TextFormat.PlainText)
+        popup.setStandardButtons(QMessageBox.StandardButton.Close)
+        popup.setModal(False)
+        popup.setAccessibleName(f"{self.accessibleName()} explanation")
+        self.help_popup = popup
+        popup.open()
 
 
 class HelpLabel(QWidget):
-    """Form label with a neighboring question-mark tooltip affordance."""
+    """Form label with a neighboring question-mark help button."""
 
     def __init__(
         self,
@@ -60,12 +84,10 @@ class HelpLabel(QWidget):
     ):
         super().__init__(parent)
         self.setObjectName(f"HelpLabel_{key}" if key else "HelpLabel")
-        self.setToolTip(str(help_text))
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(5)
         self.text_label = QLabel(str(text))
-        self.text_label.setToolTip(str(help_text))
         if buddy is not None:
             self.text_label.setBuddy(buddy)
         row.addWidget(self.text_label)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Iterable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -29,6 +29,11 @@ from digifly_app.core.experiment import (
     StimulusSpec,
 )
 from digifly_app.core.models import CheckState
+from digifly_app.core.morphology import Morphology, locate_soma
+from .circuit_viewport import (
+    DISPLAY_MODE_FULL_SKELETONS,
+    CircuitViewport,
+)
 from .stimulus_preview import StimulusPreview
 from .widgets import (
     Card,
@@ -162,6 +167,25 @@ def _section_title(text: str) -> QLabel:
     return label
 
 
+def _proximal_axon_segment_ids(morphology: Morphology) -> set[int]:
+    """Return a small visual AIS proxy from the nearest type-2 SWC segments."""
+
+    axonal = [segment for segment in morphology.segments if segment.swc_type == 2]
+    if not axonal:
+        return set()
+    soma = locate_soma(morphology).point
+
+    def distance_squared(segment: Any) -> float:
+        return min(
+            sum((value - origin) ** 2 for value, origin in zip(point, soma))
+            for point in (segment.parent, segment.child)
+        )
+
+    axonal.sort(key=distance_squared)
+    preview_count = max(1, min(16, (len(axonal) + 19) // 20))
+    return {segment.child_id for segment in axonal[:preview_count]}
+
+
 class ExperimentBuilderPage(QWidget):
     """Build a run protocol around a CircuitSpec without importing a notebook."""
 
@@ -172,6 +196,8 @@ class ExperimentBuilderPage(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._circuit = CircuitSpec()
+        self._morphologies: tuple[Morphology, ...] = ()
+        self._morphology_signature: tuple[tuple[str, str, int], ...] = ()
         self._restoring = False
 
         root = QVBoxLayout(self)
@@ -217,7 +243,6 @@ class ExperimentBuilderPage(QWidget):
             field: QWidget,
         ) -> None:
             help_text = EXPERIMENT_SETTING_HELP[key]
-            field.setToolTip(help_text)
             help_label = HelpLabel(label, help_text, key=key, buddy=field)
             self.help_labels[key] = help_label
             self.help_buttons[key] = help_label.help_button
@@ -225,7 +250,6 @@ class ExperimentBuilderPage(QWidget):
 
         def helped_control(control: QWidget, key: str) -> QWidget:
             help_text = EXPERIMENT_SETTING_HELP[key]
-            control.setToolTip(help_text)
             setting_name = str(getattr(control, "text", lambda: key)())
             row = QWidget()
             row_layout = QHBoxLayout(row)
@@ -518,6 +542,62 @@ class ExperimentBuilderPage(QWidget):
         visual_layout.setContentsMargins(0, 0, 0, 0)
         visual_layout.setSpacing(14)
 
+        circuit_preview_card = Card()
+        circuit_preview_layout = QVBoxLayout(circuit_preview_card)
+        circuit_preview_layout.setContentsMargins(12, 12, 12, 12)
+        circuit_preview_layout.setSpacing(7)
+        circuit_preview_layout.addWidget(_section_title("Circuit input · read-only view"))
+        self.circuit_viewport_summary = QLabel(
+            "Load a cell set in Circuit Builder to populate this view."
+        )
+        self.circuit_viewport_summary.setObjectName("Muted")
+        self.circuit_viewport_summary.setWordWrap(True)
+        circuit_preview_layout.addWidget(self.circuit_viewport_summary)
+        circuit_controls = QLabel(
+            "Drag: rotate · Shift-drag or middle-drag: move · wheel: zoom · "
+            "right-click: center / frame all · R: reset camera"
+        )
+        circuit_controls.setObjectName("Muted")
+        circuit_controls.setWordWrap(True)
+        circuit_preview_layout.addWidget(circuit_controls)
+        self.circuit_viewport = CircuitViewport(camera_only=True)
+        self.circuit_viewport.setObjectName("ExperimentCircuitViewport")
+        self.circuit_viewport.setAccessibleName("Read-only circuit input visualization")
+        self.circuit_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+        self.circuit_viewport.status_message.connect(self.status_message)
+        circuit_preview_layout.addWidget(self.circuit_viewport)
+        visual_layout.addWidget(circuit_preview_card)
+
+        target_preview_card = Card()
+        target_preview_layout = QVBoxLayout(target_preview_card)
+        target_preview_layout.setContentsMargins(12, 12, 12, 12)
+        target_preview_layout.setSpacing(7)
+        target_preview_layout.addWidget(_section_title("Primary stimulus · target view"))
+        self.target_region_visualization_label = QLabel(
+            "Target region: Soma · load a circuit morphology to see the highlighted target."
+        )
+        self.target_region_visualization_label.setObjectName(
+            "TargetRegionVisualizationLabel"
+        )
+        self.target_region_visualization_label.setWordWrap(True)
+        target_preview_layout.addWidget(self.target_region_visualization_label)
+        target_controls = QLabel(
+            "Bright yellow marks the current target region. Camera controls match the "
+            "read-only circuit view above."
+        )
+        target_controls.setObjectName("Muted")
+        target_controls.setWordWrap(True)
+        target_preview_layout.addWidget(target_controls)
+        self.target_region_viewport = CircuitViewport(camera_only=True)
+        self.target_region_viewport.setObjectName("ExperimentTargetRegionViewport")
+        self.target_region_viewport.setAccessibleName(
+            "Primary stimulus target-region visualization"
+        )
+        self.target_region_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+        self.target_region_viewport.status_message.connect(self.status_message)
+        target_preview_layout.addWidget(self.target_region_viewport)
+        visual_layout.addWidget(target_preview_card)
+
         stimulus_preview_card = Card()
         stimulus_preview_layout = QVBoxLayout(stimulus_preview_card)
         stimulus_preview_layout.setContentsMargins(17, 14, 17, 16)
@@ -649,7 +729,36 @@ class ExperimentBuilderPage(QWidget):
                 return
 
     def set_circuit_spec(self, spec: CircuitSpec) -> None:
+        """Attach a circuit document, retaining geometry only for the same cell set."""
+
+        existing_ids = tuple(item.record.neuron_id for item in self._morphologies)
+        morphologies = self._morphologies if existing_ids == tuple(spec.neuron_ids) else ()
+        self.set_circuit_snapshot(spec, morphologies)
+
+    def set_circuit_snapshot(
+        self,
+        spec: CircuitSpec,
+        morphologies: Iterable[Morphology] = (),
+    ) -> None:
+        """Attach a copied circuit spec plus immutable, presentation-only geometry."""
+
         self._circuit = CircuitSpec.from_dict(spec.to_dict())
+        by_id = {item.record.neuron_id: item for item in morphologies}
+        ordered = tuple(
+            by_id[neuron_id]
+            for neuron_id in self._circuit.neuron_ids
+            if neuron_id in by_id
+        )
+        signature = tuple(
+            (item.record.neuron_id, item.record.swc_path, len(item.segments))
+            for item in ordered
+        )
+        if signature != self._morphology_signature:
+            self._morphologies = ordered
+            self._morphology_signature = signature
+            self.circuit_viewport.set_morphologies(ordered)
+            self.target_region_viewport.set_morphologies(ordered)
+
         count = len(self._circuit.neuron_ids)
         if count:
             self.circuit_state.set_state(CheckState.PASS, text="CIRCUIT READY")
@@ -666,13 +775,114 @@ class ExperimentBuilderPage(QWidget):
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
             )
+            if ordered:
+                self.circuit_viewport_summary.setText(
+                    f"{len(ordered)} copied morphology view(s) · "
+                    f"{self.circuit_viewport.segment_count:,} SWC segments · circuit settings are read-only here."
+                )
+            else:
+                self.circuit_viewport_summary.setText(
+                    "Circuit document attached, but no loaded morphology snapshot is available. "
+                    "Load the cell set in Circuit Builder to populate this view."
+                )
         else:
             self.circuit_state.set_state(CheckState.WARNING, text="NO CIRCUIT")
             self.circuit_summary.setText(
                 "Assemble and load neurons in Circuit Builder. This page will receive a read-only snapshot automatically."
             )
             self.circuit_detail.setText("No circuit snapshot attached")
+            self.circuit_viewport_summary.setText(
+                "Load a cell set in Circuit Builder to populate this view."
+            )
+        self._update_target_region_preview()
         self._invalidate()
+
+    def _target_neuron_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        requested = _parse_ids(self.stimulus_targets.text())
+        available = {item.record.neuron_id for item in self._morphologies}
+        if not requested:
+            return tuple(item.record.neuron_id for item in self._morphologies), ()
+        return (
+            tuple(neuron_id for neuron_id in requested if neuron_id in available),
+            tuple(neuron_id for neuron_id in requested if neuron_id not in available),
+        )
+
+    def _selected_compartment_targets(
+        self, neuron_ids: Iterable[str]
+    ) -> dict[str, set[int]]:
+        selected: dict[str, set[int]] = {}
+        for neuron_id in neuron_ids:
+            raw_ids = set(self._circuit.compartment_overrides.get(neuron_id, {}))
+            raw_ids.update(
+                self._circuit.compartment_mechanism_overrides.get(neuron_id, {})
+            )
+            node_ids: set[int] = set()
+            for raw_node_id in raw_ids:
+                try:
+                    node_ids.add(int(raw_node_id))
+                except (TypeError, ValueError):
+                    continue
+            if node_ids:
+                selected[neuron_id] = node_ids
+        return selected
+
+    def _update_target_region_preview(self) -> None:
+        if not hasattr(self, "target_region_viewport"):
+            return
+        if not self._morphologies:
+            self.target_region_viewport.clear_highlights()
+            self.target_region_visualization_label.setText(
+                f"Target region: {self.stimulus_region.currentText()} · "
+                "load a circuit morphology to see the highlighted target."
+            )
+            return
+
+        target_ids, missing_ids = self._target_neuron_ids()
+        morphology_by_id = {
+            item.record.neuron_id: item for item in self._morphologies
+        }
+        region = str(self.stimulus_region.currentData())
+        missing_suffix = (
+            f" · {len(missing_ids)} requested neuron ID(s) are not loaded"
+            if missing_ids
+            else ""
+        )
+        if region == "all":
+            self.target_region_viewport.set_highlights(neuron_ids=target_ids)
+            segment_count = sum(
+                len(morphology_by_id[neuron_id].segments)
+                for neuron_id in target_ids
+            )
+            summary = (
+                f"Target region: All compartments · {segment_count:,} SWC segment(s) "
+                f"across {len(target_ids)} neuron(s) are brightened"
+            )
+        elif region == "soma":
+            self.target_region_viewport.set_highlights(soma_ids=target_ids)
+            summary = (
+                f"Target region: Soma · {len(target_ids)} soma/pseudosoma marker(s) "
+                "are brightened"
+            )
+        elif region == "ais":
+            segment_ids = {
+                neuron_id: _proximal_axon_segment_ids(morphology_by_id[neuron_id])
+                for neuron_id in target_ids
+            }
+            self.target_region_viewport.set_highlights(segment_ids=segment_ids)
+            summary = (
+                f"Target region: AIS · {self.target_region_viewport.highlighted_segment_count} "
+                "proximal axonal SWC segment(s) are brightened as a visual proxy; "
+                "the execution adapter resolves the exact AIS"
+            )
+        else:
+            segment_ids = self._selected_compartment_targets(target_ids)
+            self.target_region_viewport.set_highlights(segment_ids=segment_ids)
+            summary = (
+                "Target region: Selected SWC compartments · "
+                f"{self.target_region_viewport.highlighted_segment_count} applied Circuit Builder "
+                "compartment(s) are brightened"
+            )
+        self.target_region_visualization_label.setText(summary + missing_suffix)
 
     def circuit_spec(self) -> CircuitSpec:
         return CircuitSpec.from_dict(self._circuit.to_dict())
@@ -852,6 +1062,7 @@ class ExperimentBuilderPage(QWidget):
         if self._restoring:
             return
         self._update_stimulus_preview()
+        self._update_target_region_preview()
         self.validation_state.setText("Controls changed · validate draft")
         self.document_preview.clear()
         try:

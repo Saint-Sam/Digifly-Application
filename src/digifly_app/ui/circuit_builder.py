@@ -1892,6 +1892,15 @@ class CircuitBuilderPage(QWidget):
             self.spec.connectome = source
         return self.spec
 
+    def morphology_snapshot(self) -> tuple[Morphology, ...]:
+        """Return immutable loaded geometry in the circuit document's neuron order."""
+
+        return tuple(
+            self.loaded_morphologies[neuron_id]
+            for neuron_id in self.spec.neuron_ids
+            if neuron_id in self.loaded_morphologies
+        )
+
     def set_circuit_spec(self, spec: CircuitSpec) -> None:
         wanted_identity = _source_identity(spec.connectome)
         index = next(
@@ -1969,6 +1978,7 @@ class CircuitBuilderPage(QWidget):
         )
         self._update_viewport_guidance()
         self.status_message.emit(f"Restored exact saved cell set from {source.label}")
+        self.circuit_changed.emit(self.spec)
 
     def reset(self) -> None:
         self._restoring_controls = True

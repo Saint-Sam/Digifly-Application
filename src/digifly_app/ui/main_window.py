@@ -1357,7 +1357,7 @@ class MainWindow(QMainWindow):
             self.data_library_page.refresh
         )
         self.circuit_builder_page.circuit_changed.connect(
-            self.experiment_page.set_circuit_spec
+            self._sync_experiment_circuit
         )
         self.data_library_page.quality_review_requested.connect(
             self.circuit_builder_page.review_recent_imports
@@ -1367,7 +1367,7 @@ class MainWindow(QMainWindow):
         self.experiment_page.result_ready.connect(
             lambda _result: self.show_page(self.pages.indexOf(self.results_page))
         )
-        self.experiment_page.set_circuit_spec(self.circuit_builder_page.circuit_spec())
+        self._sync_experiment_circuit(self.circuit_builder_page.circuit_spec())
         self._last_editor_page: QWidget = self.circuit_builder_page
         self._project_workflow: str | None = None
         self._build_menu()
@@ -1389,11 +1389,17 @@ class MainWindow(QMainWindow):
         if current in (self.circuit_builder_page, self.experiment_page):
             self._last_editor_page = current
         if current is self.experiment_page:
-            self.experiment_page.set_circuit_spec(self.circuit_builder_page.circuit_spec())
+            self._sync_experiment_circuit(self.circuit_builder_page.circuit_spec())
         if current is self.engines_page:
             self.engines_page.refresh()
         if current is self.data_library_page:
             self.data_library_page.refresh()
+
+    def _sync_experiment_circuit(self, spec: CircuitSpec) -> None:
+        self.experiment_page.set_circuit_snapshot(
+            spec,
+            self.circuit_builder_page.morphology_snapshot(),
+        )
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -1466,7 +1472,7 @@ class MainWindow(QMainWindow):
             if circuit_spec.neuron_ids:
                 self.circuit_builder_page.load_saved_assets()
             self.experiment_page.set_config(experiment_spec)
-            self.experiment_page.set_circuit_spec(circuit_spec)
+            self._sync_experiment_circuit(circuit_spec)
             if project.selected_workflow == CIRCUIT_BUILDER_WORKFLOW:
                 self._last_editor_page = self.circuit_builder_page
                 target_page = self.circuit_builder_page

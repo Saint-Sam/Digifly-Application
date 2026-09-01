@@ -11,8 +11,10 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
+from digifly_app.core.connectomes import NeuronRecord
 from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
 from digifly_app.core.models import ResultRecord
+from digifly_app.core.morphology import Morphology, SwcNode, SwcSegment
 from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resource_profile import (
     ResourceKind,
@@ -251,13 +253,24 @@ def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview(
         assert set(page.help_buttons) == set(EXPERIMENT_SETTING_HELP)
         assert all(button.text() == "?" for button in page.help_buttons.values())
         assert all(
-            button.toolTip() == EXPERIMENT_SETTING_HELP[key]
-            for key, button in page.help_buttons.items()
+            button.toolTip() == "Click for help"
+            for button in page.help_buttons.values()
         )
         seed_help = page.help_labels["random_seed"]
         assert seed_help.text_label.text() == "Random seed"
-        assert "same random draws" in seed_help.text_label.toolTip()
         assert seed_help.help_button.accessibleName() == "Help for Random seed"
+        requested_help = []
+        seed_help.help_button.help_requested.connect(
+            lambda key, text: requested_help.append((key, text))
+        )
+        seed_help.help_button.click()
+        assert requested_help == [
+            ("random_seed", EXPERIMENT_SETTING_HELP["random_seed"])
+        ]
+        assert "same random draws" in seed_help.help_button.accessibleDescription()
+        assert seed_help.help_button.help_popup is not None
+        assert seed_help.help_button.help_popup.isVisible()
+        seed_help.help_button.help_popup.close()
 
         page.selector_sections["primary_stimulus"].set_expanded(True)
         page.frequency.lineEdit().selectAll()
@@ -288,6 +301,83 @@ def test_stimulus_preview_clips_pulses_to_the_simulation_window():
         pulse_count=10,
         waveform="pulse_train",
     ) == ((5.0, 5.4), (15.0, 15.4), (25.0, 25.4))
+
+
+def _experiment_test_morphology() -> Morphology:
+    record = NeuronRecord(
+        "10000",
+        "DN",
+        "DNp01",
+        "/data/swc/10000.swc",
+        "manc:v1.2.1",
+    )
+    nodes = (
+        SwcNode(1, 1, 0.0, 0.0, 0.0, 2.0, -1),
+        SwcNode(2, 1, 1.0, 0.0, 0.0, 1.0, 1),
+        SwcNode(3, 2, 2.0, 0.0, 0.0, 0.8, 2),
+        SwcNode(4, 2, 3.0, 0.0, 0.0, 0.6, 3),
+        SwcNode(5, 3, 1.0, 1.0, 0.0, 0.5, 2),
+    )
+    segments = tuple(
+        SwcSegment(
+            node.node_id,
+            node.parent_id,
+            (node.x, node.y, node.z),
+            (nodes[node.parent_id - 1].x, nodes[node.parent_id - 1].y, nodes[node.parent_id - 1].z),
+            node.radius,
+            node.swc_type,
+        )
+        for node in nodes[1:]
+    )
+    return Morphology(record, nodes, segments, (0.0, 3.0, 0.0, 1.0, 0.0, 0.0))
+
+
+def test_experiment_builder_copies_circuit_geometry_and_highlights_target_regions():
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        morphology = _experiment_test_morphology()
+        circuit = CircuitSpec(
+            connectome=ConnectomeRef("manc:v1.2.1", "MANC v1.2.1", "/data/swc"),
+            neuron_ids=("10000",),
+        )
+        circuit.apply_compartment_override("10000", (4,), circuit.hh.to_dict())
+        before = circuit.to_dict()
+        window.circuit_builder_page.spec = circuit
+        window.circuit_builder_page.loaded_morphologies = {"10000": morphology}
+        window.circuit_builder_page.circuit_changed.emit(circuit)
+        application.processEvents()
+
+        page = window.experiment_page
+        assert page.circuit_viewport.camera_only is True
+        assert page.target_region_viewport.camera_only is True
+        assert page.circuit_viewport.neuron_count == 1
+        assert page.target_region_viewport.neuron_count == 1
+        assert page.circuit_viewport.segment_count == 4
+        assert page.target_region_viewport.highlighted_soma_ids == {"10000"}
+        assert "Soma" in page.target_region_visualization_label.text()
+
+        page.stimulus_region.setCurrentIndex(page.stimulus_region.findData("ais"))
+        application.processEvents()
+        assert page.target_region_viewport.highlighted_segment_count == 1
+        assert "visual proxy" in page.target_region_visualization_label.text()
+
+        page.stimulus_region.setCurrentIndex(
+            page.stimulus_region.findData("selected_compartments")
+        )
+        application.processEvents()
+        assert page.target_region_viewport.highlighted_segment_ids == {"10000": {4}}
+        assert "1 applied Circuit Builder compartment" in (
+            page.target_region_visualization_label.text()
+        )
+
+        page.stimulus_region.setCurrentIndex(page.stimulus_region.findData("all"))
+        application.processEvents()
+        assert page.target_region_viewport.highlighted_neuron_ids == {"10000"}
+        assert circuit.to_dict() == before
+    finally:
+        window.close()
+        application.processEvents()
 
 
 def test_experiment_builder_receives_circuit_without_mutating_network_design():
