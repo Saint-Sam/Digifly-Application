@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPaintEvent, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
+
+from .style import DARK_THEME, normalize_theme, theme_color
 
 
 def pulse_intervals(
@@ -127,13 +129,20 @@ class StimulusPreview(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        application = QApplication.instance()
+        theme = normalize_theme(
+            application.property("digiflyTheme") if application is not None else DARK_THEME
+        )
+
+        def color(key: str) -> QColor:
+            return QColor(theme_color(theme, key))
 
         bounds = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
-        painter.setPen(QPen(QColor("#2a3d5e"), 1.0))
-        painter.setBrush(QColor("#081326"))
+        painter.setPen(QPen(color("stimulus_border"), 1.0))
+        painter.setBrush(color("stimulus_surface"))
         painter.drawRoundedRect(bounds, 10.0, 10.0)
 
-        painter.setPen(QColor("#edf5ff"))
+        painter.setPen(color("stimulus_title"))
         title_font = painter.font()
         title_font.setBold(True)
         title_font.setPointSizeF(max(11.0, title_font.pointSizeF()))
@@ -152,14 +161,14 @@ class StimulusPreview(QWidget):
         )
         painter.setFont(self.font())
 
-        grid_pen = QPen(QColor("#203653"), 1.0)
-        axis_pen = QPen(QColor("#6f87ad"), 1.0)
+        grid_pen = QPen(color("stimulus_grid"), 1.0)
+        axis_pen = QPen(color("stimulus_axis"), 1.0)
         for division in range(5):
             fraction = division / 4.0
             x = plot.left() + plot.width() * fraction
             painter.setPen(grid_pen)
             painter.drawLine(x, plot.top(), x, plot.bottom())
-            painter.setPen(QColor("#8ea2c2"))
+            painter.setPen(color("stimulus_label"))
             time_ms = float(self._protocol["duration_ms"]) * fraction
             painter.drawText(
                 QRectF(x - 38.0, plot.bottom() + 8.0, 76.0, 18.0),
@@ -179,7 +188,7 @@ class StimulusPreview(QWidget):
         amplitude = abs(float(self._protocol["amplitude_nA"]))
         scale_max = max(1.0, amplitude * 1.2)
         signal_y = plot.bottom() - (amplitude / scale_max) * plot.height()
-        painter.setPen(QColor("#8ea2c2"))
+        painter.setPen(color("stimulus_label"))
         painter.drawText(
             QRectF(5.0, plot.top() - 8.0, 50.0, 18.0),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -213,7 +222,9 @@ class StimulusPreview(QWidget):
         intervals = self.intervals()
         if amplitude > 0.0:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(64, 205, 255, 45))
+            signal_fill = color("stimulus_signal_fill")
+            signal_fill.setAlpha(45)
+            painter.setBrush(signal_fill)
             for start, end in intervals:
                 left = x_for(start)
                 width = max(2.0, x_for(end) - left)
@@ -242,7 +253,7 @@ class StimulusPreview(QWidget):
                 signal.lineTo(end_x, plot.bottom())
         signal.lineTo(plot.right(), plot.bottom())
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor("#4fd7ff"), 2.2))
+        painter.setPen(QPen(color("stimulus_signal"), 2.2))
         painter.drawPath(signal)
 
         visible_count = len(intervals)
@@ -250,7 +261,7 @@ class StimulusPreview(QWidget):
             status = "Stimulus begins outside this simulation window"
         else:
             status = f"{visible_count} visible pulse{'s' if visible_count != 1 else ''}"
-        painter.setPen(QColor("#6fcff0"))
+        painter.setPen(color("stimulus_status"))
         painter.drawText(
             QRectF(plot.left(), 31.0, plot.width(), 18.0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

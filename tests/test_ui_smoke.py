@@ -37,6 +37,13 @@ from digifly_app.ui.runtime_setup import (
     RuntimeSetupDialog,
 )
 from digifly_app.ui.stimulus_preview import pulse_intervals
+from digifly_app.ui.style import (
+    DARK_THEME,
+    LIGHT_THEME,
+    normalize_theme,
+    style_for_theme,
+    theme_color,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +147,56 @@ def test_main_window_constructs_without_importing_simulators():
     finally:
         window.close()
         application.processEvents()
+
+
+def test_sun_toggle_switches_and_persists_the_application_theme():
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        assert window.theme == DARK_THEME
+        assert window.theme_toggle.text() == "☀"
+        assert window.theme_toggle.isChecked() is False
+        assert window.theme_toggle.toolTip() == "Switch to light theme"
+        assert application.property("digiflyTheme") == DARK_THEME
+
+        window.theme_toggle.click()
+        application.processEvents()
+        assert window.theme == LIGHT_THEME
+        assert window.theme_toggle.isChecked() is True
+        assert window.theme_toggle.toolTip() == "Switch to dark theme"
+        assert application.property("digiflyTheme") == LIGHT_THEME
+        assert application.styleSheet() == style_for_theme(LIGHT_THEME)
+        assert QSettings(ORGANIZATION_NAME, APPLICATION_NAME).value("theme") == LIGHT_THEME
+    finally:
+        window.close()
+        application.processEvents()
+
+    restored = MainWindow()
+    try:
+        assert restored.theme == LIGHT_THEME
+        assert restored.theme_toggle.isChecked() is True
+        restored.theme_toggle.click()
+        application.processEvents()
+        assert restored.theme == DARK_THEME
+    finally:
+        restored.close()
+        application.processEvents()
+
+
+def test_theme_styles_are_complete_and_use_distinct_canvas_palettes():
+    assert normalize_theme("LIGHT") == LIGHT_THEME
+    assert normalize_theme("unsupported") == DARK_THEME
+    dark_style = style_for_theme(DARK_THEME)
+    light_style = style_for_theme(LIGHT_THEME)
+    assert dark_style != light_style
+    assert "@root@" not in dark_style
+    assert "@root@" not in light_style
+    assert theme_color(DARK_THEME, "viewport_background") != theme_color(
+        LIGHT_THEME, "viewport_background"
+    )
+    assert theme_color(DARK_THEME, "stimulus_surface") != theme_color(
+        LIGHT_THEME, "stimulus_surface"
+    )
 
 
 def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path, monkeypatch):

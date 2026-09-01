@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -65,7 +66,12 @@ from digifly_app.engines.neuron_escape_siz import (
     NeuronEscapeSizAdapter,
     latest_gfc2_stimulus,
 )
-from .style import APP_STYLE
+from .style import (
+    DARK_THEME,
+    LIGHT_THEME,
+    normalize_theme,
+    style_for_theme,
+)
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .data_library import DataLibraryPage
 from .experiment_builder import ExperimentBuilderPage
@@ -232,7 +238,7 @@ class OverviewPage(QWidget):
             label = QLabel(title.upper())
             label.setObjectName("Eyebrow")
             value = QLabel("—")
-            value.setStyleSheet("font-size:20px; font-weight:700; color:#eef4ff;")
+            value.setObjectName("MetricValue")
             card_layout.addWidget(label)
             card_layout.addWidget(value)
             resource_row.addWidget(card, 1)
@@ -498,7 +504,7 @@ class ExperimentPage(QWidget):
         safety_layout = QVBoxLayout(safety_note)
         safety_layout.setContentsMargins(12, 11, 12, 11)
         note_title = QLabel("Why execution is locked by default")
-        note_title.setStyleSheet("font-weight:650; color:#f0c76d;")
+        note_title.setObjectName("WarningTitle")
         note = QLabel(
             "The app-owned worker redirects cache, request, run, status, and plot writes into the app output root. "
             "A first run remains locked until you explicitly permit the expensive cache build."
@@ -1073,9 +1079,9 @@ class ResultsPage(QWidget):
         preview_title.setObjectName("SectionTitle")
         preview_layout.addWidget(preview_title)
         image_scroll = QScrollArea()
+        image_scroll.setObjectName("ImagePreviewScroll")
         image_scroll.setWidgetResizable(True)
         image_scroll.setMinimumHeight(520)
-        image_scroll.setStyleSheet("background:#080d19; border:1px solid #23314a; border-radius:8px;")
         self.image_label = QLabel("Load a completed run to preview its PNG.")
         self.image_label.setObjectName("Muted")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1261,6 +1267,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1120, 760)
         self.settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
         self.legacy_settings = QSettings(ORGANIZATION_NAME, LEGACY_APPLICATION_NAME)
+        self.theme = normalize_theme(self.settings.value("theme", DARK_THEME))
+        self._apply_theme(self.theme, persist=False)
         self.current_project_path: Path | None = None
         root = QWidget()
         root.setObjectName("RootWindow")
@@ -1275,11 +1283,25 @@ class MainWindow(QMainWindow):
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(15, 20, 15, 15)
         sidebar_layout.setSpacing(7)
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(8)
         brand = QLabel("Digifly")
         brand.setObjectName("Brand")
+        brand_row.addWidget(brand)
+        brand_row.addStretch(1)
+        self.theme_toggle = QToolButton()
+        self.theme_toggle.setObjectName("ThemeToggle")
+        self.theme_toggle.setText("☀")
+        self.theme_toggle.setCheckable(True)
+        self.theme_toggle.setChecked(self.theme == LIGHT_THEME)
+        self.theme_toggle.setAccessibleName("Color theme")
+        self._update_theme_toggle_text()
+        self.theme_toggle.toggled.connect(self._theme_toggled)
+        brand_row.addWidget(self.theme_toggle, alignment=Qt.AlignmentFlag.AlignVCenter)
         subbrand = QLabel("SCIENTIFIC WORKSTATION")
         subbrand.setObjectName("Eyebrow")
-        sidebar_layout.addWidget(brand)
+        sidebar_layout.addLayout(brand_row)
         sidebar_layout.addWidget(subbrand)
         sidebar_layout.addSpacing(23)
         self.nav_buttons: list[QPushButton] = []
@@ -1375,6 +1397,39 @@ class MainWindow(QMainWindow):
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
         self.show_page(0)
+
+    def _theme_toggled(self, use_light_theme: bool) -> None:
+        self._apply_theme(LIGHT_THEME if use_light_theme else DARK_THEME)
+
+    def _apply_theme(self, theme: object, *, persist: bool = True) -> None:
+        self.theme = normalize_theme(theme)
+        application = QApplication.instance()
+        if application is not None:
+            application.setProperty("digiflyTheme", self.theme)
+            application.setStyleSheet(style_for_theme(self.theme))
+        if hasattr(self, "theme_toggle"):
+            checked = self.theme == LIGHT_THEME
+            if self.theme_toggle.isChecked() != checked:
+                self.theme_toggle.blockSignals(True)
+                self.theme_toggle.setChecked(checked)
+                self.theme_toggle.blockSignals(False)
+            self._update_theme_toggle_text()
+        for widget in self.findChildren(QWidget):
+            if widget.objectName() in {"CircuitViewport", "StimulusPreview"}:
+                widget.update()
+        if persist:
+            self.settings.setValue("theme", self.theme)
+            self.settings.sync()
+
+    def _update_theme_toggle_text(self) -> None:
+        if self.theme == LIGHT_THEME:
+            tooltip = "Switch to dark theme"
+            description = "Light theme active. Activate to switch to dark theme."
+        else:
+            tooltip = "Switch to light theme"
+            description = "Dark theme active. Activate to switch to light theme."
+        self.theme_toggle.setToolTip(tooltip)
+        self.theme_toggle.setAccessibleDescription(description)
 
     def _navigation_toggled(self, index: int, checked: bool) -> None:
         """Navigate for mouse, keyboard, and accessibility state changes."""
@@ -1648,7 +1703,11 @@ def launch(argv: list[str] | None = None) -> int:
     application.setOrganizationName(ORGANIZATION_NAME)
     application.setApplicationVersion(__version__)
     application.setStyle("Fusion")
-    application.setStyleSheet(APP_STYLE)
+    initial_theme = normalize_theme(
+        QSettings(ORGANIZATION_NAME, APPLICATION_NAME).value("theme", DARK_THEME)
+    )
+    application.setProperty("digiflyTheme", initial_theme)
+    application.setStyleSheet(style_for_theme(initial_theme))
     font = QFont()
     font.setPointSize(12)
     application.setFont(font)

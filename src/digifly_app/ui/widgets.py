@@ -199,7 +199,7 @@ class CheckRow(Card):
         copy = QVBoxLayout()
         copy.setSpacing(3)
         title = QLabel(check.title)
-        title.setStyleSheet("font-weight:650; color:#edf3ff;")
+        title.setObjectName("Strong")
         detail = QLabel(check.detail)
         detail.setObjectName("Muted")
         detail.setWordWrap(True)
@@ -251,7 +251,7 @@ class EngineCard(Card):
         make_label_copyable(summary)
         layout.addWidget(summary)
         source = QLabel(f"Source: {probe.source_state.value}  ·  Runtime: {probe.runtime_state.value}")
-        source.setStyleSheet("color:#7faaf0; font-size:11px; font-weight:600;")
+        source.setObjectName("AccentMeta")
         make_label_copyable(source)
         layout.addWidget(source)
         if probe.details:

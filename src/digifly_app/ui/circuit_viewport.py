@@ -14,9 +14,10 @@ from PySide6.QtOpenGL import (
     QOpenGLShaderProgram,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QRubberBand
+from PySide6.QtWidgets import QApplication, QRubberBand
 
 from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
+from .style import DARK_THEME, LIGHT_THEME, normalize_theme, theme_color
 
 
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -247,6 +248,16 @@ class CircuitViewport(QOpenGLWidget):
         "#d4d96b",
         "#a3b8d8",
     )
+    _light_palette = (
+        "#1768ac",
+        "#168861",
+        "#b85e16",
+        "#7d3fb2",
+        "#c13f62",
+        "#0b8097",
+        "#7a8310",
+        "#506b91",
+    )
 
     def __init__(self, parent=None, *, camera_only: bool = False):
         super().__init__(parent)
@@ -302,19 +313,18 @@ class CircuitViewport(QOpenGLWidget):
         self._box_origin: QPoint | None = None
         self._box_selecting = False
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
-        self._rubber_band.setStyleSheet(
-            "QRubberBand { border: 1px solid #ffffff; background-color: rgba(255,255,255,35); }"
-        )
         self._interaction_preview = False
         self._interaction_timer = QTimer(self)
         self._interaction_timer.setSingleShot(True)
         self._interaction_timer.setInterval(INTERACTION_SETTLE_MS)
         self._interaction_timer.timeout.connect(self._end_interaction_preview)
         self._last_submitted_segment_count = 0
-        self._palette_rgba = tuple(_rgba(color) for color in self._palette)
-        self._selected_neuron_rgba = _rgba(SELECTED_NEURON_COLOR)
-        self._selected_compartment_rgba = _rgba(SELECTED_COMPARTMENT_COLOR)
-        self._target_region_rgba = _rgba(TARGET_REGION_COLOR)
+        self._render_theme = ""
+        self._palette_rgba: tuple[QVector4D, ...] = ()
+        self._selected_neuron_rgba = QVector4D()
+        self._selected_compartment_rgba = QVector4D()
+        self._target_region_rgba = QVector4D()
+        self._refresh_theme_colors()
         self._gpu_ready = False
         self._point_functions: QOpenGLFunctions_2_0 | None = None
         self._program: QOpenGLShaderProgram | None = None
@@ -800,10 +810,32 @@ class CircuitViewport(QOpenGLWidget):
             self._highlight_buffer.release()
             self._highlight_dirty = False
 
+    def _refresh_theme_colors(self) -> None:
+        application = QApplication.instance()
+        theme = normalize_theme(
+            application.property("digiflyTheme") if application is not None else DARK_THEME
+        )
+        if theme == self._render_theme:
+            return
+        self._render_theme = theme
+        palette = self._light_palette if theme == LIGHT_THEME else self._palette
+        self._palette_rgba = tuple(_rgba(color) for color in palette)
+        self._selected_neuron_rgba = _rgba(
+            "#a86400" if theme == LIGHT_THEME else SELECTED_NEURON_COLOR
+        )
+        self._selected_compartment_rgba = _rgba(SELECTED_COMPARTMENT_COLOR)
+        self._target_region_rgba = _rgba(
+            "#765600" if theme == LIGHT_THEME else TARGET_REGION_COLOR
+        )
+
     def paintGL(self) -> None:
+        self._refresh_theme_colors()
         functions = self.context().functions()
         functions.glEnable(GL_DEPTH_TEST)
-        functions.glClearColor(0.025, 0.043, 0.082, 1.0)
+        background = QColor(theme_color(self._render_theme, "viewport_background"))
+        functions.glClearColor(
+            background.redF(), background.greenF(), background.blueF(), 1.0
+        )
         functions.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         if not self._gpu_ready or self._program is None or self._vertex_buffer is None:
             return
