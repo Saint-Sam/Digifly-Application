@@ -32,6 +32,7 @@ from digifly_app.ui.runtime_setup import (
     NEURON_INSTALL_URL,
     RuntimeSetupDialog,
 )
+from digifly_app.ui.stimulus_preview import pulse_intervals
 
 
 @pytest.fixture(autouse=True)
@@ -193,6 +194,69 @@ def test_app_owned_pulse_template_exposes_runtime_controls_without_a_notebook():
     finally:
         window.close()
         application.processEvents()
+
+
+def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview():
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        page = window.experiment_page
+        assert tuple(page.selector_sections) == (
+            "experiment_identity",
+            "simulation_compute",
+            "primary_stimulus",
+            "runtime_conditions",
+            "recording_outputs",
+        )
+        assert page.selector_sections["experiment_identity"].is_expanded
+        assert all(
+            not section.is_expanded
+            for key, section in page.selector_sections.items()
+            if key != "experiment_identity"
+        )
+
+        page.duration.setValue(40.0)
+        page.amplitude.setValue(1.5)
+        page.delay.setValue(5.0)
+        page.pulse_width.setValue(2.0)
+        page.frequency.setValue(50.0)
+        page.pulse_count.setValue(3)
+        application.processEvents()
+
+        assert page.stimulus_preview.protocol() == {
+            "duration_ms": 40.0,
+            "amplitude_nA": 1.5,
+            "delay_ms": 5.0,
+            "pulse_width_ms": 2.0,
+            "frequency_hz": 50.0,
+            "pulse_count": 3,
+            "waveform": "pulse_train",
+        }
+        assert page.stimulus_preview.intervals() == ((5.0, 7.0), (25.0, 27.0))
+        assert "1.5 nA" in page.stimulus_preview_summary.text()
+        assert "simulation ends at 40 ms" in page.stimulus_preview_summary.text()
+
+        simulation_section = page.selector_sections["simulation_compute"]
+        simulation_section.toggle_button.click()
+        simulation_section.toggle_button.click()
+        assert page.duration.value() == 40.0
+
+        page.stimulus_preview.resize(620, 330)
+        assert not page.stimulus_preview.grab().isNull()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_stimulus_preview_clips_pulses_to_the_simulation_window():
+    assert pulse_intervals(
+        duration_ms=30.0,
+        delay_ms=5.0,
+        pulse_width_ms=0.4,
+        frequency_hz=100.0,
+        pulse_count=10,
+        waveform="pulse_train",
+    ) == ((5.0, 5.4), (15.0, 15.4), (25.0, 25.4))
 
 
 def test_experiment_builder_receives_circuit_without_mutating_network_design():

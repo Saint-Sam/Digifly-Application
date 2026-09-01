@@ -29,7 +29,8 @@ from digifly_app.core.experiment import (
     StimulusSpec,
 )
 from digifly_app.core.models import CheckState
-from .widgets import Card, StatusPill, make_label_copyable
+from .stimulus_preview import StimulusPreview
+from .widgets import Card, CollapsibleSection, StatusPill, make_label_copyable
 
 
 def _double_spin(
@@ -126,13 +127,38 @@ class ExperimentBuilderPage(QWidget):
         circuit_layout.addWidget(self.circuit_detail)
         layout.addWidget(circuit_card)
 
-        identity_card = Card()
-        identity_layout = QVBoxLayout(identity_card)
-        identity_layout.setContentsMargins(17, 14, 17, 15)
-        identity_layout.setSpacing(10)
-        identity_layout.addWidget(_section_title("Experiment identity"))
+        workspace = QGridLayout()
+        workspace.setHorizontalSpacing(16)
+        workspace.setVerticalSpacing(0)
+
+        selector_panel = QWidget()
+        selector_panel.setObjectName("ExperimentSelectorPanel")
+        selector_panel.setMinimumWidth(400)
+        selector_panel.setMaximumWidth(520)
+        selector_layout = QVBoxLayout(selector_panel)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(9)
+        self.selector_sections: dict[str, CollapsibleSection] = {}
+
+        def add_selector(
+            key: str, title: str, *, expanded: bool = False
+        ) -> QVBoxLayout:
+            section = CollapsibleSection(
+                title,
+                key,
+                expanded=expanded,
+                object_name_prefix="ExperimentSection",
+            )
+            self.selector_sections[key] = section
+            selector_layout.addWidget(section)
+            return section.content_layout
+
+        identity_layout = add_selector(
+            "experiment_identity", "Experiment identity", expanded=True
+        )
         identity_form = QFormLayout()
         identity_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        identity_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.name_edit = QLineEdit()
         self.name_edit.setObjectName("ExperimentName")
         self.template_combo = QComboBox()
@@ -154,17 +180,11 @@ class ExperimentBuilderPage(QWidget):
         identity_form.addRow("Template", self.template_combo)
         identity_form.addRow("Execution engine", self.engine_combo)
         identity_layout.addLayout(identity_form)
-        layout.addWidget(identity_card)
 
-        controls = QGridLayout()
-        controls.setHorizontalSpacing(14)
-        controls.setVerticalSpacing(14)
-
-        run_card = Card()
-        run_layout = QVBoxLayout(run_card)
-        run_layout.setContentsMargins(17, 14, 17, 16)
-        run_layout.addWidget(_section_title("Simulation & compute"))
+        run_layout = add_selector("simulation_compute", "Simulation & compute")
         run_form = QFormLayout()
+        run_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        run_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.duration = _double_spin(0.01, 10_000_000.0, 110.0, suffix=" ms")
         self.integration_dt = _double_spin(
             0.000001, 1000.0, 0.01, decimals=6, step=0.001, suffix=" ms"
@@ -190,13 +210,8 @@ class ExperimentBuilderPage(QWidget):
         run_form.addRow("Repetitions", self.repetitions)
         run_form.addRow("Workers / threads", self.workers)
         run_layout.addLayout(run_form)
-        run_layout.addStretch(1)
-        controls.addWidget(run_card, 0, 0)
 
-        stimulus_card = Card()
-        stimulus_layout = QVBoxLayout(stimulus_card)
-        stimulus_layout.setContentsMargins(17, 14, 17, 16)
-        stimulus_layout.addWidget(_section_title("Primary stimulus"))
+        stimulus_layout = add_selector("primary_stimulus", "Primary stimulus")
         stimulus_hint = QLabel(
             "Blank target IDs means every neuron in the circuit. The execution adapter will resolve simulator locations after validation."
         )
@@ -204,6 +219,10 @@ class ExperimentBuilderPage(QWidget):
         stimulus_hint.setWordWrap(True)
         stimulus_layout.addWidget(stimulus_hint)
         stimulus_form = QFormLayout()
+        stimulus_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        stimulus_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.stimulus_targets = QLineEdit()
         self.stimulus_targets.setPlaceholderText("all circuit neurons")
         self.stimulus_region = QComboBox()
@@ -233,12 +252,10 @@ class ExperimentBuilderPage(QWidget):
         stimulus_form.addRow("Frequency", self.frequency)
         stimulus_form.addRow("Pulse count", self.pulse_count)
         stimulus_layout.addLayout(stimulus_form)
-        controls.addWidget(stimulus_card, 0, 1)
 
-        condition_card = Card()
-        condition_layout = QVBoxLayout(condition_card)
-        condition_layout.setContentsMargins(17, 14, 17, 16)
-        condition_layout.addWidget(_section_title("Conditions & runtime manipulations"))
+        condition_layout = add_selector(
+            "runtime_conditions", "Conditions & runtime manipulations"
+        )
         condition_hint = QLabel(
             "Conditions change the run while preserving the Circuit Builder network definition."
         )
@@ -252,6 +269,10 @@ class ExperimentBuilderPage(QWidget):
         self.manipulation_enabled.setChecked(True)
         condition_layout.addWidget(self.manipulation_enabled)
         condition_form = QFormLayout()
+        condition_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        condition_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.manipulation_name = QLineEdit("Gap junctions disabled")
         self.manip_gap_enabled = QCheckBox("Gap junctions enabled")
         self.manip_gap_enabled.setChecked(False)
@@ -272,13 +293,13 @@ class ExperimentBuilderPage(QWidget):
         condition_form.addRow("Stimulus multiplier", self.stimulus_scale)
         condition_form.addRow("Mechanism scales (JSON)", self.mechanism_scales)
         condition_layout.addLayout(condition_form)
-        controls.addWidget(condition_card, 1, 0)
 
-        recording_card = Card()
-        recording_layout = QVBoxLayout(recording_card)
-        recording_layout.setContentsMargins(17, 14, 17, 16)
-        recording_layout.addWidget(_section_title("Recording & outputs"))
+        recording_layout = add_selector("recording_outputs", "Recording & outputs")
         recording_form = QFormLayout()
+        recording_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        recording_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.recording_targets = QLineEdit()
         self.recording_targets.setPlaceholderText("all circuit neurons")
         self.recording_region = QComboBox()
@@ -310,12 +331,36 @@ class ExperimentBuilderPage(QWidget):
         recording_form.addRow("Spike threshold", self.spike_threshold)
         recording_form.addRow("Analysis", self.make_plots)
         recording_layout.addLayout(recording_form)
-        recording_layout.addStretch(1)
-        controls.addWidget(recording_card, 1, 1)
-        controls.setColumnStretch(0, 1)
-        controls.setColumnStretch(1, 1)
-        layout.addLayout(controls)
+        selector_layout.addStretch(1)
 
+        visual_panel = QWidget()
+        visual_layout = QVBoxLayout(visual_panel)
+        visual_layout.setContentsMargins(0, 0, 0, 0)
+        visual_layout.setSpacing(14)
+
+        stimulus_preview_card = Card()
+        stimulus_preview_layout = QVBoxLayout(stimulus_preview_card)
+        stimulus_preview_layout.setContentsMargins(17, 14, 17, 16)
+        stimulus_preview_layout.setSpacing(9)
+        stimulus_preview_layout.addWidget(_section_title("Live stimulus preview"))
+        stimulus_preview_hint = QLabel(
+            "This simulator-independent trace redraws as the simulation window or primary stimulus controls change."
+        )
+        stimulus_preview_hint.setObjectName("Muted")
+        stimulus_preview_hint.setWordWrap(True)
+        stimulus_preview_layout.addWidget(stimulus_preview_hint)
+        self.stimulus_preview = StimulusPreview()
+        stimulus_preview_layout.addWidget(self.stimulus_preview)
+        self.stimulus_preview_summary = QLabel()
+        self.stimulus_preview_summary.setObjectName("StimulusPreviewSummary")
+        self.stimulus_preview_summary.setWordWrap(True)
+        stimulus_preview_layout.addWidget(self.stimulus_preview_summary)
+        visual_layout.addWidget(stimulus_preview_card)
+
+        action_card = Card()
+        action_layout = QVBoxLayout(action_card)
+        action_layout.setContentsMargins(17, 14, 17, 15)
+        action_layout.setSpacing(9)
         action_row = QHBoxLayout()
         self.validate_button = QPushButton("Validate experiment draft")
         self.validate_button.setProperty("primary", True)
@@ -330,8 +375,10 @@ class ExperimentBuilderPage(QWidget):
         action_row.addStretch(1)
         self.validation_state = QLabel("Draft not validated")
         self.validation_state.setObjectName("Muted")
-        action_row.addWidget(self.validation_state)
-        layout.addLayout(action_row)
+        self.validation_state.setWordWrap(True)
+        action_layout.addLayout(action_row)
+        action_layout.addWidget(self.validation_state)
+        visual_layout.addWidget(action_card)
 
         preview_card = Card()
         preview_layout = QVBoxLayout(preview_card)
@@ -340,7 +387,7 @@ class ExperimentBuilderPage(QWidget):
         self.document_preview = QPlainTextEdit()
         self.document_preview.setObjectName("ExperimentDocumentPreview")
         self.document_preview.setReadOnly(True)
-        self.document_preview.setMinimumHeight(180)
+        self.document_preview.setMinimumHeight(210)
         self.document_preview.setPlaceholderText(
             "Validate to preview the exact app-owned experiment document."
         )
@@ -348,7 +395,19 @@ class ExperimentBuilderPage(QWidget):
             "font-family:'SFMono-Regular', Menlo, monospace; font-size:11px;"
         )
         preview_layout.addWidget(self.document_preview)
-        layout.addWidget(preview_card)
+        visual_layout.addWidget(preview_card)
+        visual_layout.addStretch(1)
+
+        workspace.addWidget(
+            selector_panel,
+            0,
+            0,
+            alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+        )
+        workspace.addWidget(visual_panel, 0, 1)
+        workspace.setColumnStretch(0, 4)
+        workspace.setColumnStretch(1, 6)
+        layout.addLayout(workspace)
         layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -594,9 +653,24 @@ class ExperimentBuilderPage(QWidget):
         )
         self.set_config(config)
 
+    def _update_stimulus_preview(self) -> None:
+        self.stimulus_preview.set_protocol(
+            duration_ms=self.duration.value(),
+            amplitude_nA=self.amplitude.value(),
+            delay_ms=self.delay.value(),
+            pulse_width_ms=self.pulse_width.value(),
+            frequency_hz=self.frequency.value(),
+            pulse_count=self.pulse_count.value(),
+            waveform=str(self.waveform_combo.currentData()),
+        )
+        self.stimulus_preview_summary.setText(
+            self.stimulus_preview.summary_text()
+        )
+
     def _invalidate(self, *_args: Any) -> None:
         if self._restoring:
             return
+        self._update_stimulus_preview()
         self.validation_state.setText("Controls changed · validate draft")
         self.document_preview.clear()
         try:

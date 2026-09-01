@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -77,7 +76,7 @@ from .circuit_viewport import (
     CircuitViewport,
 )
 from .neuprint_import import NeuPrintImportDialog
-from .widgets import Card, make_label_copyable
+from .widgets import Card, CollapsibleSection, make_label_copyable
 
 
 CIRCUIT_BUILDER_WORKFLOW = "circuit_builder_v1"
@@ -202,70 +201,6 @@ class _ScrollSafeDoubleSpinBox(QDoubleSpinBox):
 
     def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt virtual name
         event.ignore()
-
-
-class _CollapsibleSection(QWidget):
-    """Compact disclosure section for the dense HH editor sidebar."""
-
-    def __init__(
-        self,
-        title: str,
-        key: str,
-        *,
-        expanded: bool = False,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.title = str(title)
-        self.key = str(key)
-        self.setObjectName(f"HHSection_{self.key}")
-        self.setProperty("collapsibleSection", True)
-
-        shell = QVBoxLayout(self)
-        shell.setContentsMargins(0, 0, 0, 0)
-        shell.setSpacing(0)
-
-        self.toggle_button = QToolButton()
-        self.toggle_button.setObjectName("CollapsibleSectionHeader")
-        self.toggle_button.setProperty("sectionKey", self.key)
-        self.toggle_button.setText(self.title)
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setChecked(bool(expanded))
-        self.toggle_button.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self.toggle_button.setAccessibleName(f"{self.title} settings")
-        shell.addWidget(self.toggle_button)
-
-        self.body = QWidget()
-        self.body.setObjectName("CollapsibleSectionBody")
-        self.content_layout = QVBoxLayout(self.body)
-        self.content_layout.setContentsMargins(12, 10, 12, 12)
-        self.content_layout.setSpacing(8)
-        shell.addWidget(self.body)
-
-        self.toggle_button.toggled.connect(self.set_expanded)
-        self.set_expanded(bool(expanded))
-
-    @property
-    def is_expanded(self) -> bool:
-        return self.toggle_button.isChecked()
-
-    def set_expanded(self, expanded: bool) -> None:
-        expanded = bool(expanded)
-        if self.toggle_button.isChecked() != expanded:
-            self.toggle_button.setChecked(expanded)
-            return
-        self.toggle_button.setArrowType(
-            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-        )
-        self.body.setVisible(expanded)
-        action = "collapse" if expanded else "expand"
-        state = "Expanded" if expanded else "Collapsed"
-        self.toggle_button.setToolTip(f"Click to {action} {self.title}")
-        self.toggle_button.setAccessibleDescription(
-            f"{state} settings section. Activate to {action}."
-        )
 
 
 class CircuitBuilderPage(QWidget):
@@ -506,12 +441,17 @@ class CircuitBuilderPage(QWidget):
         self.pair_panel.setVisible(False)
         side_layout.addWidget(self.pair_panel)
 
-        self.hh_sections: dict[str, _CollapsibleSection] = {}
+        self.hh_sections: dict[str, CollapsibleSection] = {}
 
         def add_hh_section(
             key: str, title: str, *, expanded: bool = False
         ) -> QVBoxLayout:
-            section = _CollapsibleSection(title, key, expanded=expanded)
+            section = CollapsibleSection(
+                title,
+                key,
+                expanded=expanded,
+                object_name_prefix="HHSection",
+            )
             self.hh_sections[key] = section
             side_layout.addWidget(section)
             return section.content_layout

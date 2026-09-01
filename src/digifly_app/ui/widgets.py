@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +22,71 @@ class Card(QFrame):
     def __init__(self, parent: QWidget | None = None, *, inset: bool = False):
         super().__init__(parent)
         self.setObjectName("Inset" if inset else "Card")
+
+
+class CollapsibleSection(QWidget):
+    """A compact, accessible disclosure section for dense control panels."""
+
+    def __init__(
+        self,
+        title: str,
+        key: str,
+        *,
+        expanded: bool = False,
+        object_name_prefix: str = "Section",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.title = str(title)
+        self.key = str(key)
+        self.setObjectName(f"{object_name_prefix}_{self.key}")
+        self.setProperty("collapsibleSection", True)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("CollapsibleSectionHeader")
+        self.toggle_button.setProperty("sectionKey", self.key)
+        self.toggle_button.setText(self.title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(bool(expanded))
+        self.toggle_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.toggle_button.setAccessibleName(f"{self.title} settings")
+        shell.addWidget(self.toggle_button)
+
+        self.body = QWidget()
+        self.body.setObjectName("CollapsibleSectionBody")
+        self.content_layout = QVBoxLayout(self.body)
+        self.content_layout.setContentsMargins(12, 10, 12, 12)
+        self.content_layout.setSpacing(8)
+        shell.addWidget(self.body)
+
+        self.toggle_button.toggled.connect(self.set_expanded)
+        self.set_expanded(bool(expanded))
+
+    @property
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        if self.toggle_button.isChecked() != expanded:
+            self.toggle_button.setChecked(expanded)
+            return
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.body.setVisible(expanded)
+        action = "collapse" if expanded else "expand"
+        state = "Expanded" if expanded else "Collapsed"
+        self.toggle_button.setToolTip(f"Click to {action} {self.title}")
+        self.toggle_button.setAccessibleDescription(
+            f"{state} settings section. Activate to {action}."
+        )
 
 
 class StatusPill(QLabel):
