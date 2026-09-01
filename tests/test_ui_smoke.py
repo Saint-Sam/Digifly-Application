@@ -303,20 +303,25 @@ def test_stimulus_preview_clips_pulses_to_the_simulation_window():
     ) == ((5.0, 5.4), (15.0, 15.4), (25.0, 25.4))
 
 
-def _experiment_test_morphology() -> Morphology:
+def _experiment_test_morphology(
+    neuron_id: str = "10000",
+    neuron_type: str = "DNp01",
+    *,
+    offset: float = 0.0,
+) -> Morphology:
     record = NeuronRecord(
-        "10000",
+        neuron_id,
         "DN",
-        "DNp01",
-        "/data/swc/10000.swc",
+        neuron_type,
+        f"/data/swc/{neuron_id}.swc",
         "manc:v1.2.1",
     )
     nodes = (
-        SwcNode(1, 1, 0.0, 0.0, 0.0, 2.0, -1),
-        SwcNode(2, 1, 1.0, 0.0, 0.0, 1.0, 1),
-        SwcNode(3, 2, 2.0, 0.0, 0.0, 0.8, 2),
-        SwcNode(4, 2, 3.0, 0.0, 0.0, 0.6, 3),
-        SwcNode(5, 3, 1.0, 1.0, 0.0, 0.5, 2),
+        SwcNode(1, 1, offset + 0.0, 0.0, 0.0, 2.0, -1),
+        SwcNode(2, 1, offset + 1.0, 0.0, 0.0, 1.0, 1),
+        SwcNode(3, 2, offset + 2.0, 0.0, 0.0, 0.8, 2),
+        SwcNode(4, 2, offset + 3.0, 0.0, 0.0, 0.6, 3),
+        SwcNode(5, 3, offset + 1.0, 1.0, 0.0, 0.5, 2),
     )
     segments = tuple(
         SwcSegment(
@@ -329,7 +334,12 @@ def _experiment_test_morphology() -> Morphology:
         )
         for node in nodes[1:]
     )
-    return Morphology(record, nodes, segments, (0.0, 3.0, 0.0, 1.0, 0.0, 0.0))
+    return Morphology(
+        record,
+        nodes,
+        segments,
+        (offset, offset + 3.0, 0.0, 1.0, 0.0, 0.0),
+    )
 
 
 def test_experiment_builder_copies_circuit_geometry_and_highlights_target_regions():
@@ -337,29 +347,37 @@ def test_experiment_builder_copies_circuit_geometry_and_highlights_target_region
     window = MainWindow()
     try:
         morphology = _experiment_test_morphology()
+        ttmn = _experiment_test_morphology("20000", "TTMn", offset=10.0)
         circuit = CircuitSpec(
             connectome=ConnectomeRef("manc:v1.2.1", "MANC v1.2.1", "/data/swc"),
-            neuron_ids=("10000",),
+            neuron_ids=("10000", "20000"),
         )
         circuit.apply_compartment_override("10000", (4,), circuit.hh.to_dict())
         before = circuit.to_dict()
         window.circuit_builder_page.spec = circuit
-        window.circuit_builder_page.loaded_morphologies = {"10000": morphology}
+        window.circuit_builder_page.loaded_morphologies = {
+            "10000": morphology,
+            "20000": ttmn,
+        }
         window.circuit_builder_page.circuit_changed.emit(circuit)
         application.processEvents()
 
         page = window.experiment_page
-        assert page.circuit_viewport.camera_only is True
+        assert not hasattr(page, "circuit_viewport")
         assert page.target_region_viewport.camera_only is True
-        assert page.circuit_viewport.neuron_count == 1
-        assert page.target_region_viewport.neuron_count == 1
-        assert page.circuit_viewport.segment_count == 4
-        assert page.target_region_viewport.highlighted_soma_ids == {"10000"}
+        assert page.target_region_viewport.neuron_count == 2
+        assert page.target_region_viewport.highlighted_soma_ids == {"10000", "20000"}
         assert "Soma" in page.target_region_visualization_label.text()
+
+        page.stimulus_targets.setText("dnp01, TTMn")
+        page.stimulus_targets.textEdited.emit("dnp01, TTMn")
+        application.processEvents()
+        assert page.config().stimuli[0].target_neuron_ids == ("10000", "20000")
+        assert page.target_region_viewport.highlighted_soma_ids == {"10000", "20000"}
 
         page.stimulus_region.setCurrentIndex(page.stimulus_region.findData("ais"))
         application.processEvents()
-        assert page.target_region_viewport.highlighted_segment_count == 1
+        assert page.target_region_viewport.highlighted_segment_count == 2
         assert "visual proxy" in page.target_region_visualization_label.text()
 
         page.stimulus_region.setCurrentIndex(
@@ -373,7 +391,10 @@ def test_experiment_builder_copies_circuit_geometry_and_highlights_target_region
 
         page.stimulus_region.setCurrentIndex(page.stimulus_region.findData("all"))
         application.processEvents()
-        assert page.target_region_viewport.highlighted_neuron_ids == {"10000"}
+        assert page.target_region_viewport.highlighted_neuron_ids == {
+            "10000",
+            "20000",
+        }
         assert circuit.to_dict() == before
     finally:
         window.close()

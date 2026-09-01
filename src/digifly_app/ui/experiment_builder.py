@@ -75,7 +75,7 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Maximum worker threads requested from the execution backend for this experiment."
     ),
     "stimulus_targets": (
-        "Neuron IDs that receive this stimulus, separated by spaces or commas. Leave blank to target every circuit neuron."
+        "Neuron IDs or exact neuron types that receive this stimulus, separated by spaces or commas. Types such as DNp01 or TTMn resolve to every matching neuron in the loaded circuit. Leave blank to target every circuit neuron."
     ),
     "stimulus_region": (
         "Morphological region where the execution adapter will place the injected current."
@@ -351,7 +351,7 @@ class ExperimentBuilderPage(QWidget):
         run_layout.addLayout(run_form)
 
         stimulus_hint = QLabel(
-            "Blank target IDs means every neuron in the circuit. The execution adapter will resolve simulator locations after validation."
+            "Enter neuron IDs, exact neuron types such as DNp01 or TTMn, or leave blank for every circuit neuron. The execution adapter resolves simulator locations after validation."
         )
         stimulus_hint.setObjectName("Muted")
         stimulus_hint.setWordWrap(True)
@@ -362,7 +362,9 @@ class ExperimentBuilderPage(QWidget):
         )
         stimulus_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.stimulus_targets = QLineEdit()
-        self.stimulus_targets.setPlaceholderText("all circuit neurons")
+        self.stimulus_targets.setPlaceholderText(
+            "all circuit neurons · IDs or types (DNp01, TTMn)"
+        )
         self.stimulus_region = QComboBox()
         self.stimulus_region.addItem("Soma", "soma")
         self.stimulus_region.addItem("AIS", "ais")
@@ -394,7 +396,7 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(
             stimulus_form,
             "stimulus_targets",
-            "Target neuron IDs",
+            "Target IDs or types",
             self.stimulus_targets,
         )
         add_help_row(stimulus_form, "stimulus_region", "Target region", self.stimulus_region)
@@ -542,32 +544,6 @@ class ExperimentBuilderPage(QWidget):
         visual_layout.setContentsMargins(0, 0, 0, 0)
         visual_layout.setSpacing(14)
 
-        circuit_preview_card = Card()
-        circuit_preview_layout = QVBoxLayout(circuit_preview_card)
-        circuit_preview_layout.setContentsMargins(12, 12, 12, 12)
-        circuit_preview_layout.setSpacing(7)
-        circuit_preview_layout.addWidget(_section_title("Circuit input · read-only view"))
-        self.circuit_viewport_summary = QLabel(
-            "Load a cell set in Circuit Builder to populate this view."
-        )
-        self.circuit_viewport_summary.setObjectName("Muted")
-        self.circuit_viewport_summary.setWordWrap(True)
-        circuit_preview_layout.addWidget(self.circuit_viewport_summary)
-        circuit_controls = QLabel(
-            "Drag: rotate · Shift-drag or middle-drag: move · wheel: zoom · "
-            "right-click: center / frame all · R: reset camera"
-        )
-        circuit_controls.setObjectName("Muted")
-        circuit_controls.setWordWrap(True)
-        circuit_preview_layout.addWidget(circuit_controls)
-        self.circuit_viewport = CircuitViewport(camera_only=True)
-        self.circuit_viewport.setObjectName("ExperimentCircuitViewport")
-        self.circuit_viewport.setAccessibleName("Read-only circuit input visualization")
-        self.circuit_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
-        self.circuit_viewport.status_message.connect(self.status_message)
-        circuit_preview_layout.addWidget(self.circuit_viewport)
-        visual_layout.addWidget(circuit_preview_card)
-
         target_preview_card = Card()
         target_preview_layout = QVBoxLayout(target_preview_card)
         target_preview_layout.setContentsMargins(12, 12, 12, 12)
@@ -582,8 +558,9 @@ class ExperimentBuilderPage(QWidget):
         self.target_region_visualization_label.setWordWrap(True)
         target_preview_layout.addWidget(self.target_region_visualization_label)
         target_controls = QLabel(
-            "Bright yellow marks the current target region. Camera controls match the "
-            "read-only circuit view above."
+            "Bright yellow marks the current target region. Controls match Circuit Builder: "
+            "drag to rotate, Shift-drag or middle-drag to move, wheel to zoom, "
+            "right-click to center/frame, and R to reset."
         )
         target_controls.setObjectName("Muted")
         target_controls.setWordWrap(True)
@@ -756,7 +733,6 @@ class ExperimentBuilderPage(QWidget):
         if signature != self._morphology_signature:
             self._morphologies = ordered
             self._morphology_signature = signature
-            self.circuit_viewport.set_morphologies(ordered)
             self.target_region_viewport.set_morphologies(ordered)
 
         count = len(self._circuit.neuron_ids)
@@ -775,37 +751,57 @@ class ExperimentBuilderPage(QWidget):
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
             )
-            if ordered:
-                self.circuit_viewport_summary.setText(
-                    f"{len(ordered)} copied morphology view(s) · "
-                    f"{self.circuit_viewport.segment_count:,} SWC segments · circuit settings are read-only here."
-                )
-            else:
-                self.circuit_viewport_summary.setText(
-                    "Circuit document attached, but no loaded morphology snapshot is available. "
-                    "Load the cell set in Circuit Builder to populate this view."
-                )
         else:
             self.circuit_state.set_state(CheckState.WARNING, text="NO CIRCUIT")
             self.circuit_summary.setText(
                 "Assemble and load neurons in Circuit Builder. This page will receive a read-only snapshot automatically."
             )
             self.circuit_detail.setText("No circuit snapshot attached")
-            self.circuit_viewport_summary.setText(
-                "Load a cell set in Circuit Builder to populate this view."
-            )
         self._update_target_region_preview()
         self._invalidate()
 
+    def _resolve_stimulus_targets(
+        self, *, all_if_blank: bool
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Resolve explicit IDs and exact type names against the loaded circuit."""
+
+        selectors = _parse_ids(self.stimulus_targets.text())
+        circuit_ids = tuple(self._circuit.neuron_ids)
+        if not selectors:
+            return (circuit_ids if all_if_blank else ()), ()
+
+        available_ids = set(circuit_ids)
+        type_matches: dict[str, list[str]] = {}
+        for morphology in self._morphologies:
+            neuron_id = morphology.record.neuron_id
+            neuron_type = morphology.record.neuron_type.strip().casefold()
+            if neuron_id in available_ids and neuron_type:
+                type_matches.setdefault(neuron_type, []).append(neuron_id)
+
+        resolved: list[str] = []
+        unmatched: list[str] = []
+        for selector in selectors:
+            matches = (
+                (selector,)
+                if selector in available_ids
+                else tuple(type_matches.get(selector.casefold(), ()))
+            )
+            if not matches:
+                unmatched.append(selector)
+                continue
+            for neuron_id in matches:
+                if neuron_id not in resolved:
+                    resolved.append(neuron_id)
+        return tuple(resolved), tuple(unmatched)
+
     def _target_neuron_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        requested = _parse_ids(self.stimulus_targets.text())
-        available = {item.record.neuron_id for item in self._morphologies}
-        if not requested:
-            return tuple(item.record.neuron_id for item in self._morphologies), ()
-        return (
-            tuple(neuron_id for neuron_id in requested if neuron_id in available),
-            tuple(neuron_id for neuron_id in requested if neuron_id not in available),
+        resolved, unmatched = self._resolve_stimulus_targets(all_if_blank=True)
+        loaded = {item.record.neuron_id for item in self._morphologies}
+        target_ids = tuple(neuron_id for neuron_id in resolved if neuron_id in loaded)
+        unavailable_geometry = tuple(
+            neuron_id for neuron_id in resolved if neuron_id not in loaded
         )
+        return target_ids, tuple((*unmatched, *unavailable_geometry))
 
     def _selected_compartment_targets(
         self, neuron_ids: Iterable[str]
@@ -843,7 +839,7 @@ class ExperimentBuilderPage(QWidget):
         }
         region = str(self.stimulus_region.currentData())
         missing_suffix = (
-            f" · {len(missing_ids)} requested neuron ID(s) are not loaded"
+            f" · {len(missing_ids)} selector(s) did not match a loaded circuit morphology"
             if missing_ids
             else ""
         )
@@ -908,8 +904,13 @@ class ExperimentBuilderPage(QWidget):
                     },
                 )
             )
+        resolved_targets, unmatched_targets = self._resolve_stimulus_targets(
+            all_if_blank=False
+        )
         stimulus = StimulusSpec(
-            target_neuron_ids=_parse_ids(self.stimulus_targets.text()),
+            target_neuron_ids=tuple(
+                dict.fromkeys((*resolved_targets, *unmatched_targets))
+            ),
             target_region=str(self.stimulus_region.currentData()),
             waveform=str(self.waveform_combo.currentData()),
             amplitude_nA=self.amplitude.value(),
