@@ -30,7 +30,96 @@ from digifly_app.core.experiment import (
 )
 from digifly_app.core.models import CheckState
 from .stimulus_preview import StimulusPreview
-from .widgets import Card, CollapsibleSection, StatusPill, make_label_copyable
+from .widgets import (
+    Card,
+    CollapsibleSection,
+    HelpButton,
+    HelpLabel,
+    StatusPill,
+    make_label_copyable,
+)
+
+
+EXPERIMENT_SETTING_HELP: dict[str, str] = {
+    "experiment_name": (
+        "A descriptive name saved with the experiment and used to identify its runs and results."
+    ),
+    "template": (
+        "Choose a starting configuration. Blank keeps the generic defaults; templates populate app-owned controls without running a notebook."
+    ),
+    "engine": (
+        "The simulator backend expected to execute this experiment after its execution adapter passes validation."
+    ),
+    "duration": "Total simulated biological time from start to finish, in milliseconds.",
+    "integration_dt": (
+        "The simulator integration time step. Smaller values resolve faster dynamics but require more computation."
+    ),
+    "initial_voltage": (
+        "Starting membrane potential assigned before the simulation begins, in millivolts."
+    ),
+    "temperature": (
+        "Model temperature in degrees Celsius; temperature-sensitive mechanisms may change their kinetics."
+    ),
+    "random_seed": (
+        "Initializes pseudorandom simulator processes. Reusing the same seed with the same experiment reproduces the same random draws; deterministic models are unchanged."
+    ),
+    "repetitions": (
+        "Number of times to repeat the complete experiment, useful for stochastic comparisons and replicates."
+    ),
+    "workers": (
+        "Maximum worker threads requested from the execution backend for this experiment."
+    ),
+    "stimulus_targets": (
+        "Neuron IDs that receive this stimulus, separated by spaces or commas. Leave blank to target every circuit neuron."
+    ),
+    "stimulus_region": (
+        "Morphological region where the execution adapter will place the injected current."
+    ),
+    "waveform": "Temporal shape of the injected current: pulse train, single square step, or ramp.",
+    "amplitude": "Magnitude of the injected current in nanoamperes.",
+    "delay": "Time from simulation start until the first stimulus begins.",
+    "pulse_width": "Duration of each pulse, square step, or ramp in milliseconds.",
+    "frequency": (
+        "Pulse-train rate in hertz. Higher values reduce the time between successive pulses."
+    ),
+    "pulse_count": (
+        "Number of pulses scheduled in the train. The simulation duration must be long enough to contain them."
+    ),
+    "control_condition": (
+        "Include an unmodified reference run for comparison with runtime manipulations."
+    ),
+    "manipulation_condition": (
+        "Include a second run whose connectivity, neurons, stimulus, or mechanisms can be changed at runtime."
+    ),
+    "comparison_name": "Name used to identify the runtime manipulation condition in outputs.",
+    "electrical_edges": (
+        "Keep gap-junction or other electrical connections active in the manipulation condition."
+    ),
+    "chemical_edges": (
+        "Keep chemical synaptic connections active in the manipulation condition."
+    ),
+    "disabled_neurons": (
+        "Neuron IDs to disable only for the manipulation run, separated by spaces or commas."
+    ),
+    "stimulus_scale": (
+        "Multiplier applied to the primary stimulus amplitude in the manipulation condition."
+    ),
+    "mechanism_scales": (
+        "Optional JSON map of mechanism names to runtime multipliers, for example {\"para\": 0.5}."
+    ),
+    "recording_targets": (
+        "Neuron IDs to record, separated by spaces or commas. Leave blank to record every circuit neuron."
+    ),
+    "recording_region": "Morphological region from which signals will be sampled.",
+    "signals": "Choose which simulator signals and events are saved for analysis.",
+    "record_voltage": "Record membrane voltage traces from the selected neurons and region.",
+    "detect_spikes": "Detect and save spike-event times using the configured voltage threshold.",
+    "sample_dt": "Time between recorded voltage samples, in milliseconds.",
+    "spike_threshold": (
+        "Membrane voltage crossing used to register a spike event, in millivolts."
+    ),
+    "make_plots": "Generate the standard Digifly plots after a successful experiment run.",
+}
 
 
 def _double_spin(
@@ -139,6 +228,39 @@ class ExperimentBuilderPage(QWidget):
         selector_layout.setContentsMargins(0, 0, 0, 0)
         selector_layout.setSpacing(9)
         self.selector_sections: dict[str, CollapsibleSection] = {}
+        self.help_buttons: dict[str, HelpButton] = {}
+        self.help_labels: dict[str, HelpLabel] = {}
+
+        def add_help_row(
+            form: QFormLayout,
+            key: str,
+            label: str,
+            field: QWidget,
+        ) -> None:
+            help_text = EXPERIMENT_SETTING_HELP[key]
+            field.setToolTip(help_text)
+            help_label = HelpLabel(label, help_text, key=key, buddy=field)
+            self.help_labels[key] = help_label
+            self.help_buttons[key] = help_label.help_button
+            form.addRow(help_label, field)
+
+        def helped_control(control: QWidget, key: str) -> QWidget:
+            help_text = EXPERIMENT_SETTING_HELP[key]
+            control.setToolTip(help_text)
+            setting_name = str(getattr(control, "text", lambda: key)())
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(5)
+            row_layout.addWidget(control)
+            help_button = HelpButton(setting_name, help_text, key=key)
+            self.help_buttons[key] = help_button
+            row_layout.addWidget(
+                help_button,
+                alignment=Qt.AlignmentFlag.AlignVCenter,
+            )
+            row_layout.addStretch(1)
+            return row
 
         def add_selector(
             key: str, title: str, *, expanded: bool = False
@@ -168,17 +290,14 @@ class ExperimentBuilderPage(QWidget):
             "Pulse-train comparison · app-owned Escape-SIZ translation",
             "pulse_train_comparison",
         )
-        self.template_combo.setToolTip(
-            "Templates populate app-owned fields only. No notebook is imported or executed."
-        )
         self.engine_combo = QComboBox()
         self.engine_combo.setObjectName("ExperimentEngine")
         self.engine_combo.addItem("Arbor", "arbor")
         self.engine_combo.addItem("NEURON", "neuron")
         self.engine_combo.addItem("BMTK / SONATA", "bmtk")
-        identity_form.addRow("Name", self.name_edit)
-        identity_form.addRow("Template", self.template_combo)
-        identity_form.addRow("Execution engine", self.engine_combo)
+        add_help_row(identity_form, "experiment_name", "Name", self.name_edit)
+        add_help_row(identity_form, "template", "Template", self.template_combo)
+        add_help_row(identity_form, "engine", "Execution engine", self.engine_combo)
         identity_layout.addLayout(identity_form)
 
         run_layout = add_selector("simulation_compute", "Simulation & compute")
@@ -202,13 +321,13 @@ class ExperimentBuilderPage(QWidget):
         self.workers = QSpinBox()
         self.workers.setRange(1, 256)
         self.workers.setValue(1)
-        run_form.addRow("Simulation duration", self.duration)
-        run_form.addRow("Integration step", self.integration_dt)
-        run_form.addRow("Initial voltage", self.initial_voltage)
-        run_form.addRow("Temperature", self.temperature)
-        run_form.addRow("Random seed", self.seed)
-        run_form.addRow("Repetitions", self.repetitions)
-        run_form.addRow("Workers / threads", self.workers)
+        add_help_row(run_form, "duration", "Simulation duration", self.duration)
+        add_help_row(run_form, "integration_dt", "Integration step", self.integration_dt)
+        add_help_row(run_form, "initial_voltage", "Initial voltage", self.initial_voltage)
+        add_help_row(run_form, "temperature", "Temperature", self.temperature)
+        add_help_row(run_form, "random_seed", "Random seed", self.seed)
+        add_help_row(run_form, "repetitions", "Repetitions", self.repetitions)
+        add_help_row(run_form, "workers", "Workers / threads", self.workers)
         run_layout.addLayout(run_form)
 
         stimulus_layout = add_selector("primary_stimulus", "Primary stimulus")
@@ -245,6 +364,7 @@ class ExperimentBuilderPage(QWidget):
         self.pulse_count.setValue(10)
         for live_control in (
             self.duration,
+            self.seed,
             self.amplitude,
             self.delay,
             self.pulse_width,
@@ -252,14 +372,24 @@ class ExperimentBuilderPage(QWidget):
             self.pulse_count,
         ):
             live_control.setKeyboardTracking(True)
-        stimulus_form.addRow("Target neuron IDs", self.stimulus_targets)
-        stimulus_form.addRow("Target region", self.stimulus_region)
-        stimulus_form.addRow("Waveform", self.waveform_combo)
-        stimulus_form.addRow("Amplitude", self.amplitude)
-        stimulus_form.addRow("Start delay", self.delay)
-        stimulus_form.addRow("Pulse / step duration", self.pulse_width)
-        stimulus_form.addRow("Frequency", self.frequency)
-        stimulus_form.addRow("Pulse count", self.pulse_count)
+        add_help_row(
+            stimulus_form,
+            "stimulus_targets",
+            "Target neuron IDs",
+            self.stimulus_targets,
+        )
+        add_help_row(stimulus_form, "stimulus_region", "Target region", self.stimulus_region)
+        add_help_row(stimulus_form, "waveform", "Waveform", self.waveform_combo)
+        add_help_row(stimulus_form, "amplitude", "Amplitude", self.amplitude)
+        add_help_row(stimulus_form, "delay", "Start delay", self.delay)
+        add_help_row(
+            stimulus_form,
+            "pulse_width",
+            "Pulse / step duration",
+            self.pulse_width,
+        )
+        add_help_row(stimulus_form, "frequency", "Frequency", self.frequency)
+        add_help_row(stimulus_form, "pulse_count", "Pulse count", self.pulse_count)
         stimulus_layout.addLayout(stimulus_form)
 
         condition_layout = add_selector(
@@ -273,10 +403,14 @@ class ExperimentBuilderPage(QWidget):
         condition_layout.addWidget(condition_hint)
         self.control_enabled = QCheckBox("Run control condition")
         self.control_enabled.setChecked(True)
-        condition_layout.addWidget(self.control_enabled)
+        condition_layout.addWidget(
+            helped_control(self.control_enabled, "control_condition")
+        )
         self.manipulation_enabled = QCheckBox("Run comparison / manipulation condition")
         self.manipulation_enabled.setChecked(True)
-        condition_layout.addWidget(self.manipulation_enabled)
+        condition_layout.addWidget(
+            helped_control(self.manipulation_enabled, "manipulation_condition")
+        )
         condition_form = QFormLayout()
         condition_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
@@ -292,15 +426,42 @@ class ExperimentBuilderPage(QWidget):
         self.stimulus_scale = _double_spin(0.0, 1_000_000.0, 1.0, decimals=6)
         self.mechanism_scales = QLineEdit("{}")
         self.mechanism_scales.setPlaceholderText('{"para": 0.5}')
-        self.mechanism_scales.setToolTip(
-            "Optional runtime mechanism-scale mapping. Keys must match mechanisms in the circuit design."
+        add_help_row(
+            condition_form,
+            "comparison_name",
+            "Comparison name",
+            self.manipulation_name,
         )
-        condition_form.addRow("Comparison name", self.manipulation_name)
-        condition_form.addRow("Electrical edges", self.manip_gap_enabled)
-        condition_form.addRow("Chemical edges", self.manip_chemical_enabled)
-        condition_form.addRow("Disabled neurons", self.disabled_neurons)
-        condition_form.addRow("Stimulus multiplier", self.stimulus_scale)
-        condition_form.addRow("Mechanism scales (JSON)", self.mechanism_scales)
+        add_help_row(
+            condition_form,
+            "electrical_edges",
+            "Electrical edges",
+            self.manip_gap_enabled,
+        )
+        add_help_row(
+            condition_form,
+            "chemical_edges",
+            "Chemical edges",
+            self.manip_chemical_enabled,
+        )
+        add_help_row(
+            condition_form,
+            "disabled_neurons",
+            "Disabled neurons",
+            self.disabled_neurons,
+        )
+        add_help_row(
+            condition_form,
+            "stimulus_scale",
+            "Stimulus multiplier",
+            self.stimulus_scale,
+        )
+        add_help_row(
+            condition_form,
+            "mechanism_scales",
+            "Mechanism scales (JSON)",
+            self.mechanism_scales,
+        )
         condition_layout.addLayout(condition_form)
 
         recording_layout = add_selector("recording_outputs", "Recording & outputs")
@@ -323,8 +484,8 @@ class ExperimentBuilderPage(QWidget):
         outputs = QWidget()
         output_row = QHBoxLayout(outputs)
         output_row.setContentsMargins(0, 0, 0, 0)
-        output_row.addWidget(self.record_voltage)
-        output_row.addWidget(self.detect_spikes)
+        output_row.addWidget(helped_control(self.record_voltage, "record_voltage"))
+        output_row.addWidget(helped_control(self.detect_spikes, "detect_spikes"))
         self.sample_dt = _double_spin(
             0.000001, 1_000_000.0, 0.05, decimals=6, step=0.01, suffix=" ms"
         )
@@ -333,12 +494,27 @@ class ExperimentBuilderPage(QWidget):
         )
         self.make_plots = QCheckBox("Generate standard plots")
         self.make_plots.setChecked(True)
-        recording_form.addRow("Target neuron IDs", self.recording_targets)
-        recording_form.addRow("Target region", self.recording_region)
-        recording_form.addRow("Signals", outputs)
-        recording_form.addRow("Sample interval", self.sample_dt)
-        recording_form.addRow("Spike threshold", self.spike_threshold)
-        recording_form.addRow("Analysis", self.make_plots)
+        add_help_row(
+            recording_form,
+            "recording_targets",
+            "Target neuron IDs",
+            self.recording_targets,
+        )
+        add_help_row(
+            recording_form,
+            "recording_region",
+            "Target region",
+            self.recording_region,
+        )
+        add_help_row(recording_form, "signals", "Signals", outputs)
+        add_help_row(recording_form, "sample_dt", "Sample interval", self.sample_dt)
+        add_help_row(
+            recording_form,
+            "spike_threshold",
+            "Spike threshold",
+            self.spike_threshold,
+        )
+        add_help_row(recording_form, "make_plots", "Analysis", self.make_plots)
         recording_layout.addLayout(recording_form)
         selector_layout.addStretch(1)
 
@@ -461,7 +637,7 @@ class ExperimentBuilderPage(QWidget):
             self.make_plots,
         ):
             self._connect_change(control)
-        self.set_config(ExperimentSpec.pulse_train_comparison())
+        self.set_config(ExperimentSpec())
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
 
@@ -624,7 +800,7 @@ class ExperimentBuilderPage(QWidget):
 
     def reset(self) -> None:
         self.set_circuit_spec(CircuitSpec())
-        self.set_config(ExperimentSpec.pulse_train_comparison())
+        self.set_config(ExperimentSpec())
 
     def validate_draft(self) -> None:
         try:
@@ -665,6 +841,7 @@ class ExperimentBuilderPage(QWidget):
     def _update_stimulus_preview(self) -> None:
         self.stimulus_preview.set_protocol(
             duration_ms=self.duration.value(),
+            random_seed=self.seed.value(),
             amplitude_nA=self.amplitude.value(),
             delay_ms=self.delay.value(),
             pulse_width_ms=self.pulse_width.value(),

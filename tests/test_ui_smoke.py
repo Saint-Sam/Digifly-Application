@@ -20,6 +20,7 @@ from digifly_app.core.resource_profile import (
     make_default_profile,
 )
 from digifly_app.ui.circuit_builder import CIRCUIT_BUILDER_WORKFLOW
+from digifly_app.ui.experiment_builder import EXPERIMENT_SETTING_HELP
 from digifly_app.ui.main_window import (
     APPLICATION_NAME,
     LEGACY_APPLICATION_NAME,
@@ -119,6 +120,9 @@ def test_main_window_constructs_without_importing_simulators():
         assert window.data_library_page.import_in_progress is False
         assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
         assert window.experiment_page.config().engine == "arbor"
+        assert window.experiment_page.template_combo.currentData() == "blank"
+        assert window.experiment_page.config().template_key == "blank"
+        assert window.experiment_page.name_edit.text() == "Untitled experiment"
         assert "Experiment Builder" in window.nav_buttons[3].text()
         assert "Escape-SIZ" not in window.nav_buttons[3].text()
 
@@ -192,6 +196,9 @@ def test_app_owned_pulse_template_exposes_runtime_controls_without_a_notebook():
         assert config.stimuli[0].frequency_hz == 100.0
         assert config.stimuli[0].pulse_count == 10
         assert config.conditions[1].gap_junctions_enabled is False
+        page.reset()
+        assert page.template_combo.currentData() == "blank"
+        assert page.name_edit.text() == "Untitled experiment"
     finally:
         window.close()
         application.processEvents()
@@ -222,10 +229,12 @@ def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview(
         page.pulse_width.setValue(2.0)
         page.frequency.setValue(50.0)
         page.pulse_count.setValue(3)
+        page.seed.setValue(42)
         application.processEvents()
 
         assert page.stimulus_preview.protocol() == {
             "duration_ms": 40.0,
+            "random_seed": 42,
             "amplitude_nA": 1.5,
             "delay_ms": 5.0,
             "pulse_width_ms": 2.0,
@@ -236,6 +245,18 @@ def test_experiment_builder_uses_left_disclosures_and_reactive_stimulus_preview(
         assert page.stimulus_preview.intervals() == ((5.0, 7.0), (25.0, 27.0))
         assert "1.5 nA" in page.stimulus_preview_summary.text()
         assert "simulation ends at 40 ms" in page.stimulus_preview_summary.text()
+        assert "Seed: 42" in page.stimulus_preview.accessibleDescription()
+
+        assert set(page.help_buttons) == set(EXPERIMENT_SETTING_HELP)
+        assert all(button.text() == "?" for button in page.help_buttons.values())
+        assert all(
+            button.toolTip() == EXPERIMENT_SETTING_HELP[key]
+            for key, button in page.help_buttons.items()
+        )
+        seed_help = page.help_labels["random_seed"]
+        assert seed_help.text_label.text() == "Random seed"
+        assert "same random draws" in seed_help.text_label.toolTip()
+        assert seed_help.help_button.accessibleName() == "Help for Random seed"
 
         page.selector_sections["primary_stimulus"].set_expanded(True)
         page.frequency.lineEdit().selectAll()

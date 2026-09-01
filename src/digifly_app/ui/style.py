@@ -60,6 +60,24 @@ QToolButton#CollapsibleSectionHeader:checked {
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
 }
+QToolButton#HelpButton {
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 18px;
+    max-height: 18px;
+    padding: 0;
+    border: 1px solid #5776a5;
+    border-radius: 9px;
+    background: #142541;
+    color: #a8c9ff;
+    font-size: 11px;
+    font-weight: 750;
+}
+QToolButton#HelpButton:hover, QToolButton#HelpButton:focus {
+    border-color: #82adf2;
+    background: #20375c;
+    color: #ffffff;
+}
 QWidget#CollapsibleSectionBody {
     background: #0d172a;
     border-top: 1px solid #263a5a;

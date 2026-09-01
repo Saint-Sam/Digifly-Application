@@ -46,6 +46,7 @@ class StimulusPreview(QWidget):
         self.setMinimumHeight(300)
         self._protocol = {
             "duration_ms": 110.0,
+            "random_seed": 1,
             "amplitude_nA": 0.9,
             "delay_ms": 5.0,
             "pulse_width_ms": 0.4,
@@ -62,6 +63,7 @@ class StimulusPreview(QWidget):
         self,
         *,
         duration_ms: float,
+        random_seed: int,
         amplitude_nA: float,
         delay_ms: float,
         pulse_width_ms: float,
@@ -71,6 +73,7 @@ class StimulusPreview(QWidget):
     ) -> None:
         self._protocol = {
             "duration_ms": max(0.0, float(duration_ms)),
+            "random_seed": max(0, int(random_seed)),
             "amplitude_nA": float(amplitude_nA),
             "delay_ms": max(0.0, float(delay_ms)),
             "pulse_width_ms": max(0.0, float(pulse_width_ms)),
@@ -116,7 +119,9 @@ class StimulusPreview(QWidget):
         )
 
     def _refresh_accessibility(self) -> None:
-        self.setAccessibleDescription(self.summary_text())
+        self.setAccessibleDescription(
+            f"Seed: {int(self._protocol['random_seed'])}. {self.summary_text()}"
+        )
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt virtual name
         del event
@@ -246,6 +251,11 @@ class StimulusPreview(QWidget):
         else:
             status = f"{visible_count} visible pulse{'s' if visible_count != 1 else ''}"
         painter.setPen(QColor("#6fcff0"))
+        painter.drawText(
+            QRectF(plot.left(), 31.0, plot.width(), 18.0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"Seed: {int(self._protocol['random_seed'])}",
+        )
         painter.drawText(
             QRectF(plot.left(), 31.0, plot.width(), 18.0),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,

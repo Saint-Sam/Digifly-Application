@@ -24,6 +24,55 @@ class Card(QFrame):
         self.setObjectName("Inset" if inset else "Card")
 
 
+class HelpButton(QToolButton):
+    """Small, accessible hover target for contextual setting help."""
+
+    def __init__(
+        self,
+        setting_name: str,
+        help_text: str,
+        *,
+        key: str = "",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("HelpButton")
+        self.setProperty("helpKey", str(key))
+        self.setText("?")
+        self.setFixedSize(18, 18)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setToolTip(str(help_text))
+        self.setAccessibleName(f"Help for {setting_name}")
+        self.setAccessibleDescription(str(help_text))
+
+
+class HelpLabel(QWidget):
+    """Form label with a neighboring question-mark tooltip affordance."""
+
+    def __init__(
+        self,
+        text: str,
+        help_text: str,
+        *,
+        key: str = "",
+        buddy: QWidget | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName(f"HelpLabel_{key}" if key else "HelpLabel")
+        self.setToolTip(str(help_text))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(5)
+        self.text_label = QLabel(str(text))
+        self.text_label.setToolTip(str(help_text))
+        if buddy is not None:
+            self.text_label.setBuddy(buddy)
+        row.addWidget(self.text_label)
+        self.help_button = HelpButton(text, help_text, key=key)
+        row.addWidget(self.help_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+
 class CollapsibleSection(QWidget):
     """A compact, accessible disclosure section for dense control panels."""
 
