@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -33,6 +35,12 @@ from digifly_app.core.experiment import (
 from digifly_app.core.jobs import JobStore
 from digifly_app.core.models import CheckState
 from digifly_app.core.morphology import Morphology, locate_soma
+from digifly_app.core.process_environment import EXTERNAL_PYTHON_ENV_REMOVE
+from digifly_app.engines.generic_experiment import (
+    GenericExperimentAdapter,
+    load_generic_experiment_result,
+    update_run_manifest_state,
+)
 from .circuit_viewport import (
     DISPLAY_MODE_FULL_SKELETONS,
     CircuitViewport,
@@ -201,6 +209,8 @@ class ExperimentBuilderPage(QWidget):
         parent: QWidget | None = None,
         *,
         output_root: str | Path | None = None,
+        neuron_runtime: str | Path | None = None,
+        arbor_runtime: str | Path | None = None,
     ):
         super().__init__(parent)
         self._configured_output_root = Path(
@@ -212,6 +222,16 @@ class ExperimentBuilderPage(QWidget):
         self._morphologies: tuple[Morphology, ...] = ()
         self._morphology_signature: tuple[tuple[str, str, int], ...] = ()
         self._restoring = False
+        self._runtime_paths = {
+            "neuron": str(neuron_runtime or ""),
+            "arbor": str(arbor_runtime or ""),
+        }
+        self._process: QProcess | None = None
+        self._job_dir: Path | None = None
+        self._job_store: JobStore | None = None
+        self._plan = None
+        self._run_output_buffer = ""
+        self._cancel_requested = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -238,11 +258,11 @@ class ExperimentBuilderPage(QWidget):
         workspace.setHorizontalSpacing(16)
         workspace.setVerticalSpacing(0)
 
-        selector_panel = QWidget()
-        selector_panel.setObjectName("ExperimentSelectorPanel")
-        selector_panel.setMinimumWidth(400)
-        selector_panel.setMaximumWidth(520)
-        selector_layout = QVBoxLayout(selector_panel)
+        self.selector_panel = QWidget()
+        self.selector_panel.setObjectName("ExperimentSelectorPanel")
+        self.selector_panel.setMinimumWidth(400)
+        self.selector_panel.setMaximumWidth(520)
+        selector_layout = QVBoxLayout(self.selector_panel)
         selector_layout.setContentsMargins(0, 0, 0, 0)
         selector_layout.setSpacing(9)
         self.selector_sections: dict[str, CollapsibleSection] = {}
@@ -517,8 +537,8 @@ class ExperimentBuilderPage(QWidget):
         self.recording_targets = QLineEdit()
         self.recording_targets.setPlaceholderText("all circuit neurons")
         self.recording_region = QComboBox()
-        self.recording_region.addItem("All compartments", "all")
         self.recording_region.addItem("Soma", "soma")
+        self.recording_region.addItem("All compartments", "all")
         self.recording_region.addItem("AIS", "ais")
         self.recording_region.addItem("Selected SWC compartments", "selected_compartments")
         self.record_voltage = QCheckBox("Membrane voltage")
@@ -627,17 +647,37 @@ class ExperimentBuilderPage(QWidget):
         self.validate_button.clicked.connect(self.validate_draft)
         self.run_button = QPushButton("Run experiment")
         self.run_button.setToolTip(
-            "Check this draft and its experiment name against saved runs before launch"
+            "Preflight and launch this experiment in the selected external simulator"
         )
         self.run_button.clicked.connect(self.request_run)
+        self.cancel_button = QPushButton("Stop safely")
+        self.cancel_button.setProperty("danger", True)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel_run)
         action_row.addWidget(self.validate_button)
         action_row.addWidget(self.run_button)
+        action_row.addWidget(self.cancel_button)
         action_row.addStretch(1)
         self.validation_state = QLabel("Draft not validated")
         self.validation_state.setObjectName("Muted")
         self.validation_state.setWordWrap(True)
         action_layout.addLayout(action_row)
         action_layout.addWidget(self.validation_state)
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(0)
+        self.run_progress.setVisible(False)
+        action_layout.addWidget(self.run_progress)
+        self.run_log = QPlainTextEdit()
+        self.run_log.setObjectName("ExperimentRunLog")
+        self.run_log.setReadOnly(True)
+        self.run_log.setMaximumBlockCount(5000)
+        self.run_log.setMinimumHeight(130)
+        self.run_log.setVisible(False)
+        self.run_log.setStyleSheet(
+            "font-family:'SFMono-Regular', Menlo, monospace; font-size:11px;"
+        )
+        action_layout.addWidget(self.run_log)
         visual_layout.addWidget(action_card)
 
         preview_card = Card()
@@ -659,7 +699,7 @@ class ExperimentBuilderPage(QWidget):
         visual_layout.addStretch(1)
 
         workspace.addWidget(
-            selector_panel,
+            self.selector_panel,
             0,
             0,
             alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
@@ -1054,12 +1094,20 @@ class ExperimentBuilderPage(QWidget):
             self.status_message.emit(self.validation_state.text())
             return
         self.validation_state.setText(
-            "Draft valid · generic execution adapter is the next backend milestone"
+            "Draft valid · Run will preflight the selected simulator and launch app-owned output"
         )
         self.status_message.emit(self.validation_state.text())
 
     def request_run(self) -> None:
-        """Exercise launch gates without starting the unfinished generic adapter."""
+        """Preflight and launch the generic classic-HH worker."""
+
+        if self._process is not None:
+            QMessageBox.warning(
+                self,
+                "Experiment already running",
+                "Stop or finish the current experiment before launching another.",
+            )
+            return
 
         try:
             config = self.config()
@@ -1085,10 +1133,289 @@ class ExperimentBuilderPage(QWidget):
         if errors:
             self._show_not_ready(errors[0])
             return
+        adapter = GenericExperimentAdapter(self._runtime_paths)
+        self.validation_state.setText("Running simulator preflight…")
+        self.status_message.emit(self.validation_state.text())
+        try:
+            report = adapter.validate(
+                self._circuit,
+                config,
+                self._morphologies,
+                output_root=self._output_root(),
+            )
+        except Exception as exc:
+            self._show_not_ready(f"Simulator preflight failed: {exc}")
+            return
+        if not report.ok:
+            failures = [
+                f"• {check.title}: {check.detail}"
+                for check in report.checks
+                if check.blocking and check.state == CheckState.FAIL
+            ]
+            detail = "\n".join(failures)
+            self.validation_state.setText(
+                f"Experiment blocked · {len(failures)} simulator preflight check(s) failed"
+            )
+            self.status_message.emit(self.validation_state.text())
+            QMessageBox.warning(
+                self,
+                "Experiment cannot run yet",
+                detail + "\n\nNo simulation started and no run files were created.",
+            )
+            return
+        try:
+            plan = adapter.plan(
+                self._circuit,
+                config,
+                output_root=self._output_root(),
+            )
+            payload = adapter.request_payload(
+                self._circuit,
+                config,
+                self._morphologies,
+                report,
+                output_root=self._output_root(),
+            )
+            request_path = Path(plan.arguments[-1])
+            adapter.write_request(request_path, payload)
+            (self._output_root() / "_runtime" / "matplotlib").mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            store = JobStore(self._output_root())
+            job_dir = store.create(plan, report, payload)
+        except FileExistsError as exc:
+            self._update_name_availability()
+            self._show_not_ready(
+                f"The app-owned run folder is already reserved: {exc}"
+            )
+            return
+        except Exception as exc:
+            self._show_not_ready(f"Could not create the app-owned run: {exc}")
+            return
+        self._update_name_availability()
+        self._start_process(plan, store, job_dir, report)
+
+    def _start_process(
+        self,
+        plan: Any,
+        store: JobStore,
+        job_dir: Path,
+        report: Any,
+    ) -> None:
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        environment = QProcessEnvironment.systemEnvironment()
+        for key in tuple(environment.keys()):
+            if (
+                key in EXTERNAL_PYTHON_ENV_REMOVE
+                or key == "DISPLAY"
+                or key.startswith("DYLD_")
+                or key.startswith("CONDA_")
+            ):
+                environment.remove(key)
+        for key, value in plan.environment.items():
+            environment.insert(key, value)
+        process.setProcessEnvironment(environment)
+        process.setWorkingDirectory(plan.working_directory)
+        process.readyReadStandardOutput.connect(self._read_process_output)
+        process.finished.connect(self._process_finished)
+        process.errorOccurred.connect(self._process_error)
+        self._process = process
+        self._plan = plan
+        self._job_store = store
+        self._job_dir = job_dir
+        self._run_output_buffer = ""
+        self._cancel_requested = False
+        store.update_status(job_dir, "running", pid=None)
+        store.append_event(job_dir, "running", "Generic scientific worker started.")
+
+        self.run_log.clear()
+        self.run_log.setVisible(True)
+        self.run_log.appendPlainText(f"Job provenance: {job_dir}\n")
+        for check in report.checks:
+            self.run_log.appendPlainText(
+                f"[{check.state.value.upper()}] {check.title} · {check.detail}"
+            )
+        self.run_log.appendPlainText(f"\nStarting: {plan.display_command}\n")
+        self.run_progress.setVisible(True)
+        self.run_progress.setRange(0, 0)
+        self.run_button.setEnabled(False)
+        self.run_button.setText("Experiment running…")
+        self.validate_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.selector_panel.setEnabled(False)
         self.validation_state.setText(
-            "Name available · execution adapter is not connected yet"
+            f"Running {plan.engine.upper()} experiment · starting worker"
+        )
+        process.start(plan.program, list(plan.arguments))
+        if process.waitForStarted(5000):
+            store.update_status(job_dir, "running", pid=int(process.processId()))
+            self.validation_state.setText(
+                f"Running {plan.engine.upper()} experiment · PID {process.processId()}"
+            )
+            self.status_message.emit(self.validation_state.text())
+
+    def cancel_run(self) -> None:
+        if self._process is None:
+            return
+        choice = QMessageBox.question(
+            self,
+            "Stop the current experiment?",
+            "Digifly Workstation will request graceful termination and preserve the run documents, log, and partial artifacts.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        if self._job_store is not None and self._job_dir is not None:
+            self._job_store.update_status(self._job_dir, "cancelling")
+            self._job_store.append_event(
+                self._job_dir,
+                "cancel_requested",
+                "User requested graceful termination.",
+            )
+        self.run_log.appendPlainText(
+            "\nCancellation requested; preserving provenance and partial artifacts…"
+        )
+        self.cancel_button.setEnabled(False)
+        self._cancel_requested = True
+        self._process.terminate()
+
+    def _read_process_output(self) -> None:
+        if self._process is None:
+            return
+        raw = bytes(self._process.readAllStandardOutput())
+        text = raw.decode("utf-8", errors="replace")
+        if not text:
+            return
+        self.run_log.moveCursor(QTextCursor.MoveOperation.End)
+        self.run_log.insertPlainText(text)
+        self.run_log.moveCursor(QTextCursor.MoveOperation.End)
+        if self._job_dir is not None:
+            with (self._job_dir / "stdout.log").open("a", encoding="utf-8") as handle:
+                handle.write(text)
+
+    def _process_finished(
+        self,
+        exit_code: int,
+        exit_status: QProcess.ExitStatus,
+    ) -> None:
+        self._read_process_output()
+        crashed = exit_status == QProcess.ExitStatus.CrashExit
+        state = (
+            "cancelled"
+            if self._cancel_requested
+            else "failed"
+            if crashed or exit_code
+            else "completed"
+        )
+        if self._job_store is not None and self._job_dir is not None:
+            self._job_store.update_status(
+                self._job_dir,
+                state,
+                exit_code=exit_code,
+                exit_status=exit_status.name,
+            )
+            self._job_store.append_event(
+                self._job_dir,
+                state,
+                f"Generic scientific worker exited with code {exit_code}.",
+            )
+        if state != "completed" and self._plan is not None:
+            update_run_manifest_state(
+                self._plan.working_directory,
+                state,
+                exit_code=exit_code,
+                exit_status=exit_status.name,
+            )
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(100 if state == "completed" else 0)
+        self.run_log.appendPlainText(
+            f"\nWorker {state} with exit code {exit_code}."
+        )
+        expected = (
+            Path(self._plan.expected_summary_path)
+            if self._plan is not None and self._plan.expected_summary_path
+            else None
+        )
+        if state == "completed" and (expected is None or not expected.is_file()):
+            state = "failed"
+            message = "Worker exited successfully but produced no result summary."
+            self.run_log.appendPlainText(message)
+            if self._job_store is not None and self._job_dir is not None:
+                self._job_store.update_status(
+                    self._job_dir,
+                    "failed",
+                    error=message,
+                )
+            if self._plan is not None:
+                update_run_manifest_state(
+                    self._plan.working_directory,
+                    "failed",
+                    error=message,
+                )
+        if state == "completed" and expected is not None and expected.is_file():
+            try:
+                result = load_generic_experiment_result(expected)
+            except Exception as exc:
+                state = "failed"
+                self.run_log.appendPlainText(f"Result inspection failed: {exc}")
+                if self._job_store is not None and self._job_dir is not None:
+                    self._job_store.update_status(
+                        self._job_dir,
+                        "failed",
+                        error=f"Result inspection failed: {exc}",
+                    )
+                update_run_manifest_state(
+                    self._plan.working_directory,
+                    "failed",
+                    error=f"Result inspection failed: {exc}",
+                )
+            else:
+                self.result_ready.emit(result)
+        self.validation_state.setText(
+            "Experiment completed · opened in Results"
+            if state == "completed"
+            else "Experiment cancelled · partial artifacts and provenance were preserved"
+            if state == "cancelled"
+            else f"Experiment failed · inspect the preserved run log (exit {exit_code})"
         )
         self.status_message.emit(self.validation_state.text())
+        self._finish_process_ui()
+
+    def _process_error(self, error: QProcess.ProcessError) -> None:
+        message = self._process.errorString() if self._process else str(error)
+        self.run_log.appendPlainText(f"\nProcess error: {message}")
+        if self._job_store is not None and self._job_dir is not None:
+            self._job_store.update_status(self._job_dir, "failed", error=message)
+            self._job_store.append_event(self._job_dir, "error", message)
+        if self._plan is not None:
+            update_run_manifest_state(
+                self._plan.working_directory,
+                "failed",
+                error=message,
+            )
+        self.validation_state.setText(f"Experiment worker error · {message}")
+        self.status_message.emit(self.validation_state.text())
+        if error == QProcess.ProcessError.FailedToStart:
+            self._finish_process_ui()
+
+    def _finish_process_ui(self) -> None:
+        self._process = None
+        self.cancel_button.setEnabled(False)
+        self.validate_button.setEnabled(True)
+        self.run_button.setText("Run experiment")
+        self.run_button.setEnabled(True)
+        self.selector_panel.setEnabled(True)
+        self._cancel_requested = False
+        self._update_name_availability()
+
+    def set_neuron_runtime(self, value: str | Path) -> None:
+        self._runtime_paths["neuron"] = str(value)
+
+    def set_arbor_runtime(self, value: str | Path) -> None:
+        self._runtime_paths["arbor"] = str(value)
 
     def set_output_root(self, value: str | Path) -> None:
         self._configured_output_root = Path(value).expanduser()
@@ -1168,6 +1495,8 @@ class ExperimentBuilderPage(QWidget):
             return
         self._update_stimulus_preview()
         self._update_target_region_preview()
+        if self._process is not None:
+            return
         self.validation_state.setText("Controls changed · validate draft")
         self.document_preview.clear()
         try:

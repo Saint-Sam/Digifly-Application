@@ -66,6 +66,7 @@ from digifly_app.engines.neuron_escape_siz import (
     NeuronEscapeSizAdapter,
     latest_gfc2_stimulus,
 )
+from digifly_app.engines.generic_experiment import load_generic_experiment_result
 from .style import (
     DARK_THEME,
     LIGHT_THEME,
@@ -1142,6 +1143,8 @@ class ResultsPage(QWidget):
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Run summary must contain a JSON object.")
+        if payload.get("workflow") == EXPERIMENT_BUILDER_WORKFLOW:
+            return load_generic_experiment_result(path)
         is_arbor = (
             payload.get("backend") == "arbor"
             or payload.get("recipe") == "ablation_notebook_arbor_comparison_v1"
@@ -1354,10 +1357,18 @@ class MainWindow(QMainWindow):
         self.data_library_page = DataLibraryPage()
         self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
         self.experiment_page = ExperimentBuilderPage(
-            output_root=self.overview_page.output_edit.text()
+            output_root=self.overview_page.output_edit.text(),
+            neuron_runtime=self.overview_page.python_edit.text(),
+            arbor_runtime=self.overview_page.arbor_python_edit.text(),
         )
         self.overview_page.output_edit.textChanged.connect(
             self.experiment_page.set_output_root
+        )
+        self.overview_page.python_edit.textChanged.connect(
+            self.experiment_page.set_neuron_runtime
+        )
+        self.overview_page.arbor_python_edit.textChanged.connect(
+            self.experiment_page.set_arbor_runtime
         )
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
         self.engines_page = EnginesPage(self.overview_page)

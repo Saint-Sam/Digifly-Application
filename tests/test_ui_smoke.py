@@ -13,7 +13,13 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.connectomes import NeuronRecord
 from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
-from digifly_app.core.models import ResultRecord
+from digifly_app.core.models import (
+    CheckState,
+    ExecutionPlan,
+    PreflightCheck,
+    PreflightReport,
+    ResultRecord,
+)
 from digifly_app.core.morphology import Morphology, SwcNode, SwcSegment
 from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resource_profile import (
@@ -320,7 +326,7 @@ def test_experiment_run_button_warns_before_reusing_a_saved_name(tmp_path, monke
         application.processEvents()
 
 
-def test_unique_experiment_name_passes_name_gate_without_starting_backend(
+def test_unique_experiment_name_reaches_simulator_preflight_without_writing(
     tmp_path, monkeypatch
 ):
     application = QApplication.instance() or QApplication([])
@@ -354,10 +360,95 @@ def test_unique_experiment_name_passes_name_gate_without_starting_backend(
         )
         window.experiment_page.run_button.click()
         application.processEvents()
-        assert warnings == []
+        assert warnings and warnings[0][0] == "Experiment cannot run yet"
+        assert "Source morphology" in warnings[0][1]
         assert messages == []
-        assert "Name available" in window.experiment_page.validation_state.text()
+        assert "simulator preflight" in window.experiment_page.validation_state.text()
         assert not (tmp_path / "runs").exists()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_launch_ready_experiment_creates_provenance_and_starts_worker(
+    tmp_path, monkeypatch
+):
+    application = QApplication.instance() or QApplication([])
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    report = PreflightReport(
+        (
+            PreflightCheck(
+                "ready",
+                "Executable test plan",
+                CheckState.PASS,
+                "All launch gates passed.",
+                blocking=True,
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "digifly_app.ui.experiment_builder.GenericExperimentAdapter.validate",
+        lambda *args, **kwargs: report,
+    )
+
+    source = tmp_path / "1.swc"
+    source.write_text(
+        "1 1 0 0 0 2 -1\n2 3 1 0 0 1 1\n",
+        encoding="utf-8",
+    )
+    base = _experiment_test_morphology("1", "synthetic")
+    morphology = Morphology(
+        NeuronRecord("1", "test", "synthetic", str(source), "test:v1"),
+        base.nodes,
+        base.segments,
+        base.bounds,
+    )
+    circuit = CircuitSpec(
+        connectome=ConnectomeRef("test:v1", "Test", str(tmp_path)),
+        neuron_ids=("1",),
+    )
+    started: dict[str, object] = {}
+    window = MainWindow()
+    try:
+        output = tmp_path / "runs"
+        page = window.experiment_page
+        window.overview_page.output_edit.setText(str(output))
+        window.overview_page.arbor_python_edit.setText(os.sys.executable)
+        page.name_edit.setText("Launch-ready experiment")
+        page.set_circuit_snapshot(circuit, (morphology,))
+
+        def capture_start(plan, store, job_dir, preflight):
+            started.update(
+                plan=plan,
+                store=store,
+                job_dir=job_dir,
+                report=preflight,
+            )
+
+        monkeypatch.setattr(page, "_start_process", capture_start)
+        page.run_button.click()
+        application.processEvents()
+
+        assert warnings == []
+        assert isinstance(started["plan"], ExecutionPlan)
+        assert started["report"] is report
+        job_dir = started["job_dir"]
+        assert isinstance(job_dir, type(output))
+        assert (job_dir / "request.json").is_file()
+        run_root = output / "experiments"
+        run_dirs = tuple(run_root.iterdir())
+        assert len(run_dirs) == 1
+        assert (run_dirs[0] / "worker_request.json").is_file()
+        assert json.loads((run_dirs[0] / "run_manifest.json").read_text())[
+            "state"
+        ] == "queued"
+        assert page.name_availability.text() == "✕ Unavailable"
     finally:
         window.close()
         application.processEvents()

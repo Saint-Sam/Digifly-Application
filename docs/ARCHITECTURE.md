@@ -57,10 +57,22 @@ allocation.
 
 The app-owned pulse-train comparison template translates useful values from the
 Escape-SIZ notebooks into this schema, but the schema and UI never import or
-execute a notebook. The generic Run action remains capability-gated until a
-CircuitSpec-plus-ExperimentSpec adapter can produce a validated execution plan.
-The legacy Escape-SIZ adapters remain isolated recipe-specific backends and
-result readers; they are no longer a navigation or project-format boundary.
+execute a notebook. The generic Run action now executes the first deliberately
+bounded `CircuitSpec` + `ExperimentSpec` subset in either Arbor or NEURON: one
+morphology-backed cell, built-in classic HH, soma square/pulse-train current,
+soma voltage/spike recording, conditions, repetitions, and app-owned outputs.
+Preflight fails closed for multi-cell connectivity, native mechanisms,
+per-compartment mapping, non-soma targets, and BMTK rather than approximating
+them. Because valid connectome SWCs can use non-monotonic node IDs, every worker
+records a parent-before-child copy and source-to-run node map in the run folder
+so Arbor and NEURON consume the same validated topology. Arbor then constructs
+the cable segment tree explicitly and adds a provenance-recorded sub-resolution
+root stub because it cannot integrate the SWC root as a zero-length cable; the
+source is never rewritten. Both engines resolve the same morphology-aware soma
+target policy. Non-finite traces fail the run before a summary or plot can be
+accepted.
+The legacy Escape-SIZ adapters remain isolated recipe-specific backends
+and result readers; they are no longer a navigation or project-format boundary.
 
 ## Backend-unbound circuit-design model
 

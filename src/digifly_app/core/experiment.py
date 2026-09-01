@@ -109,7 +109,7 @@ class ConditionSpec:
 @dataclass(frozen=True)
 class RecordingSpec:
     target_neuron_ids: tuple[str, ...] = ()
-    target_region: str = "all"
+    target_region: str = "soma"
     record_voltage: bool = True
     detect_spikes: bool = True
     sample_dt_ms: float = 0.05
@@ -259,4 +259,3 @@ class ExperimentSpec:
                     + ", ".join(missing)
                 )
         return errors
-

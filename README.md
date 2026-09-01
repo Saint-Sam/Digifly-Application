@@ -6,16 +6,19 @@ code. Instead, it opens a Digifly workspace. Circuit Builder owns morphology,
 connectivity, and biophysics; the notebook-independent Experiment Builder owns
 stimuli, runtime manipulations, timing, recording, and compute controls. Generic
 execution remains gated until each requested mechanism and mapping passes an
-adapter's capability and comparison checks.
+adapter's capability and comparison checks. The first executable generic subset
+runs one morphology-backed classic-HH neuron in either Arbor or NEURON and
+saves its complete app-owned provenance, soma traces, spikes, and plots.
 
 The app has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders
 soma-point or full-skeleton representations, and stores a classic-HH draft plus
 stable SWC child-node selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
 identities, regional conductance densities, and a separate gap-junction edge
-policy. It does not yet load chemical/gap connectivity or translate an
-arbitrary Circuit Builder design into an executable Arbor, NEURON, or BMTK
-model. The dormant Escape-SIZ NEURON and Arbor adapters remain available as
+policy. Multi-neuron chemical/gap connectivity, native channel catalogues,
+per-compartment CV mappings, and BMTK remain fail-closed; they are never
+silently omitted by the executable single-cell subset. The dormant Escape-SIZ
+NEURON and Arbor adapters remain available as
 versioned scientific backends and provenance references, but Escape-SIZ is no
 longer an application tab or project model.
 
@@ -30,6 +33,15 @@ longer an application tab or project model.
   `CircuitSpec` snapshot and serializes simulation timing, pulse protocols,
   conditions, ablations, runtime mechanism scales, recordings, seeds,
   repetitions, and worker allocation in a separate `ExperimentSpec`.
+- A real, cancellable Arbor/NEURON classic-HH run path for one loaded neuron,
+  including engine preflight, normalized-name collision protection, immutable
+  request documents, run/job manifests, stdout capture, soma voltage CSV,
+  threshold-crossing spike CSV, optional PNG, and automatic Results handoff.
+  Every run writes a parent-before-child SWC and source-to-run node map inside
+  the run folder so both engines receive the same validated topology. Arbor's
+  explicit segment-tree conversion additionally records a sub-resolution root
+  stub because Arbor cannot simulate a zero-length SWC root; the source is
+  never modified.
 - Local SWC-source discovery and neuron queries by ID, type, or family, such as
   `10000, 10002`, `type:GFC2`, `family:DN`, and `all:IN`.
 - A default one-marker-per-neuron soma overview with an obvious **Soma points** /

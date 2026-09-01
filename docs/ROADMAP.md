@@ -46,6 +46,10 @@
 
 ## Milestone 4 — Unified execution adapters
 
+- [x] Launch the first simulator-neutral classic-HH subset from Experiment
+  Builder through real Arbor and NEURON workers, with fail-closed capability
+  checks, cancellable background execution, job/run provenance, soma traces,
+  spike tables, plots, and Results handoff.
 - [x] Add the dedicated 49-cell Escape-SIZ Ablation Arbor 0.12.2 adapter with
   locked inputs and paired gap-enabled/gap-disabled runs.
 - [x] Port app-owned `Gap`, `RectGap`, and `HeteroRectGap` NMODL sources into an
@@ -70,9 +74,10 @@
   diagnostic (0/11 source somas despite high waveform correlation), then pass
   the short gap-disabled source gate before another full paired run.
 - [ ] Wrap the remaining curated `Phase 2_Arbor_staging` comparison workflows.
-- [ ] Translate `CircuitSpec` into a validated Arbor recipe and run manifest.
-- [ ] Translate supported subsets into adapter-specific NEURON and BMTK/BioNet
-  representations, with comparison gates.
+- [ ] Extend the validated Arbor `CircuitSpec` recipe beyond the executable
+  single-cell classic-HH subset to explicit multi-cell edge manifests.
+- [ ] Extend the executable NEURON subset and add a BMTK/BioNet representation,
+  with comparison gates.
 - [x] Gate unsupported mechanisms explicitly instead of silently approximating.
 - [x] Add the dedicated Escape-SIZ backend comparison contract with common
   inputs, traces, metrics, solver provenance, and an explicit false equivalence
