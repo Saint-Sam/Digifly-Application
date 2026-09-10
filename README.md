@@ -42,21 +42,22 @@ clone and run this repository solely for private evaluation and feedback. That
 authorization does not permit redistribution, publication, sublicensing, or
 production use of the source or a built application.
 
-Use Python 3.11 or 3.12 and launch the app from source:
+Download the current Apple-silicon Mac build from
+[Digifly Workstation 0.1.0 alpha 1](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.1):
 
-```bash
-git clone https://github.com/Saint-Sam/Digifly-Application.git
-cd Digifly-Application
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[test]"
-python -m digifly_app
-```
+1. Download `Digifly-Workstation-0.1.0-alpha.1-macOS-arm64.zip` from the
+   release's **Assets** section.
+2. Unzip it, then right-click **Digifly Workstation** and choose **Open**.
+3. Confirm **Open** when macOS warns that the developer cannot be verified.
+   If macOS still blocks it, approve the app in **System Settings → Privacy &
+   Security**, then open it again.
 
-Python 3.11 may be substituted for 3.12. No connectome, SWC collection, API
-token, or simulator installation is required for the base interface smoke test;
-scientific resources remain outside the checkout. Follow the short, audited
-[early-testing flow](docs/TESTING.md) before filing a report.
+The application contains its own interface runtime; testers do not need to
+install Python or build the source. No connectome, SWC collection, API token,
+or simulator installation is required for the base interface smoke test.
+Scientific resources remain outside the application and are configured through
+the first-launch workflow. Follow the short, audited [early-testing
+flow](docs/TESTING.md) before filing a report.
 
 ## What the first milestone includes
 
@@ -149,11 +150,11 @@ scientific resources remain outside the checkout. Follow the short, audited
 - Read-only loading and validation of completed Escape-SIZ summaries and plots.
 - A versioned `.digifly.json` project format and adapter-oriented architecture.
 
-## Run from source
+## Developer setup: run from source
 
-The UI uses its own environment. This is intentional: simulator environments
-must remain isolated, and the pre-existing base PySide6 build is binary-incompatible
-with this Mac. Create the UI environment once:
+This section is for contributors modifying Digifly. Testers should use the
+downloadable application above. The development UI uses its own environment so
+simulator environments remain isolated. Create that environment once:
 
 ```bash
 cd "/path/to/Digifly Workstation"
