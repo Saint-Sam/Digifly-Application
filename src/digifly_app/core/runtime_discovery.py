@@ -10,7 +10,10 @@ import shutil
 import subprocess
 from typing import Iterable
 
-from .process_environment import sanitized_external_environment
+from .process_environment import (
+    external_runtime_launcher,
+    sanitized_external_environment,
+)
 
 
 @dataclass(frozen=True)
@@ -19,8 +22,13 @@ class SimulatorRuntime:
     python_version: str
     neuron_version: str = ""
     arbor_version: str = ""
+    bmtk_version: str = ""
     neuron_origin: str = ""
     arbor_origin: str = ""
+    bmtk_origin: str = ""
+    bionet_ready: bool = False
+    bionet_origin: str = ""
+    bionet_error: str = ""
     error: str = ""
 
     @property
@@ -30,6 +38,10 @@ class SimulatorRuntime:
     @property
     def has_arbor(self) -> bool:
         return bool(self.arbor_version)
+
+    @property
+    def has_bmtk(self) -> bool:
+        return bool(self.bmtk_version)
 
 
 def _common_environment_roots() -> tuple[Path, ...]:
@@ -54,7 +66,7 @@ def runtime_candidates(
     include_path: bool = True,
     limit: int = 96,
 ) -> tuple[Path, ...]:
-    """Enumerate only PATH, fixed interpreter paths, and one-level environment roots."""
+    """Enumerate one launcher per environment without dereferencing its symlink."""
     candidates: list[Path] = [Path(value).expanduser() for value in explicit if str(value).strip()]
     if include_path:
         for name in ("python3", "python"):
@@ -91,31 +103,47 @@ def runtime_candidates(
                     environment / "Scripts" / "python.exe",
                 )
             )
-    resolved: list[Path] = []
+    launchers: list[Path] = []
     seen: set[Path] = set()
+    seen_environment_dirs: set[Path] = set()
     for candidate in candidates:
         try:
-            path = candidate.resolve()
+            path = external_runtime_launcher(candidate)
         except OSError:
             continue
-        if path in seen or not path.is_file() or not os.access(path, os.X_OK):
+        if (
+            path in seen
+            or path.parent in seen_environment_dirs
+            or not path.is_file()
+            or not os.access(path, os.X_OK)
+        ):
             continue
         if ".app/Contents/MacOS" in str(path):
             continue
-        resolved.append(path)
+        launchers.append(path)
         seen.add(path)
-        if len(resolved) >= limit:
+        seen_environment_dirs.add(path.parent)
+        if len(launchers) >= limit:
             break
-    return tuple(resolved)
+    return tuple(launchers)
 
 
 def probe_simulator_runtime(python: str | Path, *, timeout: float = 8.0) -> SimulatorRuntime:
-    executable = Path(python).expanduser().resolve()
+    executable = external_runtime_launcher(python)
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        return SimulatorRuntime(
+            executable,
+            "",
+            error=f"Python runtime is missing or not executable: {executable}",
+        )
     code = """
+import importlib
 import importlib.metadata as metadata
 import importlib.util
 import json
 import platform
+import pathlib
+import sys
 
 def package(module, distributions):
     spec = importlib.util.find_spec(module)
@@ -130,13 +158,62 @@ def package(module, distributions):
             pass
     return {'version': version or 'installed', 'origin': getattr(spec, 'origin', '') or ''}
 
+def bionet_capability(bmtk):
+    if not bmtk.get('version'):
+        return {'ready': False, 'origin': '', 'error': ''}
+    try:
+        modules = {
+            'bmtk': importlib.import_module('bmtk'),
+            'bionet': importlib.import_module('bmtk.simulator.bionet'),
+            'neuron': importlib.import_module('neuron'),
+            'numpy': importlib.import_module('numpy'),
+            'h5py': importlib.import_module('h5py'),
+        }
+        roots = {pathlib.Path(sys.prefix).resolve(), pathlib.Path(sys.base_prefix).resolve()}
+        origins = {
+            name: pathlib.Path(getattr(module, '__file__', '')).resolve()
+            for name, module in modules.items()
+        }
+        outside = {
+            name: str(origin)
+            for name, origin in origins.items()
+            if not any(origin.is_relative_to(root) for root in roots)
+        }
+        if outside:
+            raise RuntimeError(
+                f'dependencies outside selected interpreter roots '
+                f'{sorted(map(str, roots))}: {outside}'
+            )
+    except Exception as exc:
+        return {
+            'ready': False,
+            'origin': '',
+            'error': f'{type(exc).__name__}: {exc}',
+        }
+    return {
+        'ready': True,
+        'origin': str(origins['bionet']),
+        'error': '',
+    }
+
+bmtk = package('bmtk', ('bmtk',))
+
 print(json.dumps({
     'python_version': platform.python_version(),
     'neuron': package('neuron', ('NEURON', 'neuron')),
     'arbor': package('arbor', ('arbor',)),
+    'bmtk': bmtk,
+    'bionet': bionet_capability(bmtk),
 }))
 """
-    environment = sanitized_external_environment({"PYTHONNOUSERSITE": "1"})
+    environment = sanitized_external_environment(
+        {
+            "NEURON_MODULE_OPTIONS": "-nogui",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    environment.pop("DISPLAY", None)
     try:
         completed = subprocess.run(
             [str(executable), "-c", code],
@@ -158,13 +235,20 @@ print(json.dumps({
         payload = json.loads(completed.stdout.strip().splitlines()[-1])
         neuron = dict(payload.get("neuron") or {})
         arbor = dict(payload.get("arbor") or {})
+        bmtk = dict(payload.get("bmtk") or {})
+        bionet = dict(payload.get("bionet") or {})
         return SimulatorRuntime(
-            executable,
-            str(payload.get("python_version") or ""),
-            str(neuron.get("version") or ""),
-            str(arbor.get("version") or ""),
-            str(neuron.get("origin") or ""),
-            str(arbor.get("origin") or ""),
+            python=executable,
+            python_version=str(payload.get("python_version") or ""),
+            neuron_version=str(neuron.get("version") or ""),
+            arbor_version=str(arbor.get("version") or ""),
+            bmtk_version=str(bmtk.get("version") or ""),
+            neuron_origin=str(neuron.get("origin") or ""),
+            arbor_origin=str(arbor.get("origin") or ""),
+            bmtk_origin=str(bmtk.get("origin") or ""),
+            bionet_ready=bool(bionet.get("ready", False)),
+            bionet_origin=str(bionet.get("origin") or ""),
+            bionet_error=str(bionet.get("error") or ""),
         )
     except (ValueError, IndexError, TypeError) as exc:
         return SimulatorRuntime(executable, "", error=f"unexpected probe output: {exc}")
@@ -184,4 +268,8 @@ def discover_simulator_runtimes(
             include_path=include_path,
         )
     )
-    return tuple(result for result in results if result.has_neuron or result.has_arbor)
+    return tuple(
+        result
+        for result in results
+        if result.has_neuron or result.has_arbor or result.has_bmtk
+    )

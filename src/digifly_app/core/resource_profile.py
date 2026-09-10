@@ -12,6 +12,8 @@ import re
 import tempfile
 from typing import Any, Iterable, Mapping
 
+from .process_environment import external_runtime_launcher
+
 
 PROFILE_SCHEMA_VERSION = 2
 LEGACY_PROFILE_SCHEMA_VERSION = 1
@@ -137,8 +139,8 @@ class ResourceProfile:
         identifiers = [binding.resource_id for binding in self.resources]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Resource identifiers must be unique within a profile")
-        if len(self.bindings(ResourceKind.DIGIFLY_WORKSPACE)) != 1:
-            raise ValueError("A resource profile requires exactly one Digifly workspace")
+        if len(self.bindings(ResourceKind.DIGIFLY_WORKSPACE)) > 1:
+            raise ValueError("A resource profile permits at most one Digifly workspace")
         if len(self.bindings(ResourceKind.OUTPUT_ROOT)) != 1:
             raise ValueError("A resource profile requires exactly one output root")
         if len(self.bindings(ResourceKind.MANAGED_DATA_ROOT)) != 1:
@@ -160,10 +162,9 @@ class ResourceProfile:
         return matches[0] if matches else None
 
     @property
-    def workspace_root(self) -> Path:
+    def workspace_root(self) -> Path | None:
         binding = self.binding(ResourceKind.DIGIFLY_WORKSPACE)
-        assert binding is not None
-        return binding.resolved_path
+        return binding.resolved_path if binding is not None else None
 
     @property
     def output_root(self) -> Path:
@@ -185,7 +186,7 @@ class ResourceProfile:
         }:
             raise ValueError(f"{kind.value} is not a runtime binding")
         binding = self.binding(kind)
-        return binding.resolved_path if binding is not None else None
+        return external_runtime_launcher(binding.path) if binding is not None else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -250,7 +251,16 @@ class ResourceProfile:
     def validate(self) -> ResourceProfileReport:
         checks: list[ResourceCheck] = []
         for binding in self.resources:
-            path = binding.resolved_path
+            path = (
+                external_runtime_launcher(binding.path)
+                if binding.kind
+                in {
+                    ResourceKind.NEURON_RUNTIME,
+                    ResourceKind.ARBOR_RUNTIME,
+                    ResourceKind.BMTK_RUNTIME,
+                }
+                else binding.resolved_path
+            )
             if binding.kind in {ResourceKind.OUTPUT_ROOT, ResourceKind.MANAGED_DATA_ROOT}:
                 exists = (
                     path.is_dir() and os.access(path, os.W_OK)
@@ -407,6 +417,33 @@ def load_default_profile() -> ResourceProfile | None:
     return ResourceProfile.load(path) if path.is_file() else None
 
 
+def make_standalone_profile(
+    *,
+    workstation_root: str | Path | None = None,
+) -> ResourceProfile:
+    """Create a simulator-free profile for app-managed data and standalone inputs."""
+    root = (
+        Path(workstation_root).expanduser()
+        if workstation_root is not None
+        else Path.home() / "Digifly Workstation Workspace"
+    )
+    return make_default_profile(
+        workspace_root=None,
+        output_root=root / "runs",
+        managed_data_root=root / "data",
+    )
+
+
+def load_or_create_default_profile() -> tuple[ResourceProfile, Path]:
+    """Load the machine profile or atomically initialize a standalone profile."""
+    path = default_profile_path()
+    profile = load_default_profile()
+    if profile is not None:
+        return profile, path
+    profile = make_standalone_profile()
+    return profile, profile.save(path)
+
+
 def migrate_profile_file(
     source: str | Path,
     destination: str | Path | None = None,
@@ -429,11 +466,13 @@ def update_runtime_bindings(
     *,
     neuron_runtime: str | Path | None = None,
     arbor_runtime: str | Path | None = None,
+    bmtk_runtime: str | Path | None = None,
 ) -> ResourceProfile:
     """Return a profile with verified external runtime choices replaced by kind."""
     replacements = {
         ResourceKind.NEURON_RUNTIME: neuron_runtime,
         ResourceKind.ARBOR_RUNTIME: arbor_runtime,
+        ResourceKind.BMTK_RUNTIME: bmtk_runtime,
     }
     resources = list(profile.resources)
     for kind, runtime in replacements.items():
@@ -443,7 +482,7 @@ def update_runtime_bindings(
         replacement = ResourceBinding(
             existing.resource_id if existing is not None else kind.value.removesuffix("_runtime"),
             kind,
-            str(Path(runtime).expanduser()),
+            str(external_runtime_launcher(runtime)),
             AccessMode.EXECUTABLE,
             existing.label if existing is not None else f"{kind.value.split('_')[0].upper()} Python",
             False,
@@ -458,7 +497,7 @@ def update_runtime_bindings(
 
 def make_default_profile(
     *,
-    workspace_root: str | Path,
+    workspace_root: str | Path | None,
     output_root: str | Path,
     managed_data_root: str | Path | None = None,
     neuron_runtime: str | Path | None = None,
@@ -475,13 +514,6 @@ def make_default_profile(
     )
     resources = [
         ResourceBinding(
-            "digifly-public",
-            ResourceKind.DIGIFLY_WORKSPACE,
-            str(Path(workspace_root).expanduser()),
-            AccessMode.READ_ONLY,
-            "Digifly Public",
-        ),
-        ResourceBinding(
             "workstation-output",
             ResourceKind.OUTPUT_ROOT,
             str(output_path),
@@ -496,6 +528,17 @@ def make_default_profile(
             "Digifly Workstation managed data",
         ),
     ]
+    if workspace_root is not None and str(workspace_root).strip():
+        resources.insert(
+            0,
+            ResourceBinding(
+                "digifly-public",
+                ResourceKind.DIGIFLY_WORKSPACE,
+                str(Path(workspace_root).expanduser()),
+                AccessMode.READ_ONLY,
+                "Digifly Public",
+            ),
+        )
     optional = (
         ("neuron", ResourceKind.NEURON_RUNTIME, neuron_runtime, "NEURON Python"),
         ("arbor", ResourceKind.ARBOR_RUNTIME, arbor_runtime, "Arbor Python"),
@@ -506,7 +549,26 @@ def make_default_profile(
         if path is None:
             continue
         access = AccessMode.EXECUTABLE if kind != ResourceKind.VND_VIEWER else AccessMode.READ_ONLY
-        resources.append(ResourceBinding(resource_id, kind, str(Path(path).expanduser()), access, label, False))
+        recorded_path = (
+            external_runtime_launcher(path)
+            if kind
+            in {
+                ResourceKind.NEURON_RUNTIME,
+                ResourceKind.ARBOR_RUNTIME,
+                ResourceKind.BMTK_RUNTIME,
+            }
+            else Path(path).expanduser()
+        )
+        resources.append(
+            ResourceBinding(
+                resource_id,
+                kind,
+                str(recorded_path),
+                access,
+                label,
+                False,
+            )
+        )
     for resource_id, path, label in morphology_sources:
         resources.append(
             ResourceBinding(

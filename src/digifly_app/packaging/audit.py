@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -70,6 +71,49 @@ MACHINE_PATH_PATTERNS = (
     re.compile(rb"/home/[A-Za-z0-9._-]+/"),
     re.compile(rb"[A-Za-z]:\\\\Users\\\\[^\\\r\n]+\\\\"),
 )
+PRIVATE_LICENSE_MARKER = b"DIGIFLY WORKSTATION PRIVATE DEVELOPMENT LICENSE"
+PRIVATE_LICENSE_SHA256 = (
+    "e465e6eb03be6d7bbe104451b459000a2dbc475816d8eec4bad48b41a8167d47"
+)
+
+# These files are the minimum self-contained bridge between a Digifly release
+# and user-managed simulator installations.  Match path suffixes because the
+# install root is intentionally different for an sdist, wheel data directory,
+# and native application bundle.
+REQUIRED_RELEASE_COMPONENTS = {
+    "generic experiment worker": "digifly_app/workers/generic_experiment_worker.py",
+    "BMTK BioNet worker": "digifly_app/workers/bmtk_bionet_worker.py",
+    "NEURON Gap source": "mechanisms/neuron_gap_junctions/Gap.mod",
+    "NEURON RectGap source": "mechanisms/neuron_gap_junctions/RectGap.mod",
+    "NEURON HeteroRectGap source": (
+        "mechanisms/neuron_gap_junctions/HeteroRectGap.mod"
+    ),
+    "NEURON source manifest": (
+        "mechanisms/neuron_gap_junctions/source_manifest.json"
+    ),
+    "NEURON mechanism build helper": "scripts/build_neuron_gap_mechanisms.py",
+}
+_NEURON_MECHANISM_NAMES = ("Gap", "RectGap", "HeteroRectGap")
+_VENDORED_RUNTIME_PACKAGES = frozenset({"arbor", "bmtk", "h5py", "neuron", "numpy"})
+_VENDORED_RUNTIME_EXECUTABLES = frozenset(
+    {
+        "arbor-build-catalogue",
+        "bmtk",
+        "modlunit",
+        "nocmodl",
+        "nrniv",
+        "nrnivmodl",
+        "special",
+    }
+)
+_DIGIFLY_ARCHIVE_RE = re.compile(r"^digifly[-_]workstation(?:[-_.]|$)", re.IGNORECASE)
+FORBIDDEN_RELEASE_NAMES = frozenset(
+    {
+        "libqtvirtualkeyboardplugin.dylib",
+        "qtvirtualkeyboard",
+        "qtvirtualkeyboardqml",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +149,139 @@ class _Entry:
     name: str
     size: int
     data: bytes | None
+
+
+def _release_kind(path: Path) -> str | None:
+    """Classify canonical Digifly release outputs, not arbitrary test dirs."""
+
+    name = path.name
+    folded = name.casefold()
+    if path.is_dir() and folded.endswith(".app"):
+        stem = folded.removesuffix(".app")
+        if "digifly" in stem and "workstation" in stem:
+            return "app"
+    if path.is_file() and _DIGIFLY_ARCHIVE_RE.match(name):
+        if folded.endswith(".whl"):
+            return "wheel"
+        if any(
+            folded.endswith(suffix)
+            for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz")
+        ):
+            return "sdist"
+    return None
+
+
+def _ends_with_path(path: PurePosixPath, suffix: str) -> bool:
+    wanted = PurePosixPath(suffix).parts
+    return len(path.parts) >= len(wanted) and path.parts[-len(wanted) :] == wanted
+
+
+def _vendored_runtime_root(path: PurePosixPath) -> tuple[str, str] | None:
+    """Return a stable offending root/reason for an obvious simulator payload.
+
+    Exact path-segment matching deliberately permits Digifly's adapters,
+    workers, documentation, and source helpers (for example
+    ``bmtk_bionet_worker.py`` and ``neuron_gap_junctions``).
+    """
+
+    for index, raw_part in enumerate(path.parts):
+        part = raw_part.casefold()
+        package: str | None = None
+        if part in _VENDORED_RUNTIME_PACKAGES:
+            package = part
+        else:
+            for candidate in _VENDORED_RUNTIME_PACKAGES:
+                if part in {f"{candidate}.libs", f"{candidate}.data"} or (
+                    part.startswith(f"{candidate}-")
+                    and part.endswith((".dist-info", ".egg-info"))
+                ):
+                    package = candidate
+                    break
+        if package is not None:
+            root = PurePosixPath(*path.parts[: index + 1]).as_posix()
+            return root, f"Vendored {package} package/runtime content is forbidden."
+
+    filename = path.name.casefold()
+    if filename in _VENDORED_RUNTIME_EXECUTABLES:
+        return path.as_posix(), f"Bundled simulator executable {path.name!r} is forbidden."
+    if path.suffix.casefold() in BINARY_SUFFIXES and re.match(
+        r"^(?:lib)?(?:corenrn|nrniv|nrnpython|nrnmech|arbor)(?:[._-]|$)", filename
+    ):
+        return path.as_posix(), f"Bundled simulator binary {path.name!r} is forbidden."
+    if path.suffix.casefold() in BINARY_SUFFIXES and "-catalogue" in filename:
+        return (
+            path.as_posix(),
+            f"Bundled compiled mechanism catalogue {path.name!r} is forbidden.",
+        )
+    return None
+
+
+def _validate_neuron_manifest(
+    component_entries: dict[str, _Entry],
+) -> tuple[ArtifactIssue, ...]:
+    manifest_suffix = REQUIRED_RELEASE_COMPONENTS["NEURON source manifest"]
+    manifest_entry = component_entries.get(manifest_suffix)
+    if manifest_entry is None:
+        return ()
+    if manifest_entry.data is None:
+        return (
+            ArtifactIssue(
+                "invalid_release_component",
+                manifest_entry.name,
+                "NEURON source manifest is too large to validate.",
+            ),
+        )
+    try:
+        payload = json.loads(manifest_entry.data.decode("utf-8"))
+        mechanisms = payload["mechanisms"]
+        if payload.get("engine") != "neuron" or not isinstance(mechanisms, dict):
+            raise ValueError("manifest does not describe NEURON mechanisms")
+    except (KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        return (
+            ArtifactIssue(
+                "invalid_release_component",
+                manifest_entry.name,
+                f"NEURON source manifest is invalid: {exc}.",
+            ),
+        )
+
+    issues: list[ArtifactIssue] = []
+    for mechanism in _NEURON_MECHANISM_NAMES:
+        source_suffix = REQUIRED_RELEASE_COMPONENTS[f"NEURON {mechanism} source"]
+        source_entry = component_entries.get(source_suffix)
+        record = mechanisms.get(mechanism)
+        if not isinstance(record, dict):
+            issues.append(
+                ArtifactIssue(
+                    "invalid_release_component",
+                    manifest_entry.name,
+                    f"NEURON source manifest has no {mechanism} record.",
+                )
+            )
+            continue
+        if record.get("source_filename") != PurePosixPath(source_suffix).name:
+            issues.append(
+                ArtifactIssue(
+                    "invalid_release_component",
+                    manifest_entry.name,
+                    f"NEURON source manifest names the wrong file for {mechanism}.",
+                )
+            )
+        if source_entry is None or source_entry.data is None:
+            # Absence has its own missing-component issue; an oversized source
+            # has already failed the general size gate.
+            continue
+        expected = str(record.get("source_sha256") or "").casefold()
+        actual = hashlib.sha256(source_entry.data).hexdigest()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or expected != actual:
+            issues.append(
+                ArtifactIssue(
+                    "release_component_hash_mismatch",
+                    source_entry.name,
+                    f"{mechanism} source does not match its packaged manifest hash.",
+                )
+            )
+    return tuple(issues)
 
 
 def _directory_entries(root: Path) -> Iterator[_Entry]:
@@ -164,7 +341,11 @@ def audit_artifact(
     if not path.exists():
         raise FileNotFoundError(path)
     issues: list[ArtifactIssue] = []
+    release_kind = _release_kind(path)
     artifact_is_app = path.is_dir() and path.suffix.casefold() == ".app"
+    component_entries: dict[str, _Entry] = {}
+    private_license_entry: _Entry | None = None
+    vendored_roots: set[str] = set()
     count = total = 0
     for entry in _entries(path):
         count += 1
@@ -172,6 +353,34 @@ def audit_artifact(
         logical = PurePosixPath(entry.name)
         parts = set(logical.parts)
         suffix = logical.suffix.casefold()
+        if release_kind is not None and any(
+            part.casefold() in FORBIDDEN_RELEASE_NAMES for part in logical.parts
+        ):
+            issues.append(
+                ArtifactIssue(
+                    "incompatible_distribution_component",
+                    entry.name,
+                    "Qt Virtual Keyboard is not part of the proprietary Digifly release boundary.",
+                )
+            )
+        for component_suffix in REQUIRED_RELEASE_COMPONENTS.values():
+            if _ends_with_path(logical, component_suffix):
+                component_entries.setdefault(component_suffix, entry)
+        if (
+            logical.name.casefold() == "license"
+            and entry.data is not None
+            and PRIVATE_LICENSE_MARKER in entry.data
+            and hashlib.sha256(entry.data).hexdigest() == PRIVATE_LICENSE_SHA256
+        ):
+            private_license_entry = entry
+        vendored = _vendored_runtime_root(logical)
+        if vendored is not None:
+            runtime_root, detail = vendored
+            if runtime_root not in vendored_roots:
+                vendored_roots.add(runtime_root)
+                issues.append(
+                    ArtifactIssue("bundled_simulator_runtime", runtime_root, detail)
+                )
         if logical.is_absolute() or ".." in logical.parts:
             issues.append(ArtifactIssue("unsafe_member_path", entry.name, "Archive member path is unsafe."))
         forbidden = sorted(parts & GENERATED_PARTS)
@@ -220,6 +429,25 @@ def audit_artifact(
                         )
                     )
                     break
+    if release_kind is not None:
+        if private_license_entry is None:
+            issues.append(
+                ArtifactIssue(
+                    "missing_release_component",
+                    "LICENSE",
+                    f"Digifly {release_kind} is missing its private project license.",
+                )
+            )
+        for label, component_suffix in REQUIRED_RELEASE_COMPONENTS.items():
+            if component_suffix not in component_entries:
+                issues.append(
+                    ArtifactIssue(
+                        "missing_release_component",
+                        component_suffix,
+                        f"Digifly {release_kind} is missing its {label}.",
+                    )
+                )
+        issues.extend(_validate_neuron_manifest(component_entries))
     return ArtifactReport(str(path), count, total, tuple(issues))
 
 

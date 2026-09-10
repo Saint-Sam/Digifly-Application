@@ -7,12 +7,15 @@ name = "digifly-workstation"
 version = "0.1.0"
 description = "A guided desktop workstation for Digifly experiments."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 classifiers = [
+  "Private :: Do Not Upload",
   "Development Status :: 3 - Alpha",
   "Environment :: MacOS X",
   "Environment :: Win32 (MS Windows)",
   "Environment :: X11 Applications :: Qt",
+  "License :: Other/Proprietary License",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -54,7 +57,17 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+digifly_app = [
+  "assets/*.icns",
+  "assets/*.md",
+  "assets/*.png",
+]
+
 [tool.setuptools.data-files]
+"share/digifly-workstation" = [
+  "LICENSE",
+]
 "share/digifly-workstation/docs" = [
   "docs/ARCHITECTURE.md",
   "docs/BACKEND_CONTRACT_V1.md",
@@ -70,6 +83,13 @@ where = ["src"]
   "mechanisms/arbor_gap_junctions/rect_gap.mod",
   "mechanisms/arbor_gap_junctions/source_manifest.json",
 ]
+"share/digifly-workstation/mechanisms/neuron_gap_junctions" = [
+  "mechanisms/neuron_gap_junctions/Gap.mod",
+  "mechanisms/neuron_gap_junctions/HeteroRectGap.mod",
+  "mechanisms/neuron_gap_junctions/README.md",
+  "mechanisms/neuron_gap_junctions/RectGap.mod",
+  "mechanisms/neuron_gap_junctions/source_manifest.json",
+]
 "share/digifly-workstation/mechanisms/augustin_2019" = [
   "mechanisms/augustin_2019/k.mod",
   "mechanisms/augustin_2019/nap.mod",
@@ -81,12 +101,16 @@ where = ["src"]
   "presets/escape_siz/latest_gfc2_pairwise_v1.json",
 ]
 "share/digifly-workstation/schemas" = [
-  "schemas/digifly-circuit-v2.schema.json",
+    "schemas/digifly-circuit-v2.schema.json",
+    "schemas/digifly-circuit-v3.schema.json",
   "schemas/digifly-project-v1.schema.json",
   "schemas/digifly-resources-v1.schema.json",
   "schemas/digifly-resources-v2.schema.json",
 ]
-"share/digifly-workstation/scripts" = ["scripts/build_arbor_gap_catalogue.py"]
+"share/digifly-workstation/scripts" = [
+  "scripts/build_arbor_gap_catalogue.py",
+  "scripts/build_neuron_gap_mechanisms.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

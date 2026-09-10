@@ -6,14 +6,15 @@ from typing import Any, Iterable, Mapping
 
 from .mechanisms import (
     MEMBRANE_PROFILE_BY_KEY,
+    ChemicalSynapsePolicy,
     GapJunctionPolicy,
     MembraneMechanismSpec,
     membrane_profile,
 )
 
 
-CIRCUIT_SCHEMA_VERSION = 2
-LEGACY_CIRCUIT_SCHEMA_VERSIONS = {1}
+CIRCUIT_SCHEMA_VERSION = 3
+LEGACY_CIRCUIT_SCHEMA_VERSIONS = {1, 2}
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,9 @@ class CircuitSpec:
     neuron_ids: tuple[str, ...] = field(default_factory=tuple)
     hh: HodgkinHuxleySpec = field(default_factory=HodgkinHuxleySpec)
     membrane: MembraneMechanismSpec = field(default_factory=MembraneMechanismSpec)
+    chemical_synapse_policy: ChemicalSynapsePolicy = field(
+        default_factory=ChemicalSynapsePolicy
+    )
     gap_junction_policy: GapJunctionPolicy = field(default_factory=GapJunctionPolicy)
     morphology_sha256: dict[str, str] = field(default_factory=dict)
     neuron_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -377,6 +381,7 @@ class CircuitSpec:
             "neuron_ids": list(self.neuron_ids),
             "hh": self.hh.to_dict(),
             "membrane": self.membrane.to_dict(),
+            "chemical_synapse_policy": self.chemical_synapse_policy.to_dict(),
             "gap_junction_policy": self.gap_junction_policy.to_dict(),
             "morphology_sha256": self.morphology_sha256,
             "neuron_overrides": self.neuron_overrides,
@@ -439,6 +444,9 @@ class CircuitSpec:
             neuron_ids=tuple(str(value) for value in raw.get("neuron_ids") or ()),
             hh=HodgkinHuxleySpec.from_dict(raw.get("hh")),
             membrane=MembraneMechanismSpec.from_dict(raw.get("membrane")),
+            chemical_synapse_policy=ChemicalSynapsePolicy.from_dict(
+                raw.get("chemical_synapse_policy")
+            ),
             gap_junction_policy=GapJunctionPolicy.from_dict(raw.get("gap_junction_policy")),
             morphology_sha256={
                 str(neuron_id): str(digest)

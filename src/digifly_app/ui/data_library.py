@@ -31,8 +31,7 @@ from digifly_app.core.data_library import (
 )
 from digifly_app.core.resource_profile import (
     ResourceProfile,
-    default_profile_path,
-    load_default_profile,
+    load_or_create_default_profile,
 )
 from digifly_app.core.resource_management import (
     LibraryMoveProgress,
@@ -264,13 +263,7 @@ class DataLibraryPage(QWidget):
         self.refresh()
 
     def _profile(self) -> tuple[ResourceProfile, Path]:
-        path = default_profile_path()
-        profile = load_default_profile()
-        if profile is None:
-            raise ValueError(
-                "No Workstation resource profile is configured. Create one from the Workspace setup first."
-            )
-        return profile, path
+        return load_or_create_default_profile()
 
     @Slot()
     def refresh(self) -> None:

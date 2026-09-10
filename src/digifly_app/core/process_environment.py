@@ -26,7 +26,31 @@ EXTERNAL_PYTHON_ENV_REMOVE = (
     "QT_QPA_PLATFORM_PLUGIN_PATH",
     "QML_IMPORT_PATH",
     "QML2_IMPORT_PATH",
+    # A selected NEURON/BioNet interpreter must resolve its own runtime and
+    # mechanism toolchain.  These variables are commonly exported by the
+    # standalone macOS NEURON application and can otherwise redirect an
+    # unrelated Conda/venv interpreter back into that installation.
+    "NEURONHOME",
+    "NRNHOME",
+    "CORENRNHOME",
+    "NRN_PYTHONEXE",
+    "CORENRN_PYTHONEXE",
+    "NRNBIN",
+    "NRNIVMODL",
+    "NMODLHOME",
+    "NMODL_PYLIB",
 )
+
+
+def external_runtime_launcher(python_executable: str | Path) -> Path:
+    """Return an absolute launcher path without dereferencing environment symlinks.
+
+    Virtualenv and Conda launchers may be symlinks to a shared base Python.  The
+    path used to invoke Python is part of its environment identity, so resolving
+    that final symlink can silently launch the base interpreter instead.
+    """
+
+    return Path(python_executable).expanduser().absolute()
 
 
 def sanitized_external_environment(
@@ -60,7 +84,7 @@ def external_runtime_path(
 ) -> str:
     """Build a deterministic PATH while retaining non-bundle user tools."""
     entries = [
-        str(Path(python_executable).expanduser().resolve().parent),
+        str(external_runtime_launcher(python_executable).parent),
         "/Applications/NEURON/bin",
         "/opt/homebrew/bin",
         "/usr/local/bin",

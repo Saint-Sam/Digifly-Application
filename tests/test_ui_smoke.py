@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.connectomes import NeuronRecord
 from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
 from digifly_app.core.models import (
+    Artifact,
     CheckState,
     ExecutionPlan,
     PreflightCheck,
@@ -22,6 +25,7 @@ from digifly_app.core.models import (
 )
 from digifly_app.core.morphology import Morphology, SwcNode, SwcSegment
 from digifly_app.core.project import DigiflyProject
+from digifly_app.core.runtime_discovery import SimulatorRuntime
 from digifly_app.core.resource_profile import (
     ResourceKind,
     ResourceProfile,
@@ -39,10 +43,12 @@ from digifly_app.ui.main_window import (
 )
 from digifly_app.ui.runtime_setup import (
     ARBOR_INSTALL_URL,
+    BMTK_INSTALL_URL,
     NEURON_INSTALL_URL,
     RuntimeSetupDialog,
 )
 from digifly_app.ui.stimulus_preview import pulse_intervals
+from digifly_app.ui.snapshot import safe_png_name, save_image_with_dialog
 from digifly_app.ui.style import (
     DARK_THEME,
     LIGHT_THEME,
@@ -73,6 +79,52 @@ def test_workstation_identity_and_writable_root_are_distinct():
     assert _workspace_home().name == "Digifly Workstation Workspace"
 
 
+def test_visualizers_expose_high_resolution_snapshot_actions():
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        circuit = window.circuit_builder_page
+        experiment = window.experiment_page
+        results = window.results_page
+        assert circuit.save_visualization_button.text() == "Save snapshot…"
+        assert experiment.save_target_visualization_button.text() == "Save snapshot…"
+        assert experiment.save_stimulus_visualization_button.text() == "Save snapshot…"
+        assert results.save_result_visualization_button.text() == "Save snapshot…"
+        assert results.save_trace_button.text() == "Save plot…"
+        image = experiment.stimulus_preview.render_high_resolution(width=1000)
+        assert image.width() == 1000
+        assert image.height() > experiment.stimulus_preview.height()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_snapshot_save_dialog_accepts_user_filename(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    output = tmp_path / "My chosen trace name"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(output), "PNG image (*.png)"),
+    )
+    image = QImage(20, 10, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.white)
+    parent = QWidget()
+    try:
+        saved = save_image_with_dialog(
+            parent,
+            image,
+            title="Save visualization",
+            default_name="A visual name.png",
+        )
+        assert saved == output.with_suffix(".png").resolve()
+        assert saved.is_file()
+        assert safe_png_name("A visual name.png") == "A-visual-name.png"
+    finally:
+        parent.close()
+        application.processEvents()
+
+
 def test_runtime_setup_requires_consent_before_search(monkeypatch):
     application = QApplication.instance() or QApplication([])
     monkeypatch.setattr(
@@ -88,6 +140,39 @@ def test_runtime_setup_requires_consent_before_search(monkeypatch):
         assert "not authorized" in dialog.status.text()
         assert NEURON_INSTALL_URL.startswith("https://nrn.readthedocs.io/")
         assert ARBOR_INSTALL_URL.startswith("https://docs.arbor-sim.org/")
+        assert BMTK_INSTALL_URL.startswith("https://alleninstitute.github.io/bmtk/")
+    finally:
+        dialog.close()
+
+
+def test_runtime_setup_only_offers_bionet_compatible_bmtk_interpreters(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    ready_python = tmp_path / "ready" / "bin" / "python"
+    blocked_python = tmp_path / "blocked" / "bin" / "python"
+    dialog = RuntimeSetupDialog()
+    try:
+        dialog._discovery_completed(
+            (
+                SimulatorRuntime(
+                    ready_python,
+                    "3.11.15",
+                    neuron_version="8.2.6",
+                    bmtk_version="1.2.0",
+                    bionet_ready=True,
+                ),
+                SimulatorRuntime(
+                    blocked_python,
+                    "3.11.15",
+                    bmtk_version="1.2.0",
+                    bionet_error="ModuleNotFoundError: No module named 'neuron'",
+                ),
+            )
+        )
+        application.processEvents()
+        assert dialog.table.rowCount() == 2
+        assert dialog.bmtk_combo.count() == 1
+        assert dialog.bmtk_combo.currentData() == str(ready_python)
+        assert "BioNet blocked" in dialog.table.item(1, 4).text()
     finally:
         dialog.close()
 
@@ -111,10 +196,11 @@ def test_runtime_selection_creates_machine_profile(tmp_path, monkeypatch):
     refreshed: list[bool] = []
     monkeypatch.setattr(page, "refresh", lambda: refreshed.append(True))
     try:
-        page._runtime_selected(str(runtime), str(runtime))
+        page._runtime_selected(str(runtime), str(runtime), str(runtime))
         profile = ResourceProfile.load(profile_path)
         assert profile.runtime_path(ResourceKind.NEURON_RUNTIME) == runtime.resolve()
         assert profile.runtime_path(ResourceKind.ARBOR_RUNTIME) == runtime.resolve()
+        assert profile.runtime_path(ResourceKind.BMTK_RUNTIME) == runtime.resolve()
         assert refreshed == [True]
     finally:
         page.close()
@@ -126,6 +212,7 @@ def test_main_window_constructs_without_importing_simulators():
     overview = OverviewPage()
     assert overview.output_edit.text() == str(_workspace_home() / "runs")
     assert overview.arbor_python_edit.text()
+    assert overview.bmtk_python_edit.placeholderText()
     overview.close()
     window = MainWindow()
     try:
@@ -135,6 +222,7 @@ def test_main_window_constructs_without_importing_simulators():
         assert window.data_library_page.import_in_progress is False
         assert "Digifly Workstation.app" not in str(_workspace_home() / "runs")
         assert window.experiment_page.config().engine == "arbor"
+        assert "bmtk" in window.experiment_page._runtime_paths
         assert window.experiment_page.template_combo.currentData() == "blank"
         assert window.experiment_page.config().template_key == "blank"
         assert window.experiment_page.name_edit.text() == "Untitled experiment"
@@ -228,18 +316,23 @@ def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path,
     (public / "README.md").write_text("Digifly Public\n", encoding="utf-8")
     output = tmp_path / "workspace" / "runs"
     output.parent.mkdir()
+    base_python = tmp_path / "base" / "python3.12"
+    base_python.parent.mkdir()
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o755)
     neuron_python = tmp_path / "neuron-env" / "bin" / "python"
     arbor_python = tmp_path / "arbor-env" / "bin" / "python"
-    for executable in (neuron_python, arbor_python):
+    bmtk_python = tmp_path / "bmtk-env" / "bin" / "python"
+    for executable in (neuron_python, arbor_python, bmtk_python):
         executable.parent.mkdir(parents=True)
-        executable.write_text("#!/bin/sh\n", encoding="utf-8")
-        executable.chmod(0o755)
+        executable.symlink_to(base_python)
     profile_path = tmp_path / "resources-v2.json"
     make_default_profile(
         workspace_root=public,
         output_root=output,
         neuron_runtime=neuron_python,
         arbor_runtime=arbor_python,
+        bmtk_runtime=bmtk_python,
     ).save(profile_path)
     monkeypatch.setenv("DIGIFLY_WORKSTATION_PROFILE", str(profile_path))
     settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
@@ -247,14 +340,17 @@ def test_main_window_recovers_stale_paths_and_prefers_profile_runtimes(tmp_path,
     settings.setValue("output_root", tmp_path / "deleted-test-output" / "runs")
     settings.setValue("neuron_python", "/usr/bin/python3")
     settings.setValue("arbor_python", "/usr/bin/python3")
+    settings.setValue("bmtk_python", "/usr/bin/python3")
     settings.sync()
 
     window = MainWindow()
     try:
         assert window.overview_page.workspace_edit.text() == str(public.resolve())
         assert window.overview_page.output_edit.text() == str(output.resolve())
-        assert window.overview_page.python_edit.text() == str(neuron_python.resolve())
-        assert window.overview_page.arbor_python_edit.text() == str(arbor_python.resolve())
+        assert window.overview_page.python_edit.text() == str(neuron_python.absolute())
+        assert window.overview_page.arbor_python_edit.text() == str(arbor_python.absolute())
+        assert window.overview_page.bmtk_python_edit.text() == str(bmtk_python.absolute())
+        assert window.experiment_page._runtime_paths["bmtk"] == str(bmtk_python.absolute())
         assert "Recovered unavailable" in window.overview_page.doctor_summary.text()
     finally:
         window.close()
@@ -412,6 +508,7 @@ def test_launch_ready_experiment_creates_provenance_and_starts_worker(
     circuit = CircuitSpec(
         connectome=ConnectomeRef("test:v1", "Test", str(tmp_path)),
         neuron_ids=("1",),
+        morphology_sha256={"1": hashlib.sha256(source.read_bytes()).hexdigest()},
     )
     started: dict[str, object] = {}
     window = MainWindow()
@@ -745,11 +842,345 @@ def test_results_load_latest_uses_completed_job_summary(tmp_path, monkeypatch):
         window.results_page.load_latest()
         assert called["path"] == summary
         assert window.results_page.result_status.text().startswith("complete")
-        metadata_values = {
-            window.results_page.metadata.item(row, 1).text()
-            for row in range(window.results_page.metadata.rowCount())
-        }
-        assert "NOT_YET_EQUIVALENT" in metadata_values
+        assert not hasattr(window.results_page, "metadata_section")
+        assert not hasattr(window.results_page, "metadata")
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_results_load_latest_uses_completed_generic_experiment(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    called = {}
+    expected = ResultRecord(
+        summary_path="/tmp/summary.json",
+        status="complete",
+        completed_at="2026-09-03T19:56:46+00:00",
+        title="DNp01 TTMn Gap Junction Validation",
+        metadata={"Electrical contacts": 146},
+        artifacts=(),
+    )
+
+    def fake_load(path):
+        called["path"] = path
+        return expected
+
+    window = MainWindow()
+    try:
+        output = tmp_path / "runs"
+        run = output / "experiments" / "dnp01-ttmn-gap-junction-validation"
+        run.mkdir(parents=True)
+        summary = run / "summary.json"
+        summary.write_text("{}\n", encoding="utf-8")
+        (run / "run_manifest.json").write_text(
+            json.dumps({"state": "completed"}), encoding="utf-8"
+        )
+        window.overview_page.output_edit.setText(str(output))
+        monkeypatch.setattr(window.results_page, "_load_result", fake_load)
+        window.results_page.load_latest()
+        assert called["path"] == summary
+        assert window.results_page.result_status.text().startswith("complete")
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_results_artifacts_default_closed_and_status_counts_failures(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    existing = tmp_path / "existing.csv"
+    existing.write_text("value\n1\n", encoding="utf-8")
+    missing = tmp_path / "missing.csv"
+    window = MainWindow()
+    try:
+        page = window.results_page
+        assert page.artifact_section.is_expanded is False
+        assert page.artifact_section.body.isHidden()
+
+        page.display_result(
+            ResultRecord(
+                summary_path=str(tmp_path / "summary.json"),
+                status="complete",
+                completed_at="2026-09-04T12:00:00+00:00",
+                title="Artifact status",
+                metadata={},
+                artifacts=(
+                    Artifact("table", str(existing), "Existing", True),
+                    Artifact("table", str(missing), "Missing", False),
+                ),
+            )
+        )
+        application.processEvents()
+        assert page.artifact_section.status_label.text() == "1 failed"
+        assert page.artifact_section.status_label.property("artifactState") == "warning"
+
+        page.display_result(
+            ResultRecord(
+                summary_path=str(tmp_path / "summary.json"),
+                status="complete",
+                completed_at="2026-09-04T12:01:00+00:00",
+                title="Artifact status",
+                metadata={},
+                artifacts=(Artifact("table", str(existing), "Existing", True),),
+            )
+        )
+        application.processEvents()
+        assert page.artifact_section.status_label.text() == "all pass"
+        assert page.artifact_section.status_label.property("artifactState") == "pass"
+        page.artifact_section.toggle_button.click()
+        application.processEvents()
+        assert page.artifact_section.is_expanded is True
+        assert not page.artifact_section.body.isHidden()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_results_figure_preview_fits_source_inside_frame(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    image_path = tmp_path / "figure.png"
+    source = QPixmap(1500, 810)
+    source.fill(Qt.GlobalColor.white)
+    assert source.save(str(image_path), "PNG")
+    window = MainWindow()
+    try:
+        window.resize(1180, 900)
+        window.show()
+        page = window.results_page
+        window.show_page(window.pages.indexOf(page))
+        page.display_result(
+            ResultRecord(
+                summary_path=str(tmp_path / "summary.json"),
+                status="complete",
+                completed_at="2026-09-04T12:00:00+00:00",
+                title="Figure fit",
+                metadata={},
+                artifacts=(Artifact("image", str(image_path), "Figure", True),),
+            )
+        )
+        application.processEvents()
+        rendered = page.image_label.pixmap()
+        assert not rendered.isNull()
+        logical_size = rendered.deviceIndependentSize()
+        assert logical_size.width() <= page.image_label.contentsRect().width()
+        assert logical_size.height() <= page.image_label.contentsRect().height()
+        assert page.image_scroll.horizontalScrollBar().maximum() == 0
+        assert page.image_scroll.verticalScrollBar().maximum() == 0
+        assert page.image_info.text() == "Source PNG 1500 × 810 px"
+        assert page.full_resolution_button.isEnabled()
+        page.full_resolution_button.click()
+        application.processEvents()
+        assert page._figure_dialog.isVisible()
+        assert "full resolution" in page._figure_dialog.windowTitle()
+        page._figure_dialog.close()
+        application.processEvents()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_results_visualization_uses_run_packaged_swcs_and_marks_stimulus(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    run = tmp_path / "runs" / "experiments" / "recorded-circuit"
+    morphology_paths = {}
+    for neuron_id, offset in (("10000", 0.0), ("10110", 10.0)):
+        path = run / "morphologies" / neuron_id / "normalized_input.swc"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "\n".join(
+                (
+                    f"1 1 {offset} 0 0 2 -1",
+                    f"2 3 {offset + 1} 0 0 0.5 1",
+                    f"3 3 {offset + 2} 1 0 0.4 2",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        morphology_paths[neuron_id] = path
+    (run / "summary.json").write_text("{}\n", encoding="utf-8")
+    (run / "worker_request.json").write_text(
+        json.dumps(
+            {
+                "morphologies": {
+                    "10000": {"family": "DN", "neuron_type": "DNp01"},
+                    "10110": {"family": "MN", "neuron_type": "TTMn"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "circuit.json").write_text(
+        json.dumps({"connectome": {"key": "manc:v1.2.1:full-local"}}),
+        encoding="utf-8",
+    )
+    (run / "experiment.json").write_text(
+        json.dumps(
+            {
+                "stimuli": [
+                    {
+                        "enabled": True,
+                        "target_neuron_ids": ["10000"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "voltage_traces.csv").write_text(
+        "condition,repetition,neuron_id,time_ms,voltage_mV\n"
+        "Control,0,10000,0,-60\n"
+        "Control,0,10110,0,-60\n"
+        "Control,0,10000,1,20\n"
+        "Control,0,10110,1,-45\n"
+        "Control,0,10000,2,-40\n"
+        "Control,0,10110,2,15\n"
+        "Gap disabled,0,10000,0,-60\n"
+        "Gap disabled,0,10110,0,-60\n"
+        "Gap disabled,0,10000,1,20\n"
+        "Gap disabled,0,10110,1,-45\n"
+        "Gap disabled,0,10000,2,-40\n"
+        "Gap disabled,0,10110,2,-30\n",
+        encoding="utf-8",
+    )
+    (run / "spikes.csv").write_text(
+        "condition,repetition,neuron_id,spike_time_ms\n"
+        "Control,0,10000,1\n"
+        "Control,0,10110,1.5\n"
+        "Gap disabled,0,10000,1\n",
+        encoding="utf-8",
+    )
+    artifacts = tuple(
+        Artifact("morphology", str(path), f"Normalized morphology · {neuron_id}", True)
+        for neuron_id, path in morphology_paths.items()
+    )
+    window = MainWindow()
+    try:
+        page = window.results_page
+        page.display_result(
+            ResultRecord(
+                summary_path=str(run / "summary.json"),
+                status="complete",
+                completed_at="2026-09-04T15:18:04+00:00",
+                title="Recorded circuit",
+                metadata={},
+                artifacts=artifacts,
+            )
+        )
+        application.processEvents()
+        assert page.result_viewport.camera_only is True
+        assert page.result_viewport.neuron_count == 2
+        assert page.result_viewport.display_mode == "full_skeletons"
+        assert page.result_viewport.highlighted_soma_ids == {"10000"}
+        assert page.result_viewport.morphologies["10000"].record.neuron_type == "DNp01"
+        assert page.result_viewport.morphologies["10110"].record.neuron_type == "TTMn"
+        assert "DNp01 · body 10000 · STIMULATED" in page.circuit_identity.text()
+        assert "TTMn · body 10110 · recorded" in page.circuit_identity.text()
+        assert "loaded from this saved run" in page.circuit_info.text()
+        assert page.circuit_identity_scroll.maximumHeight() == 156
+        assert page.circuit_identity_scroll.widget() is page.circuit_identity
+        assert page.activity_condition_combo.isEnabled()
+        assert page.activity_condition_combo.count() == 2
+        assert page.activity_condition_combo.itemText(0) == "Control"
+        assert page.activity_play_button.isEnabled()
+        page.activity_slider.setValue(2)
+        application.processEvents()
+        assert page.activity_time_label.text() == "2.00 ms"
+        assert page.result_viewport.activity_segment_count > 0
+        assert page.save_result_visualization_button.isEnabled()
+        assert page.figure_stack.currentWidget() is page.voltage_plot
+        assert page.voltage_plot.trace_count == 4
+        assert page.voltage_plot.sample_count == 12
+        assert page.voltage_2d_button.isEnabled()
+        assert page.voltage_3d_button.isEnabled()
+        assert not page.voltage_morphology_button.isEnabled()
+        assert not page.circuit_panel.isHidden()
+        page.expand_trace_button.click()
+        application.processEvents()
+        assert page.expand_trace_button.text() == "Restore split"
+        assert not page.circuit_panel.isVisible()
+        page.expand_trace_button.click()
+        application.processEvents()
+        assert page.expand_trace_button.text() == "Expand traces"
+        first_trace = page.voltage_plot.traces[0]
+        page.voltage_plot.legend_buttons[first_trace.key].click()
+        application.processEvents()
+        assert first_trace.key not in page.voltage_plot.canvas.active_keys
+        page.voltage_3d_button.click()
+        application.processEvents()
+        assert page.voltage_plot.mode == "3d_stack"
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_results_resolves_bmtk_safe_morphology_folders_to_biological_ids(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    run = tmp_path / "runs" / "experiments" / "bmtk-recorded-circuit"
+    identities = {
+        "cell/a": ("cell-a-4f8f5f", "DNp01", "DN", 0.0),
+        "cell-b": ("cell-b-a9d712", "TTMn", "MN", 10.0),
+    }
+    artifacts = []
+    for neuron_id, (safe_key, _neuron_type, _family, offset) in identities.items():
+        path = run / "morphologies" / safe_key / "normalized_input.swc"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"1 1 {offset} 0 0 2 -1\n2 3 {offset + 1} 0 0 0.5 1\n",
+            encoding="utf-8",
+        )
+        artifacts.append(
+            Artifact(
+                "morphology",
+                str(path),
+                f"Normalized morphology · {neuron_id}",
+                True,
+            )
+        )
+    (run / "summary.json").write_text("{}\n", encoding="utf-8")
+    (run / "worker_request.json").write_text(
+        json.dumps(
+            {
+                "morphologies": {
+                    neuron_id: {"neuron_type": values[1], "family": values[2]}
+                    for neuron_id, values in identities.items()
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "circuit.json").write_text(
+        json.dumps({"connectome": {"key": "manc:v1.2.1:full-local"}}),
+        encoding="utf-8",
+    )
+    (run / "experiment.json").write_text(
+        json.dumps(
+            {
+                "stimuli": [
+                    {"enabled": True, "target_neuron_ids": ["cell/a"]}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    try:
+        page = window.results_page
+        page.display_result(
+            ResultRecord(
+                summary_path=str(run / "summary.json"),
+                status="complete",
+                completed_at="2026-09-09T12:00:00+00:00",
+                title="BMTK recorded circuit",
+                metadata={},
+                artifacts=tuple(artifacts),
+            )
+        )
+        application.processEvents()
+        assert set(page.result_viewport.morphologies) == {"cell/a", "cell-b"}
+        assert page.result_viewport.morphologies["cell/a"].record.neuron_type == "DNp01"
+        assert page.result_viewport.morphologies["cell-b"].record.neuron_type == "TTMn"
+        assert page.result_viewport.highlighted_soma_ids == {"cell/a"}
     finally:
         window.close()
         application.processEvents()
@@ -772,7 +1203,7 @@ def test_switching_editors_saves_one_unified_project(tmp_path):
         window.save_project()
         saved = DigiflyProject.load(original)
         assert saved.selected_workflow == CIRCUIT_BUILDER_WORKFLOW
-        assert saved.circuit["schema_version"] == 2
+        assert saved.circuit["schema_version"] == 3
         assert saved.experiment["schema_version"] == 1
     finally:
         window.close()

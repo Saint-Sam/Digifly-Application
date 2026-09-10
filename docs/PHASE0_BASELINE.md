@@ -8,7 +8,7 @@ build dependency of this repository.
 ## Lineage
 
 - Original working folder at capture time:
-  `/Users/juanlopez2016/Desktop/Digifly App`
+  `<legacy-worktree>/Digifly App`
 - Original committed parent: `132913f56aa6568ec32b502cbb093c478e9b6429`
 - Complete working-state snapshot: `7e4f55018ec49c68805559e963bf1098a47c10b6`
 - Immutable local baseline tag: `phase0-local-baseline-20260826`
@@ -45,7 +45,7 @@ enforced package contract.
 ## Reproduce the development app
 
 ```bash
-cd "/Users/juanlopez2016/Desktop/Digifly Workstation"
+cd "/path/to/Digifly-Application"
 ./scripts/setup_dev.sh
 PYTHONPATH=src .venv/bin/python -m pytest
 ./scripts/run_dev.sh

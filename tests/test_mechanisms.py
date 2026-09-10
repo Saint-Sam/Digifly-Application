@@ -130,7 +130,8 @@ def test_gap_policy_validation_and_backend_messages_do_not_claim_false_arbor_par
         "arbor", membrane_profile("classic_hh"), GapJunctionPolicy(mode="ohmic")
     )
     assert "app-owned digifly_gap" in ohmic_message
-    assert "Generic Circuit Builder execution remains blocked" in ohmic_message
+    assert "versioned run-owned edge manifest" in ohmic_message
+    assert "per site" in ohmic_message
 
     with pytest.raises(ValueError, match="Closed gap fraction"):
         GapJunctionPolicy(mode="heterotypic_rectifying", g_closed_frac=1.1)

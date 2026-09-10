@@ -10,10 +10,11 @@
 
 ## Layers
 
-The diagram below separates implemented, recipe-specific execution adapters
-from planned generic boundaries. Escape-SIZ has both a NEURON adapter and a
-locked 49-cell Arbor Ablation-comparison adapter. Generic Arbor/BMTK translation
-and the VND handoff remain planned.
+The diagram below separates the implemented generic and recipe-specific
+execution adapters from planned boundaries. Escape-SIZ has both a NEURON
+adapter and a locked 49-cell Arbor Ablation-comparison adapter. Generic
+classic-HH Arbor/NEURON translation and a bounded BMTK BioNet translator are
+implemented; the VND handoff remains separately gated.
 
 ```mermaid
 flowchart LR
@@ -25,25 +26,25 @@ flowchart LR
     CORE --> CONTRACT[Engine adapter contract]
     CONTRACT --> N[Escape-SIZ NEURON adapter · implemented]
     CONTRACT --> A[Escape-SIZ Arbor comparison adapter · implemented]
-    CONTRACT -. planned .-> GA[Generic Arbor translator · planned]
-    CONTRACT -. planned .-> B[BMTK adapter · planned]
+    CONTRACT --> G[Generic Arbor and NEURON translator · implemented]
+    CONTRACT --> B[Bounded BMTK BioNet translator · implemented]
     DESIGN -. planned .-> V[VND exporter / viewer handoff · planned]
     N --> DP[Digifly Public native files]
     A --> DP
-    GA -.-> DP
-    B -.-> DP
+    G --> DP
+    B --> DP
     V -.-> DP
     N --> RUNS[Versioned run manifests and artifacts]
     A --> RUNS
-    GA -.-> RUNS
-    B -.-> RUNS
+    G --> RUNS
+    B --> RUNS
 ```
 
-The UI never imports a simulator. The implemented Escape-SIZ adapters discover
-inputs, build commands, declare build-time versus runtime-safe fields, and
-validate results. The Arbor adapter is deliberately recipe-specific rather than
-a generic `CircuitSpec` translator. Future generic adapters must satisfy the
-same contract. Commands are passed as argument arrays rather than shell strings.
+The UI never imports a simulator. The implemented adapters discover inputs,
+build commands, declare build-time versus runtime-safe fields, and validate
+results. The Escape-SIZ Arbor adapter remains deliberately recipe-specific;
+the generic adapter translates supported `CircuitSpec` documents independently.
+Commands are passed as argument arrays rather than shell strings.
 
 ## Notebook-independent experiment model
 
@@ -57,13 +58,16 @@ allocation.
 
 The app-owned pulse-train comparison template translates useful values from the
 Escape-SIZ notebooks into this schema, but the schema and UI never import or
-execute a notebook. The generic Run action now executes the first deliberately
-bounded `CircuitSpec` + `ExperimentSpec` subset in either Arbor or NEURON: one
-morphology-backed cell, built-in classic HH, soma square/pulse-train current,
-soma voltage/spike recording, conditions, repetitions, and app-owned outputs.
-Preflight fails closed for multi-cell connectivity, native mechanisms,
-per-compartment mapping, non-soma targets, and BMTK rather than approximating
-them. Because valid connectome SWCs can use non-monotonic node IDs, every worker
+execute a notebook. The generic Run action executes supported non-empty selected
+classic-HH circuits in Arbor or NEURON with soma current, soma voltage/spike
+recording, chemical and electrical condition switches, repetitions, and
+app-owned outputs. A bounded BMTK BioNet lane executes morphology-backed
+classic-HH cells with selected chemical contacts, soma current clamps, soma voltage, and
+spikes. Preflight fails closed for missing/changed edge sources and unsupported
+native mechanisms. BMTK additionally rejects electrical contacts, non-soma or
+per-compartment mapping, MPI, PointNet, and DPointNet rather than approximating
+them. Because valid connectome SWCs can use
+non-monotonic node IDs, every worker
 records a parent-before-child copy and source-to-run node map in the run folder
 so Arbor and NEURON consume the same validated topology. Arbor then constructs
 the cable segment tree explicitly and adds a provenance-recorded sub-resolution
@@ -71,6 +75,17 @@ root stub because it cannot integrate the SWC root as a zero-length cable; the
 source is never rewritten. Both engines resolve the same morphology-aware soma
 target policy. Non-finite traces fail the run before a summary or plot can be
 accepted.
+For multi-cell NEURON, normalized SWC rows are grouped into maximal branch-run
+sections with a direct node/site map for imported contacts. Odd `nseg` values
+target approximately 40 µm without a silent per-branch cap; a recorded two-
+million-total-segment safety limit rejects an oversized circuit explicitly.
+The exact app-owned `Gap`, `RectGap`, and `HeteroRectGap` sources are compiled
+and load-probed against the selected NEURON interpreter in an external cache.
+The BMTK worker materializes run-owned SONATA nodes, chemical edges, type tables,
+configuration, and a biological-ID crosswalk. Native BioNet HDF5 voltage and
+spike reports are preserved and converted to Digifly's canonical long-form
+result tables. Each repetition runs in a fresh child process to isolate NEURON
+global state.
 The legacy Escape-SIZ adapters remain isolated recipe-specific backends
 and result readers; they are no longer a navigation or project-format boundary.
 
@@ -254,17 +269,21 @@ after a user selects the source.
 
 ## Simulator runtime onboarding
 
-NEURON and Arbor remain external dependencies and may use distinct Python
-interpreters. Workstation links to the official
+NEURON, Arbor, and BMTK remain external dependencies and may use distinct Python
+interpreters. The BMTK binding is usable only when BMTK, NEURON, NumPy, and `h5py`
+coexist in that one selected interpreter. Workstation links to the official
 [NEURON installation guide](https://nrn.readthedocs.io/en/latest/index.html#installation)
-and [Arbor Python installation guide](https://docs.arbor-sim.org/en/latest/install/python.html).
+and [Arbor Python installation guide](https://docs.arbor-sim.org/en/latest/install/python.html),
+plus the [BMTK installation guide](https://alleninstitute.github.io/bmtk/installation.html).
 Runtime discovery never begins implicitly: the user first approves a dialog
 that names the bounded search locations and actions. The search reads PATH and
 immediate children of common Conda/virtual-environment roots, launches each
 candidate Python with a sanitized environment, and checks module/package
 metadata without importing simulator modules into the GUI. The user reviews
-exact interpreter paths and versions before the selected NEURON and Arbor
-bindings are written to the machine-local v2 profile.
+exact interpreter paths and versions before the selected NEURON, Arbor, and
+BMTK bindings are written to the machine-local v2 profile. The probe sanitizes
+inherited Python paths and marks BMTK unavailable unless BioNet can import its
+NEURON, NumPy, and HDF5 dependencies from the same interpreter.
 
 ## Escape-SIZ boundary
 
@@ -327,12 +346,15 @@ source diagnostic completed but passed 0 of 11 traces after NEURON was linearly
 sampled onto Arbor's dense epoch-relative grid, so the upstream absolute-voltage
 mismatch must be resolved before another full audit.
 
-This recipe-specific bridge does not yet validate the generic Circuit Builder
-or the other Phase 2 NMODL/Drosophila membrane channels. Unsupported generic
-requests remain blocked rather than silently mapped to the custom catalogue or
-built-in `gj`. BMTK PointNet/DPointNet are LIF/GLIF lanes and
-do not consume the current cable-HH draft; a generic BioNet translator is future
-work. VND is a visualization/export consumer, not a simulator.
+This recipe-specific bridge does not validate the other Phase 2 NMODL/Drosophila
+membrane channels. Generic Arbor and NEURON execution independently translates
+supported selected-cell classic-HH designs; NEURON uses exact app-owned `Gap`,
+`RectGap`, and `HeteroRectGap` mechanisms for validated electrical contacts.
+The bounded BMTK translator uses real BioNet/SONATA for morphology-backed
+classic-HH cells, selected chemical contacts, and soma clamp/voltage/spikes.
+Electrical contacts, native mechanisms, non-soma/per-compartment mapping, MPI,
+PointNet, and DPointNet remain blocked rather than silently mapped. VND is a
+visualization/export consumer, not a simulator.
 
 ## Packaging
 

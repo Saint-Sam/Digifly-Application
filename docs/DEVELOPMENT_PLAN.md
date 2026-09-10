@@ -106,7 +106,8 @@ See `PHASE3_DATA_ACQUISITION_PLAN.md`.
 - Add CI matrices for supported Python and operating-system targets.
 - Produce checksummed artifacts and software-bill-of-materials metadata.
 - Add signed/notarized macOS and signed Windows release lanes.
-- Select and record the project license before public distribution.
+- Keep the private proprietary license during pre-release development; review
+  third-party notices and final distribution terms before any public release.
 
 ## Phase 5 — feature development
 

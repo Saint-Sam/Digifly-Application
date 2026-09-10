@@ -27,6 +27,7 @@ from digifly_app.core.runtime_discovery import (
 
 NEURON_INSTALL_URL = "https://nrn.readthedocs.io/en/latest/index.html#installation"
 ARBOR_INSTALL_URL = "https://docs.arbor-sim.org/en/latest/install/python.html"
+BMTK_INSTALL_URL = "https://alleninstitute.github.io/bmtk/installation.html"
 
 
 class _DiscoveryWorker(QObject):
@@ -48,23 +49,26 @@ class _DiscoveryWorker(QObject):
 
 
 class RuntimeSetupDialog(QDialog):
-    runtimes_selected = Signal(str, str)
+    runtimes_selected = Signal(str, str, str)
 
     def __init__(
         self,
         *,
         current_neuron: str = "",
         current_arbor: str = "",
+        current_bmtk: str = "",
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Set up NEURON and Arbor")
-        self.resize(900, 590)
+        self.setWindowTitle("Set up scientific runtimes")
+        self.resize(1040, 650)
         self._thread: QThread | None = None
         self._worker: _DiscoveryWorker | None = None
         self._choice_available = False
         self._current = tuple(
-            value for value in (current_neuron, current_arbor) if value.strip()
+            value
+            for value in (current_neuron, current_arbor, current_bmtk)
+            if value.strip()
         )
 
         root = QVBoxLayout(self)
@@ -72,10 +76,11 @@ class RuntimeSetupDialog(QDialog):
         title.setObjectName("PageTitle")
         root.addWidget(title)
         detail = QLabel(
-            "Digifly Workstation does not bundle simulators. Install each simulator in a "
-            "separate Python environment, or allow a read-only search for environments that "
-            "already exist on this machine. Digifly verifies package metadata in a child "
-            "process; it does not import simulators into the app process."
+            "Digifly Workstation does not bundle simulators. Install the runtime you want in "
+            "a compatible Python environment, or allow a read-only search for environments "
+            "that already exist on this machine. BMTK BioNet needs BMTK, NEURON, NumPy, and h5py in "
+            "the same environment. Digifly verifies each environment in a child process; it "
+            "does not import simulators into the app process."
         )
         detail.setObjectName("Muted")
         detail.setWordWrap(True)
@@ -92,6 +97,11 @@ class RuntimeSetupDialog(QDialog):
             lambda: QDesktopServices.openUrl(QUrl(ARBOR_INSTALL_URL))
         )
         guidance.addWidget(arbor_docs)
+        bmtk_docs = QPushButton("BMTK / BioNet installation guide")
+        bmtk_docs.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(BMTK_INSTALL_URL))
+        )
+        guidance.addWidget(bmtk_docs)
         guidance.addStretch(1)
         self.search_button = QPushButton("Allow read-only runtime search…")
         self.search_button.setProperty("primary", True)
@@ -108,9 +118,9 @@ class RuntimeSetupDialog(QDialog):
         self.status.setWordWrap(True)
         root.addWidget(self.status)
 
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ("Python interpreter", "Python", "NEURON", "Arbor")
+            ("Python interpreter", "Python", "NEURON", "Arbor", "BMTK / BioNet")
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -123,6 +133,9 @@ class RuntimeSetupDialog(QDialog):
         self.arbor_combo = QComboBox()
         self.arbor_combo.setEnabled(False)
         form.addRow("Use for Arbor", self.arbor_combo)
+        self.bmtk_combo = QComboBox()
+        self.bmtk_combo.setEnabled(False)
+        form.addRow("Use for BMTK BioNet", self.bmtk_combo)
         root.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -143,7 +156,8 @@ class RuntimeSetupDialog(QDialog):
             "Allow runtime search?",
             "Digifly will read PATH plus common Conda, virtual-environment, and "
             "Digifly-Runtimes folders. It checks only immediate environment folders and "
-            "runs each candidate Python briefly to read NEURON/Arbor package metadata.\n\n"
+            "runs each candidate Python briefly to read NEURON, Arbor, and BMTK metadata. "
+            "For BMTK it also verifies that BioNet, NEURON, NumPy, and h5py import together.\n\n"
             "It will not scan the whole disk, install software, import simulator modules "
             "into the app, or modify any environment.",
         )
@@ -175,6 +189,7 @@ class RuntimeSetupDialog(QDialog):
         self.table.setRowCount(0)
         self.neuron_combo.clear()
         self.arbor_combo.clear()
+        self.bmtk_combo.clear()
         for result in results:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -184,6 +199,13 @@ class RuntimeSetupDialog(QDialog):
                     result.python_version or "unknown",
                     result.neuron_version or "not installed",
                     result.arbor_version or "not installed",
+                    (
+                        f"{result.bmtk_version} · BioNet ready"
+                        if result.bionet_ready
+                        else f"{result.bmtk_version} · BioNet blocked: {result.bionet_error}"
+                        if result.has_bmtk
+                        else "not installed"
+                    ),
                 )
             ):
                 self.table.setItem(row, column, QTableWidgetItem(text))
@@ -195,19 +217,27 @@ class RuntimeSetupDialog(QDialog):
                 self.arbor_combo.addItem(
                     f"Arbor {result.arbor_version} · {result.python}", str(result.python)
                 )
+            if result.bionet_ready:
+                self.bmtk_combo.addItem(
+                    f"BMTK {result.bmtk_version} + BioNet · {result.python}",
+                    str(result.python),
+                )
         self.neuron_combo.setEnabled(self.neuron_combo.count() > 0)
         self.arbor_combo.setEnabled(self.arbor_combo.count() > 0)
+        self.bmtk_combo.setEnabled(self.bmtk_combo.count() > 0)
         self._choice_available = (
-            self.neuron_combo.count() > 0 or self.arbor_combo.count() > 0
+            self.neuron_combo.count() > 0
+            or self.arbor_combo.count() > 0
+            or self.bmtk_combo.count() > 0
         )
         if results:
             self.status.setText(
-                f"Found {len(results)} Python environment(s) containing NEURON or Arbor. "
-                "Review the exact interpreter before saving."
+                f"Found {len(results)} Python environment(s) containing a supported simulator. "
+                "Only interpreters where BioNet and NEURON import together are offered for BMTK."
             )
         else:
             self.status.setText(
-                "No NEURON or Arbor Python package was found in the approved locations. "
+                "No NEURON, Arbor, or BMTK Python package was found in the approved locations. "
                 "Use the official installation guides, then search again."
             )
 
@@ -228,7 +258,8 @@ class RuntimeSetupDialog(QDialog):
     def use_selected(self) -> None:
         neuron = str(self.neuron_combo.currentData() or "")
         arbor = str(self.arbor_combo.currentData() or "")
-        self.runtimes_selected.emit(neuron, arbor)
+        bmtk = str(self.bmtk_combo.currentData() or "")
+        self.runtimes_selected.emit(neuron, arbor, bmtk)
         self.accept()
 
     def reject(self) -> None:

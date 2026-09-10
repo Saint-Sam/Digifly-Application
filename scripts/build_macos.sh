@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+build_mode="local"
+case "${1:-}" in
+  "")
+    ;;
+  --developer-id)
+    build_mode="developer-id"
+    shift
+    ;;
+  *)
+    echo "Usage: $0 [--developer-id]" >&2
+    exit 2
+    ;;
+esac
+if [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--developer-id]" >&2
+  exit 2
+fi
+if [[ "$build_mode" == "developer-id" ]]; then
+  if [[ ! "${DIGIFLY_DEVELOPER_IDENTITY:-}" =~ ^[[:xdigit:]]{40}$ ]]; then
+    echo "Developer ID mode requires DIGIFLY_DEVELOPER_IDENTITY as a 40-character certificate hash." >&2
+    exit 2
+  fi
+  if [[ -z "${DIGIFLY_NOTARY_PROFILE:-}" ]]; then
+    echo "Developer ID mode requires DIGIFLY_NOTARY_PROFILE as a Keychain profile name." >&2
+    exit 2
+  fi
+fi
+
 # PySide 6.10/Nuitka 2.7 can lose quoting while handing paths to the macOS C
 # backend. Build from a real directory whose path contains no whitespace. A
 # symlink is insufficient because PySide resolves the project path before it
@@ -13,6 +41,8 @@ source_deploy_dir="$project_dir/deployment"
 release_dir="$project_dir/dist"
 release_bundle="$release_dir/Digifly Workstation.app"
 release_archive_dir="$release_dir/previous_builds"
+release_zip="${DIGIFLY_RELEASE_ZIP:-$release_dir/Digifly-Workstation-0.1.0-macos-$(/usr/bin/uname -m).zip}"
+build_number="${DIGIFLY_BUILD_NUMBER:-1}"
 build_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 stage_root="$(mktemp -d /private/tmp/digifly-workstation-build.XXXXXX)"
 stage_python="$stage_root/.venv/bin/python"
@@ -20,16 +50,23 @@ stage_spec="$stage_root/pysidedeploy.spec"
 stage_deploy_dir="$stage_root/deployment"
 stage_bundle="$stage_root/Digifly Workstation.app"
 stage_log="$stage_root/build.log"
-candidate_bundle="$release_dir/.Digifly Workstation.candidate.$$.app"
+candidate_root="$release_dir/.digifly-candidate.$$"
+candidate_bundle="$candidate_root/Digifly Workstation.app"
 backup_bundle="$release_archive_dir/Digifly Workstation.pre-$build_stamp-$$.app"
 build_succeeded=0
+promotion_in_progress=0
+had_previous_release=0
 
 archive_failed_build() {
   local failure_dir="$source_deploy_dir/failed_builds/$build_stamp-$$"
 
   mkdir -p "$failure_dir"
   if [[ -d "$stage_deploy_dir" ]]; then
-    rsync -a "$stage_deploy_dir/" "$failure_dir/deployment/"
+    rsync -a \
+      --exclude '/.nuitka-cache/' \
+      --exclude '/.ccache/' \
+      --exclude '/.pip-cache/' \
+      "$stage_deploy_dir/" "$failure_dir/deployment/"
   fi
   if [[ -f "$stage_log" ]]; then
     cp "$stage_log" "$failure_dir/build.log"
@@ -43,6 +80,26 @@ archive_failed_build() {
 cleanup_stage() {
   local status=$?
 
+  if [[ $status -ne 0 && $promotion_in_progress -eq 1 && $had_previous_release -eq 1 ]]; then
+    local interrupted_release="$source_deploy_dir/failed_bundles/Digifly Workstation.interrupted-$build_stamp-$$.app"
+    mkdir -p "$source_deploy_dir/failed_bundles"
+    if [[ -e "$release_bundle" ]]; then
+      mv "$release_bundle" "$interrupted_release" || true
+    fi
+    if [[ -e "$backup_bundle" && ! -e "$release_bundle" ]]; then
+      mv "$backup_bundle" "$release_bundle" || true
+      echo "Restored the previous release after interrupted promotion." >&2
+    fi
+  fi
+  if [[ $status -ne 0 && -d "$candidate_root" ]]; then
+    local failed_candidate="$source_deploy_dir/failed_bundles/Digifly Workstation.candidate-$build_stamp-$$.app"
+    mkdir -p "$source_deploy_dir/failed_bundles"
+    if [[ -d "$candidate_bundle" ]]; then
+      mv "$candidate_bundle" "$failed_candidate" || true
+      echo "Preserved failed release candidate at $failed_candidate" >&2
+    fi
+    rmdir "$candidate_root" 2>/dev/null || true
+  fi
   if [[ $status -ne 0 && $build_succeeded -eq 0 ]]; then
     archive_failed_build || true
   fi
@@ -66,8 +123,20 @@ if [[ ! -f "$source_spec" ]]; then
   echo "Missing deployment specification at $source_spec" >&2
   exit 2
 fi
-if [[ -e "$candidate_bundle" ]]; then
-  echo "Refusing to overwrite stale release candidate at $candidate_bundle" >&2
+if [[ ! "$build_number" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
+  echo "DIGIFLY_BUILD_NUMBER must be one to three dot-separated non-negative integers." >&2
+  exit 2
+fi
+if [[ -e "$candidate_root" ]]; then
+  echo "Refusing to overwrite stale release candidate at $candidate_root" >&2
+  exit 2
+fi
+if [[ "$build_mode" == "developer-id" && -e "$release_zip" ]]; then
+  echo "Refusing to overwrite existing Developer ID release archive at $release_zip" >&2
+  exit 2
+fi
+if [[ "$build_mode" == "developer-id" && -e "$release_zip.sha256" ]]; then
+  echo "Refusing to overwrite existing Developer ID release checksum at $release_zip.sha256" >&2
   exit 2
 fi
 
@@ -92,23 +161,23 @@ rsync -a \
 # Keep every path passed to PySide, Nuitka, SCons, and ccache whitespace-free.
 # The cache copy makes the build offline-capable while reusing prior downloads.
 if [[ -d "$source_deploy_dir/.nuitka-cache" ]]; then
-  rsync -a "$source_deploy_dir/.nuitka-cache/" "$stage_deploy_dir/.nuitka-cache/"
-fi
-if [[ -d "$source_deploy_dir/.ccache" ]]; then
-  rsync -a "$source_deploy_dir/.ccache/" "$stage_deploy_dir/.ccache/"
+  /bin/cp -cR "$source_deploy_dir/.nuitka-cache" "$stage_deploy_dir/.nuitka-cache"
 fi
 if [[ -d "$source_deploy_dir/.pip-cache" ]]; then
-  rsync -a "$source_deploy_dir/.pip-cache/" "$stage_deploy_dir/.pip-cache/"
+  /bin/cp -cR "$source_deploy_dir/.pip-cache" "$stage_deploy_dir/.pip-cache"
 fi
 
 python_minor="$($stage_python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 deploy_script="$stage_root/.venv/lib/python$python_minor/site-packages/PySide6/scripts/deploy.py"
-default_icon="$stage_root/.venv/lib/python$python_minor/site-packages/PySide6/scripts/deploy_lib/pyside_icon.icns"
-if [[ ! -f "$deploy_script" || ! -f "$default_icon" ]]; then
+app_icon="$stage_root/src/digifly_app/assets/digifly_icon.icns"
+if [[ ! -f "$deploy_script" ]]; then
   echo "The PySide deployment tools are incomplete in $project_dir/.venv" >&2
   exit 2
 fi
-cp "$default_icon" "$stage_root/pyside_icon.icns"
+if [[ ! -f "$app_icon" ]]; then
+  echo "The Digifly application icon is missing at $app_icon" >&2
+  exit 2
+fi
 
 export VIRTUAL_ENV="$stage_root/.venv"
 # Use Apple's install_name_tool while retaining Anaconda's other dependency
@@ -118,7 +187,6 @@ ln -s /usr/bin/install_name_tool "$stage_root/tool-shims/install_name_tool"
 export PATH="$stage_root/tool-shims:$stage_root/.venv/bin:$host_path"
 export PYTHONPATH="$stage_root/src"
 export NUITKA_CACHE_DIR="$stage_deploy_dir/.nuitka-cache"
-export CCACHE_DIR="$stage_deploy_dir/.ccache"
 export PIP_CACHE_DIR="$stage_deploy_dir/.pip-cache"
 export TMPDIR="$stage_root/tmp"
 export NUITKA_ASSUME_YES_FOR_DOWNLOADS="yes"
@@ -146,43 +214,78 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.0" "$stage_bundle/Contents/Info.plist"
+if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$stage_bundle/Contents/Info.plist" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$stage_bundle/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $build_number" "$stage_bundle/Contents/Info.plist"
+fi
 codesign --force --deep --sign - "$stage_bundle"
 codesign --verify --deep --strict "$stage_bundle"
 
 # Copy and verify the candidate before moving the currently installed release.
-rsync -a "$stage_bundle/" "$candidate_bundle/"
-# Ad-hoc signatures on some nested bundle resources are stored in extended
-# attributes that macOS's bundled rsync does not preserve with -a. Sign again
-# on the release filesystem, then verify that exact candidate.
-codesign --force --deep --sign - "$candidate_bundle"
+mkdir -p "$candidate_root"
+if [[ "$build_mode" == "developer-id" ]]; then
+  # Preserve framework and bundle metadata, then sign the final copy inside-out.
+  /usr/bin/ditto "$stage_bundle" "$candidate_bundle"
+  "$project_dir/scripts/sign_macos_app.sh" "$candidate_bundle"
+else
+  rsync -a "$stage_bundle/" "$candidate_bundle/"
+  # Ad-hoc signatures on some nested bundle resources are stored in extended
+  # attributes that macOS's bundled rsync does not preserve with -a. Sign again
+  # on the release filesystem, then verify that exact candidate.
+  codesign --force --deep --sign - "$candidate_bundle"
+fi
 codesign --verify --deep --strict "$candidate_bundle"
 if [[ ! -x "$candidate_bundle/Contents/MacOS/main" ]]; then
   echo "Release candidate lost its executable permission during copying." >&2
   exit 4
 fi
+# Enforce the same dataset, generated-state, oversized-file, and developer-path
+# boundary used for wheel/sdist releases before the previous app is moved.
+"$stage_python" -m digifly_app.packaging.audit "$candidate_bundle"
+if [[ "$build_mode" == "developer-id" ]]; then
+  DIGIFLY_NOTARY_DIAGNOSTICS_DIR="$source_deploy_dir/notarization" \
+    "$project_dir/scripts/notarize_macos_app.sh" "$candidate_bundle" "$release_zip"
+fi
 
 if [[ -e "$release_bundle" ]]; then
+  had_previous_release=1
+  promotion_in_progress=1
   mv "$release_bundle" "$backup_bundle"
   echo "Preserved previous release at $backup_bundle"
 fi
 mv "$candidate_bundle" "$release_bundle"
-if ! codesign --verify --deep --strict "$release_bundle"; then
+rmdir "$candidate_root"
+verify_release_bundle() {
+  codesign --verify --deep --strict "$release_bundle" || return 1
+  if [[ "$build_mode" == "developer-id" ]]; then
+    /usr/bin/xcrun stapler validate "$release_bundle" || return 1
+    /usr/sbin/spctl --assess --type execute --verbose=4 "$release_bundle" || return 1
+  fi
+}
+if ! verify_release_bundle; then
   failed_release="$source_deploy_dir/failed_bundles/Digifly Workstation.$build_stamp-$$.app"
   mkdir -p "$source_deploy_dir/failed_bundles"
   mv "$release_bundle" "$failed_release"
   if [[ -e "$backup_bundle" ]]; then
     mv "$backup_bundle" "$release_bundle"
   fi
+  promotion_in_progress=0
   echo "Release verification failed; restored the previous bundle." >&2
   exit 5
 fi
+promotion_in_progress=0
 
 # Save updated local caches only after a successful, verified build.
-rsync -a "$stage_deploy_dir/.nuitka-cache/" "$source_deploy_dir/.nuitka-cache/"
-rsync -a "$stage_deploy_dir/.ccache/" "$source_deploy_dir/.ccache/"
+if [[ -d "$stage_deploy_dir/.nuitka-cache" ]]; then
+  rsync -a "$stage_deploy_dir/.nuitka-cache/" "$source_deploy_dir/.nuitka-cache/"
+fi
 if [[ -d "$stage_deploy_dir/.pip-cache" ]]; then
   rsync -a "$stage_deploy_dir/.pip-cache/" "$source_deploy_dir/.pip-cache/"
 fi
 
 build_succeeded=1
 echo "Built and verified $release_bundle"
+if [[ "$build_mode" == "developer-id" ]]; then
+  echo "Developer ID release archive: $release_zip"
+fi

@@ -1,0 +1,20 @@
+{
+  "engine": "neuron",
+  "mechanisms": {
+    "Gap": {
+      "source_filename": "Gap.mod",
+      "source_sha256": "e3ab9d0a37811314d3baa8461050e6d65fbb9b8e163ff6618a6d9f2f2549c1f2"
+    },
+    "HeteroRectGap": {
+      "source_filename": "HeteroRectGap.mod",
+      "source_sha256": "22b505af799076bb8079f204d222adfa72432f8609bd89fd050f7ffb325c9c2f"
+    },
+    "RectGap": {
+      "source_filename": "RectGap.mod",
+      "source_sha256": "d9fa308ff0433ad0eb424017fff4384d5c06915ca9a2cbe25485ad176db3a8d6"
+    }
+  },
+  "schema_version": 1,
+  "source_origin": "Digifly Public/Phase 2/data",
+  "source_tree_policy": "The packaged copies are app-owned resources; Digifly Public remains read-only."
+}

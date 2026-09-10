@@ -49,6 +49,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Invalid resource profile [{check.resource_id}]: {check.detail}", file=sys.stderr)
         return 2
     workspace_root = profile.workspace_root if profile is not None else Path(args.workspace)
+    if workspace_root is None:
+        if args.command == "plan":
+            print(
+                "This legacy execution plan requires a Digifly Public workspace binding; "
+                "standalone data-library profiles can still be used by the Workstation app.",
+                file=sys.stderr,
+            )
+            return 2
+        workspace_root = profile.managed_data_root.parent
     output_root = (
         Path(args.output).expanduser()
         if args.output

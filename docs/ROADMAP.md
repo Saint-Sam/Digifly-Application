@@ -47,9 +47,9 @@
 ## Milestone 4 — Unified execution adapters
 
 - [x] Launch the first simulator-neutral classic-HH subset from Experiment
-  Builder through real Arbor and NEURON workers, with fail-closed capability
-  checks, cancellable background execution, job/run provenance, soma traces,
-  spike tables, plots, and Results handoff.
+  Builder through real Arbor, NEURON, and bounded BMTK BioNet workers, with
+  fail-closed capability checks, cancellable background execution, job/run
+  provenance, soma traces, spike tables, plots, and Results handoff.
 - [x] Add the dedicated 49-cell Escape-SIZ Ablation Arbor 0.12.2 adapter with
   locked inputs and paired gap-enabled/gap-disabled runs.
 - [x] Port app-owned `Gap`, `RectGap`, and `HeteroRectGap` NMODL sources into an
@@ -74,10 +74,13 @@
   diagnostic (0/11 source somas despite high waveform correlation), then pass
   the short gap-disabled source gate before another full paired run.
 - [ ] Wrap the remaining curated `Phase 2_Arbor_staging` comparison workflows.
-- [ ] Extend the validated Arbor `CircuitSpec` recipe beyond the executable
-  single-cell classic-HH subset to explicit multi-cell edge manifests.
-- [ ] Extend the executable NEURON subset and add a BMTK/BioNet representation,
-  with comparison gates.
+- [x] Extend the validated Arbor `CircuitSpec` recipe to arbitrary selected
+  classic-HH cell sets with schema-v2 chemical/electrical edge manifests,
+  imported contact placement, source identity checks, and condition toggles.
+- [x] Extend NEURON to arbitrary selected multi-cell classic-HH chemical networks
+  and exact app-owned `Gap`, `RectGap`, and `HeteroRectGap` execution.
+- [x] Add bounded, real BMTK BioNet/SONATA execution for morphology-backed
+  classic-HH cells, selected chemical contacts, and soma clamp/voltage/spikes.
 - [x] Gate unsupported mechanisms explicitly instead of silently approximating.
 - [x] Add the dedicated Escape-SIZ backend comparison contract with common
   inputs, traces, metrics, solver provenance, and an explicit false equivalence
@@ -86,19 +89,33 @@
   designs.
 - [ ] Support `DIGIFLY_PHASE2_ARBOR_OUTPUT_ROOT` directly for generic adapters.
 
-## Milestone 5 — BMTK and VND
+## Milestone 5 — BMTK expansion and VND
 
-- Run the BMTK doctor and validate SONATA manifests/crosswalks.
-- Add BioNet, PointNet, and DPointNet environment profiles.
-- Export selected activity to focused or expanded VND views.
-- Launch VND as an optional external viewer without treating it as a simulator.
+- [x] Add the BMTK/BioNet doctor and validate run-owned SONATA manifests and
+  biological-ID crosswalks.
+- [x] Add a BioNet environment profile that requires BMTK, NEURON, NumPy, and `h5py`
+  in one selected external interpreter.
+- [ ] Add separately qualified PointNet and DPointNet environment/execution
+  profiles; neither is a fallback for a BioNet cable model.
+- [ ] Add electrical-edge, native-mechanism, and non-soma/per-compartment BioNet
+  mappings only after their scientific translation is explicitly validated.
+- [ ] Export selected activity to focused or expanded VND views.
+- [ ] Launch VND as an optional external viewer without treating it as a simulator.
 
 ## Milestone 6 — Distribution
 
 - Automated tests on macOS, Windows, and Linux.
 - Signed/notarized macOS build and packaged Windows/Linux builds.
 - Example dataset small enough for CI.
-- GitHub Actions, release artifacts, contribution guide, and chosen license.
+- [x] Record a private, proprietary pre-release license.
+- [x] Add a fail-closed Developer ID signing and notarization build lane.
+- [ ] Install a Developer ID Application identity on the release machine and
+  qualify the first signed/notarized build on a clean Mac.
+- [ ] Declare and test the minimum macOS and CPU architecture support matrix;
+  the current native build is macOS 11.1-targeted `arm64` only.
+- [ ] Review third-party notices and decide whether the eventual release remains
+  proprietary or adopts a public license.
+- GitHub Actions, release artifacts, and contribution guide.
 
 ## Milestone 7 — Managed data acquisition
 

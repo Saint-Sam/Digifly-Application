@@ -5,18 +5,21 @@ from dataclasses import dataclass
 from math import ceil, radians, sqrt, tan
 from typing import Iterable, Mapping
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QMatrix4x4, QVector3D, QVector4D
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QMatrix4x4, QVector3D, QVector4D
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
+    QOpenGLFramebufferObject,
+    QOpenGLFramebufferObjectFormat,
     QOpenGLFunctions_2_0,
     QOpenGLShader,
     QOpenGLShaderProgram,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QApplication, QRubberBand
+from PySide6.QtWidgets import QApplication, QMessageBox, QRubberBand
 
 from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
+from .snapshot import HIGH_RESOLUTION_WIDTH, save_image_with_dialog
 from .style import DARK_THEME, LIGHT_THEME, normalize_theme, theme_color
 
 
@@ -38,6 +41,7 @@ SELECTED_NEURON_COLOR = "#f6c65b"
 # Reserved exclusively for selected SWC compartments in the morphology view.
 SELECTED_COMPARTMENT_COLOR = "#ff00ff"
 TARGET_REGION_COLOR = "#fff3a1"
+ACTIVITY_FLOW_COLOR = "#f5fbff"
 INTERACTION_PREVIEW_THRESHOLD = 45_000
 INTERACTION_PREVIEW_SEGMENT_BUDGET = 30_000
 INTERACTION_SETTLE_MS = 140
@@ -280,11 +284,13 @@ class CircuitViewport(QOpenGLWidget):
         self._preview_data = b""
         self._selection_data = b""
         self._highlight_data = b""
+        self._activity_data = b""
         self._geometry_dirty = True
         self._point_geometry_dirty = True
         self._preview_dirty = True
         self._selection_dirty = True
         self._highlight_dirty = True
+        self._activity_dirty = True
 
         self.selected_neuron_id: str | None = None
         # Ordered oldest -> most recent. Pair-selection is intentionally capped
@@ -324,6 +330,7 @@ class CircuitViewport(QOpenGLWidget):
         self._selected_neuron_rgba = QVector4D()
         self._selected_compartment_rgba = QVector4D()
         self._target_region_rgba = QVector4D()
+        self._activity_rgba = QVector4D()
         self._refresh_theme_colors()
         self._gpu_ready = False
         self._point_functions: QOpenGLFunctions_2_0 | None = None
@@ -333,6 +340,9 @@ class CircuitViewport(QOpenGLWidget):
         self._preview_buffer: QOpenGLBuffer | None = None
         self._selection_buffer: QOpenGLBuffer | None = None
         self._highlight_buffer: QOpenGLBuffer | None = None
+        self._activity_buffer: QOpenGLBuffer | None = None
+        self._render_size_override: tuple[int, int] | None = None
+        self._export_scale = 1.0
         self._update_accessible_description()
 
     @property
@@ -354,6 +364,10 @@ class CircuitViewport(QOpenGLWidget):
     @property
     def highlighted_segment_count(self) -> int:
         return len(self._highlight_data) // 24
+
+    @property
+    def activity_segment_count(self) -> int:
+        return len(self._activity_data) // 24
 
     def soma_location(self, neuron_id: str) -> SomaLocation | None:
         return self._soma_locations.get(str(neuron_id))
@@ -466,6 +480,7 @@ class CircuitViewport(QOpenGLWidget):
         self.selected_compartments.clear()
         self.isolated = False
         self.clear_highlights(update=False)
+        self.clear_activity_flow(update=False)
         self._home_yaw_degrees = DEFAULT_YAW_DEGREES
         self._home_roll_degrees = (
             MALE_CNS_ROLL_DEGREES
@@ -705,6 +720,37 @@ class CircuitViewport(QOpenGLWidget):
         self._highlight_data = vertices.tobytes()
         self._highlight_dirty = True
 
+    def set_activity_flow(
+        self,
+        segment_ids: Mapping[str | int, Iterable[str | int]] | None,
+    ) -> None:
+        """Set the Results-only inferred activity overlay without changing targets."""
+
+        vertices = array("f")
+        for raw_neuron_id, raw_node_ids in dict(segment_ids or {}).items():
+            morphology = self.morphologies.get(str(raw_neuron_id))
+            if morphology is None:
+                continue
+            wanted: set[int] = set()
+            for raw_node_id in raw_node_ids:
+                try:
+                    wanted.add(int(raw_node_id))
+                except (TypeError, ValueError):
+                    continue
+            for segment in morphology.segments:
+                if segment.child_id in wanted:
+                    vertices.extend(segment.parent)
+                    vertices.extend(segment.child)
+        self._activity_data = vertices.tobytes()
+        self._activity_dirty = True
+        self.update()
+
+    def clear_activity_flow(self, *, update: bool = True) -> None:
+        self._activity_data = b""
+        self._activity_dirty = True
+        if update:
+            self.update()
+
     def _rebuild_selection_data(self) -> None:
         vertices = array("f")
         if self.selected_neuron_id is not None:
@@ -751,12 +797,14 @@ class CircuitViewport(QOpenGLWidget):
             preview_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             selection_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             highlight_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            activity_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             if (
                 not vertex_buffer.create()
                 or not point_buffer.create()
                 or not preview_buffer.create()
                 or not selection_buffer.create()
                 or not highlight_buffer.create()
+                or not activity_buffer.create()
             ):
                 raise RuntimeError("OpenGL vertex buffers could not be created")
             vertex_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.StaticDraw)
@@ -764,6 +812,7 @@ class CircuitViewport(QOpenGLWidget):
             preview_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.StaticDraw)
             selection_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
             highlight_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+            activity_buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
             self._program = program
             self._point_functions = point_functions
             self._vertex_buffer = vertex_buffer
@@ -771,12 +820,14 @@ class CircuitViewport(QOpenGLWidget):
             self._preview_buffer = preview_buffer
             self._selection_buffer = selection_buffer
             self._highlight_buffer = highlight_buffer
+            self._activity_buffer = activity_buffer
             self._gpu_ready = True
             self._geometry_dirty = True
             self._point_geometry_dirty = True
             self._preview_dirty = True
             self._selection_dirty = True
             self._highlight_dirty = True
+            self._activity_dirty = True
         except Exception as exc:
             self._gpu_ready = False
             self.status_message.emit(f"Morphology renderer unavailable: {exc}")
@@ -809,6 +860,11 @@ class CircuitViewport(QOpenGLWidget):
             self._highlight_buffer.allocate(self._highlight_data, len(self._highlight_data))
             self._highlight_buffer.release()
             self._highlight_dirty = False
+        if self._activity_dirty and self._activity_buffer is not None:
+            self._activity_buffer.bind()
+            self._activity_buffer.allocate(self._activity_data, len(self._activity_data))
+            self._activity_buffer.release()
+            self._activity_dirty = False
 
     def _refresh_theme_colors(self) -> None:
         application = QApplication.instance()
@@ -826,6 +882,9 @@ class CircuitViewport(QOpenGLWidget):
         self._selected_compartment_rgba = _rgba(SELECTED_COMPARTMENT_COLOR)
         self._target_region_rgba = _rgba(
             "#765600" if theme == LIGHT_THEME else TARGET_REGION_COLOR
+        )
+        self._activity_rgba = _rgba(
+            "#006ac7" if theme == LIGHT_THEME else ACTIVITY_FLOW_COLOR
         )
 
     def paintGL(self) -> None:
@@ -880,9 +939,9 @@ class CircuitViewport(QOpenGLWidget):
                 )
                 program.setUniformValue("tint", color)
                 self._point_functions.glPointSize(
-                    SELECTED_SOMA_POINT_SIZE
+                    self._export_scale * SELECTED_SOMA_POINT_SIZE
                     if selected or highlighted
-                    else SOMA_POINT_SIZE,
+                    else self._export_scale * SOMA_POINT_SIZE,
                 )
                 functions.glDrawArrays(GL_POINTS, source_index, 1)
             self._point_functions.glPointSize(1.0)
@@ -920,9 +979,12 @@ class CircuitViewport(QOpenGLWidget):
             )
             program.setUniformValue("tint", color)
             functions.glLineWidth(
-                2.8
-                if neuron_id in self.selected_neuron_ids or highlighted
-                else (1.0 if use_preview else 1.35)
+                self._export_scale
+                * (
+                    2.8
+                    if neuron_id in self.selected_neuron_ids or highlighted
+                    else (1.0 if use_preview else 1.35)
+                )
             )
             for start, count in self._render_ranges_for(
                 neuron_id, matrix, use_preview=use_preview
@@ -942,7 +1004,7 @@ class CircuitViewport(QOpenGLWidget):
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
             program.setUniformValue("tint", self._selected_compartment_rgba)
-            functions.glLineWidth(5.0)
+            functions.glLineWidth(self._export_scale * 5.0)
             functions.glDrawArrays(GL_LINES, 0, len(self._selection_data) // 12)
             program.disableAttributeArray(0)
             self._selection_buffer.release()
@@ -954,7 +1016,7 @@ class CircuitViewport(QOpenGLWidget):
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
             program.setUniformValue("tint", self._target_region_rgba)
-            functions.glLineWidth(4.5)
+            functions.glLineWidth(self._export_scale * 4.5)
             functions.glDrawArrays(GL_LINES, 0, len(self._highlight_data) // 12)
             program.disableAttributeArray(0)
             self._highlight_buffer.release()
@@ -970,7 +1032,9 @@ class CircuitViewport(QOpenGLWidget):
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
             program.setUniformValue("tint", self._target_region_rgba)
-            self._point_functions.glPointSize(SELECTED_SOMA_POINT_SIZE)
+            self._point_functions.glPointSize(
+                self._export_scale * SELECTED_SOMA_POINT_SIZE
+            )
             for neuron_id in self._ordered_ids:
                 if neuron_id in self.highlighted_soma_ids:
                     functions.glDrawArrays(
@@ -980,6 +1044,18 @@ class CircuitViewport(QOpenGLWidget):
             program.disableAttributeArray(0)
             self._point_buffer.release()
             functions.glEnable(GL_DEPTH_TEST)
+
+        if self._activity_data and self._activity_buffer is not None:
+            functions.glDisable(GL_DEPTH_TEST)
+            self._activity_buffer.bind()
+            program.enableAttributeArray(0)
+            program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
+            program.setUniformValue("tint", self._activity_rgba)
+            functions.glLineWidth(self._export_scale * 6.0)
+            functions.glDrawArrays(GL_LINES, 0, len(self._activity_data) // 12)
+            program.disableAttributeArray(0)
+            self._activity_buffer.release()
+            functions.glEnable(GL_DEPTH_TEST)
         program.release()
 
     def resizeGL(self, width: int, height: int) -> None:
@@ -988,7 +1064,11 @@ class CircuitViewport(QOpenGLWidget):
 
     def _mvp(self) -> QMatrix4x4:
         projection = QMatrix4x4()
-        aspect = max(1.0, float(self.width())) / max(1.0, float(self.height()))
+        render_width, render_height = self._render_size_override or (
+            self.width(),
+            self.height(),
+        )
+        aspect = max(1.0, float(render_width)) / max(1.0, float(render_height))
         half_height = max(0.001, self.distance * tan(radians(42.0 / 2.0)))
         half_width = half_height * aspect
         camera_depth = max(1.0, self.scene_radius * 4.0)
@@ -1014,6 +1094,69 @@ class CircuitViewport(QOpenGLWidget):
         view.lookAt(QVector3D(0.0, 0.0, 0.0), reference_forward, QVector3D(*REFERENCE_CAMERA_VIEW_UP))
         view.translate(-self.scene_center)
         return projection * view
+
+    def render_high_resolution(
+        self,
+        *,
+        width: int = HIGH_RESOLUTION_WIDTH,
+    ) -> QImage:
+        """Render the current camera into a dedicated high-resolution OpenGL target."""
+
+        if not self.morphologies:
+            raise ValueError("Load a morphology before saving a visualization.")
+        if not self.isValid() or self.context() is None:
+            raise RuntimeError("The 3-D renderer is not ready yet. Show the view and try again.")
+
+        target_width = max(self.width(), int(width))
+        target_height = max(1, round(target_width * self.height() / max(1, self.width())))
+        self.makeCurrent()
+        framebuffer_format = QOpenGLFramebufferObjectFormat()
+        framebuffer_format.setAttachment(
+            QOpenGLFramebufferObject.Attachment.CombinedDepthStencil
+        )
+        framebuffer = QOpenGLFramebufferObject(
+            QSize(target_width, target_height), framebuffer_format
+        )
+        if not framebuffer.isValid() or not framebuffer.bind():
+            self.doneCurrent()
+            raise RuntimeError("A high-resolution OpenGL image could not be allocated.")
+
+        previous_size = self._render_size_override
+        previous_scale = self._export_scale
+        try:
+            self._render_size_override = (target_width, target_height)
+            self._export_scale = max(1.0, target_width / max(1, self.width()))
+            self.context().functions().glViewport(0, 0, target_width, target_height)
+            self.paintGL()
+            image = framebuffer.toImage(True)
+        finally:
+            self._render_size_override = previous_size
+            self._export_scale = previous_scale
+            framebuffer.release()
+            self.doneCurrent()
+            self.update()
+        if image.isNull():
+            raise RuntimeError("The 3-D renderer returned an empty image.")
+        return image
+
+    def save_high_resolution_snapshot(self, default_name: str) -> None:
+        """Open a Save dialog and export the current 3-D camera as a 4K-width PNG."""
+
+        try:
+            image = self.render_high_resolution()
+        except (RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Visualization not ready", str(exc))
+            return
+        output = save_image_with_dialog(
+            self,
+            image,
+            title="Save high-resolution visualization",
+            default_name=default_name,
+        )
+        if output is not None:
+            self.status_message.emit(
+                f"Saved {image.width()} × {image.height()} PNG: {output}"
+            )
 
     def _project_with_depth(
         self, point: tuple[float, float, float], mvp: QMatrix4x4

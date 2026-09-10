@@ -9,7 +9,11 @@ from digifly_app.core.circuit import (
     NeuronQuery,
     cell_design_profile,
 )
-from digifly_app.core.mechanisms import GapJunctionPolicy, membrane_profile
+from digifly_app.core.mechanisms import (
+    ChemicalSynapsePolicy,
+    GapJunctionPolicy,
+    membrane_profile,
+)
 
 
 def test_circuit_spec_round_trip_keeps_ids_as_strings_and_has_no_engine():
@@ -26,7 +30,7 @@ def test_circuit_spec_round_trip_keeps_ids_as_strings_and_has_no_engine():
     spec.apply_compartment_mechanism_override("10000", (4, 8), spec.membrane)
 
     payload = spec.to_dict()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert "engine" not in payload
     restored = CircuitSpec.from_dict(payload)
     assert restored.neuron_ids == ("10000", "90071992547409931")
@@ -35,6 +39,7 @@ def test_circuit_spec_round_trip_keeps_ids_as_strings_and_has_no_engine():
     assert restored.membrane.channels["para"].suffix == "na16a"
     assert restored.membrane.channels["para"].branch_gbar_s_cm2 == 0.005
     assert restored.gap_junction_policy.mode == "heterotypic_rectifying"
+    assert restored.chemical_synapse_policy.mechanism == "exp2syn"
     assert (
         restored.compartment_mechanism_overrides["10000"]["8"]["channels"]["para"][
             "enabled"
@@ -66,12 +71,25 @@ def test_legacy_v1_circuit_migrates_to_classic_hh_without_inventing_custom_chann
             "neuron_overrides": {10000: {"cm_uF_cm2": 1.4}},
         }
     )
-    assert restored.schema_version == 2
+    assert restored.schema_version == 3
     assert restored.neuron_ids == ("10000",)
     assert restored.hh.soma_gnabar_s_cm2 == 0.2
     assert restored.membrane.profile_key == "custom"
     assert restored.membrane.active_channels == ()
     assert restored.gap_junction_policy.mode == "none"
+
+
+def test_chemical_synapse_policy_is_explicit_and_validated():
+    policy = ChemicalSynapsePolicy(
+        default_delay_ms=1.25,
+        tau1_ms=0.4,
+        tau2_ms=2.5,
+        reversal_mV=-70.0,
+        spike_threshold_mV=-10.0,
+    )
+    assert ChemicalSynapsePolicy.from_dict(policy.to_dict()) == policy
+    with pytest.raises(ValueError, match="tau1"):
+        ChemicalSynapsePolicy(tau1_ms=3.0, tau2_ms=2.0)
 
 
 def test_mass_apply_copies_hh_and_mechanism_design_to_each_loaded_neuron():

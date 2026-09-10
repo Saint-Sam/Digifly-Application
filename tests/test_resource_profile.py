@@ -9,10 +9,13 @@ from digifly_app.core.connectomes import discover_connectomes
 from digifly_app.core.providers import profile_connectome_sources
 from digifly_app.core.resource_profile import (
     AccessMode,
+    PROFILE_PATH_ENV,
     ResourceBinding,
     ResourceKind,
     ResourceProfile,
+    load_or_create_default_profile,
     make_default_profile,
+    make_standalone_profile,
     migrate_profile_file,
 )
 from digifly_app.core.workspace import DigiflyWorkspace
@@ -42,6 +45,73 @@ def test_resource_profile_round_trip_and_fingerprint(tmp_path: Path):
     assert restored.output_root == output.resolve()
     assert restored.managed_data_root == (tmp_path / "data").resolve()
     assert restored.validate().ok
+
+
+def test_standalone_profile_needs_no_legacy_workspace_or_runtime(tmp_path: Path):
+    root = tmp_path / "Digifly Workstation Workspace"
+    root.mkdir()
+
+    profile = make_standalone_profile(workstation_root=root)
+
+    assert profile.workspace_root is None
+    assert profile.output_root == (root / "runs").resolve()
+    assert profile.managed_data_root == (root / "data").resolve()
+    assert profile.binding(ResourceKind.NEURON_RUNTIME) is None
+    assert profile.binding(ResourceKind.ARBOR_RUNTIME) is None
+    assert profile.binding(ResourceKind.BMTK_RUNTIME) is None
+    assert profile.validate().ok
+
+
+def test_default_profile_is_initialized_for_standalone_use(
+    tmp_path: Path, monkeypatch
+):
+    profile_path = tmp_path / "config" / "resources-v2.json"
+    standalone_root = tmp_path / "home" / "Digifly Workstation Workspace"
+    standalone_root.mkdir(parents=True)
+    monkeypatch.setenv(PROFILE_PATH_ENV, str(profile_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    profile, destination = load_or_create_default_profile()
+
+    assert destination == profile_path.resolve()
+    assert destination.is_file()
+    assert profile.workspace_root is None
+    assert profile.managed_data_root == (standalone_root / "data").resolve()
+    restored, repeated_destination = load_or_create_default_profile()
+    assert restored == profile
+    assert repeated_destination == destination
+
+
+def test_runtime_binding_preserves_launcher_symlink_while_data_paths_resolve(
+    tmp_path: Path,
+):
+    real_workspace = _workspace(tmp_path / "real-public")
+    workspace_link = tmp_path / "Digifly Public"
+    workspace_link.symlink_to(real_workspace, target_is_directory=True)
+    base_python = tmp_path / "base" / "python3.12"
+    base_python.parent.mkdir()
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o755)
+    launcher = tmp_path / "bmtk-env" / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(base_python)
+
+    profile = make_default_profile(
+        workspace_root=workspace_link,
+        output_root=tmp_path / "runs",
+        bmtk_runtime=launcher,
+    )
+
+    assert profile.workspace_root == real_workspace.resolve()
+    assert profile.runtime_path(ResourceKind.BMTK_RUNTIME) == launcher.absolute()
+    assert profile.runtime_path(ResourceKind.BMTK_RUNTIME) != launcher.resolve()
+    binding = profile.binding(ResourceKind.BMTK_RUNTIME)
+    assert binding is not None and binding.path == str(launcher.absolute())
+    runtime_check = next(
+        check for check in profile.validate().checks if check.resource_id == "bmtk"
+    )
+    assert runtime_check.ok
+    assert runtime_check.path == str(launcher.absolute())
 
 
 def test_output_root_cannot_be_inside_a_read_only_dataset(tmp_path: Path):
@@ -150,6 +220,32 @@ def test_resource_cli_creates_and_validates_profile(tmp_path: Path, capsys):
     ) == 0
     validated = json.loads(capsys.readouterr().out)
     assert validated["ok"] is True
+
+
+def test_resource_cli_initializes_standalone_profile_without_workspace(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "workstation"
+    root.mkdir()
+    profile_path = tmp_path / "resources.json"
+
+    assert resource_cli_main(
+        [
+            "init",
+            "--profile",
+            str(profile_path),
+            "--output",
+            str(root / "runs"),
+            "--managed-data",
+            str(root / "data"),
+            "--json",
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["validation"]["ok"] is True
+    restored = ResourceProfile.load(profile_path)
+    assert restored.workspace_root is None
 
 
 def test_v1_profile_migrates_without_changing_existing_bindings(tmp_path: Path):

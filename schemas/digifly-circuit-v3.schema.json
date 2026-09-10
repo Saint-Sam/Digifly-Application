@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digifly.dev/schemas/digifly-circuit-v3.schema.json",
+  "title": "Digifly Circuit Builder Design",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "connectome",
+    "query",
+    "neuron_ids",
+    "hh",
+    "membrane",
+    "chemical_synapse_policy",
+    "gap_junction_policy",
+    "morphology_sha256",
+    "neuron_overrides",
+    "compartment_overrides",
+    "neuron_mechanism_overrides",
+    "compartment_mechanism_overrides",
+    "connection_overrides"
+  ],
+  "properties": {
+    "schema_version": {"const": 3},
+    "connectome": {"type": "object"},
+    "query": {"type": "object"},
+    "neuron_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "minItems": 0
+    },
+    "hh": {"type": "object"},
+    "membrane": {"type": "object"},
+    "chemical_synapse_policy": {"$ref": "#/$defs/chemicalPolicy"},
+    "gap_junction_policy": {"type": "object"},
+    "morphology_sha256": {"type": "object"},
+    "neuron_overrides": {"type": "object"},
+    "compartment_overrides": {"type": "object"},
+    "neuron_mechanism_overrides": {"type": "object"},
+    "compartment_mechanism_overrides": {"type": "object"},
+    "connection_overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "neuron_a",
+          "neuron_b",
+          "chemical_enabled",
+          "gap_junction_enabled"
+        ],
+        "properties": {
+          "neuron_a": {"type": "string", "minLength": 1},
+          "neuron_b": {"type": "string", "minLength": 1},
+          "chemical_enabled": {"type": ["boolean", "null"]},
+          "gap_junction_enabled": {"type": ["boolean", "null"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "chemicalPolicy": {
+      "type": "object",
+      "required": [
+        "mechanism",
+        "source_mode",
+        "placement_policy",
+        "weight_policy",
+        "default_weight_uS",
+        "weight_scale",
+        "default_delay_ms",
+        "use_geometric_delay",
+        "base_release_delay_ms",
+        "conduction_velocity_um_per_ms",
+        "tau1_ms",
+        "tau2_ms",
+        "reversal_mV",
+        "spike_threshold_mV",
+        "aggregation_policy",
+        "edge_scope"
+      ],
+      "properties": {
+        "mechanism": {"const": "exp2syn"},
+        "source_mode": {"const": "soma_threshold"},
+        "placement_policy": {"const": "imported_post_contact"},
+        "weight_policy": {"const": "source_or_default_per_contact"},
+        "default_weight_uS": {"type": "number", "minimum": 0},
+        "weight_scale": {"type": "number", "minimum": 0},
+        "default_delay_ms": {"type": "number", "exclusiveMinimum": 0},
+        "use_geometric_delay": {"type": "boolean"},
+        "base_release_delay_ms": {"type": "number", "minimum": 0},
+        "conduction_velocity_um_per_ms": {"type": "number", "exclusiveMinimum": 0},
+        "tau1_ms": {"type": "number", "exclusiveMinimum": 0},
+        "tau2_ms": {"type": "number", "exclusiveMinimum": 0},
+        "reversal_mV": {"type": "number"},
+        "spike_threshold_mV": {"type": "number"},
+        "aggregation_policy": {"const": "per_site_unchanged"},
+        "edge_scope": {"const": "all_chemical_edges"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

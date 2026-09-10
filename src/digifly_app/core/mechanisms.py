@@ -541,6 +541,81 @@ GAP_MECHANISM_PROVENANCE: Mapping[str, tuple[str, str, str, str]] = {
 
 
 @dataclass
+class ChemicalSynapsePolicy:
+    """Simulation parameters applied to imported anatomical chemical contacts.
+
+    Connectome exports define the participating cells and contact location, but
+    they do not consistently carry electrophysiological kinetics.  Keeping
+    these values in the circuit document makes that modeling choice explicit,
+    editable, and reproducible instead of presenting it as connectome data.
+    """
+
+    mechanism: str = "exp2syn"
+    source_mode: str = "soma_threshold"
+    placement_policy: str = "imported_post_contact"
+    weight_policy: str = "source_or_default_per_contact"
+    default_weight_uS: float = 0.000003
+    weight_scale: float = 1.0
+    default_delay_ms: float = 1.0
+    use_geometric_delay: bool = False
+    base_release_delay_ms: float = 0.4
+    conduction_velocity_um_per_ms: float = 1500.0
+    tau1_ms: float = 0.5
+    tau2_ms: float = 3.0
+    reversal_mV: float = 0.0
+    spike_threshold_mV: float = 0.0
+    aggregation_policy: str = "per_site_unchanged"
+    edge_scope: str = "all_chemical_edges"
+
+    def __post_init__(self) -> None:
+        if self.mechanism != "exp2syn":
+            raise ValueError("The generic chemical lane currently supports exp2syn only.")
+        if self.source_mode != "soma_threshold":
+            raise ValueError("The generic chemical lane currently uses soma-threshold sources.")
+        if self.placement_policy != "imported_post_contact":
+            raise ValueError("Chemical synapses require imported postsynaptic contact placement.")
+        if self.weight_policy != "source_or_default_per_contact":
+            raise ValueError("Unsupported chemical-synapse weight policy.")
+        if self.aggregation_policy != "per_site_unchanged":
+            raise ValueError("Chemical contacts must remain unaggregated in the generic lane.")
+        if self.edge_scope != "all_chemical_edges":
+            raise ValueError(f"Unsupported chemical edge scope: {self.edge_scope}")
+        self.use_geometric_delay = bool(self.use_geometric_delay)
+        for key in (
+            "default_weight_uS",
+            "weight_scale",
+            "default_delay_ms",
+            "base_release_delay_ms",
+            "conduction_velocity_um_per_ms",
+            "tau1_ms",
+            "tau2_ms",
+            "reversal_mV",
+            "spike_threshold_mV",
+        ):
+            value = float(getattr(self, key))
+            if not math.isfinite(value):
+                raise ValueError(f"Chemical-synapse {key} must be finite.")
+            setattr(self, key, value)
+        if self.default_weight_uS < 0.0 or self.weight_scale < 0.0:
+            raise ValueError("Chemical-synapse weights and scaling cannot be negative.")
+        if self.default_delay_ms <= 0.0 or self.base_release_delay_ms < 0.0:
+            raise ValueError("Chemical-synapse delays must be positive.")
+        if self.conduction_velocity_um_per_ms <= 0.0:
+            raise ValueError("Chemical conduction velocity must be positive.")
+        if self.tau1_ms <= 0.0 or self.tau2_ms <= self.tau1_ms:
+            raise ValueError("exp2syn requires 0 < tau1 < tau2.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any] | None) -> "ChemicalSynapsePolicy":
+        raw = dict(payload or {})
+        allowed = cls().__dict__.keys()
+        return cls(**{key: raw[key] for key in allowed if key in raw})
+
+
+@dataclass
 class GapJunctionPolicy:
     """A default for electrical *edges*; it is never attached to a cell alone."""
 
@@ -673,7 +748,7 @@ def mechanism_capability_message(
     membrane: MembraneMechanismSpec,
     gap_policy: GapJunctionPolicy,
 ) -> str:
-    """Describe preservation and execution readiness without claiming an adapter exists."""
+    """Describe preservation and execution readiness for the selected adapter."""
 
     engine = str(engine or "arbor")
     active = membrane.active_channels
@@ -681,17 +756,30 @@ def mechanism_capability_message(
     if active:
         suffixes = ", ".join(item.suffix for item in active)
         if engine == "neuron":
-            statements.append(f"Native Phase 2 NMODL identity is preserved ({suffixes}); the generic NEURON Circuit Builder adapter is not implemented yet.")
+            statements.append(
+                f"Native Phase 2 NMODL identity is preserved ({suffixes}), but the "
+                "generic NEURON lane currently accepts classic HH only; execution "
+                "fails closed instead of substituting another channel."
+            )
         elif engine == "arbor":
             statements.append(f"Preserved but not Arbor-qualified: {suffixes}. The staged custom catalogue is not linked/validated, so execution must be blocked rather than approximated.")
         else:
-            statements.append(f"Preserved as design intent ({suffixes}); no BMTK cable-mechanism mapping exists yet.")
+            statements.append(
+                f"Preserved as design intent ({suffixes}); the bounded BMTK BioNet "
+                "lane currently accepts classic HH only."
+            )
     elif engine == "arbor" and not membrane.replace_builtin_hh:
         statements.append("Built-in classic HH is within the qualified mechanism subset of the curated Arbor staging scenarios.")
     elif engine == "neuron" and not membrane.replace_builtin_hh:
-        statements.append("Built-in classic HH maps naturally to NEURON, subject to a future generic Circuit Builder adapter.")
+        statements.append(
+            "Built-in classic HH is executable in the generic morphology-backed "
+            "NEURON lane."
+        )
     elif engine == "bmtk" and not membrane.replace_builtin_hh:
-        statements.append("Classic cable HH is not mapped to the current BMTK PointNet/DPointNet lanes.")
+        statements.append(
+            "Built-in classic HH is executable through the bounded morphology-backed "
+            "BMTK BioNet/SONATA lane."
+        )
     else:
         statements.append("Built-in HH is explicitly removed; with no enabled native channel this design is passive-only.")
 
@@ -699,17 +787,26 @@ def mechanism_capability_message(
         if engine == "arbor":
             statements.append(
                 "The app-owned digifly_gap equation port is built and validated in a real "
-                "two-cell Arbor test. Generic Circuit Builder execution remains blocked "
-                "until its electrical-edge/contact translator is implemented; conductance is "
-                f"stored as {gap_policy.conductance_basis.replace('_', ' ')}."
+                "two-cell Arbor test. The generic two-cell lane now materializes validated "
+                "imported contact rows into a versioned run-owned edge manifest; conductance is "
+                f"applied as {gap_policy.conductance_basis.replace('_', ' ')}."
             )
         elif engine == "neuron":
-            statements.append("The all-edge ohmic policy preserves the native Gap mechanism intent; connectivity is not loaded yet.")
+            statements.append(
+                "The generic NEURON lane executes validated ohmic contacts with the "
+                "exact app-owned Gap mechanism."
+            )
         else:
-            statements.append("The ohmic edge policy is stored only; no BMTK mapping is implemented.")
+            statements.append(
+                "The ohmic edge policy is preserved, but BMTK BioNet electrical-edge "
+                "execution is intentionally blocked."
+            )
     elif gap_policy.mode in {"rectifying", "heterotypic_rectifying"}:
         if engine == "neuron":
-            statements.append(f"{gap_policy.mechanism_label} is preserved as a NEURON electrical-edge policy; it needs two endpoints and loaded connectivity.")
+            statements.append(
+                f"The generic NEURON lane executes validated contacts with the exact "
+                f"app-owned {gap_policy.mechanism_label} mechanism."
+            )
         elif engine == "arbor":
             arbor_port = (
                 "digifly_rect_gap"
@@ -725,7 +822,10 @@ def mechanism_capability_message(
                 "will be substituted."
             )
         else:
-            statements.append(f"{gap_policy.mechanism_label} is stored only; no BMTK mapping is implemented.")
+            statements.append(
+                f"{gap_policy.mechanism_label} is preserved, but BMTK BioNet "
+                "electrical-edge execution is intentionally blocked."
+            )
     else:
         statements.append("No mass-applied electrical-edge mechanism is selected.")
     return "  ".join(statements)

@@ -10,7 +10,7 @@ legally separable from local connectome and morphology collections.
 | --- | --- |
 | Application code | UI, project model, validators, adapters, worker overlays |
 | Small application-owned resources | JSON schemas, mechanism source needed by an adapter, icons, documentation |
-| Package metadata | Version, commands, dependency declarations, licenses, build configuration |
+| Package metadata | Version, commands, dependency declarations, private project license, build configuration |
 | Tests in source distributions | Unit and integration tests with generated or deliberately tiny fixtures |
 
 Application-owned mechanism source may be included when it is small, has clear
@@ -18,6 +18,13 @@ provenance, and is required to reproduce an adapter. Compiled mechanism output
 is platform- and simulator-version-specific and belongs in an external runtime
 cache unless a release process explicitly produces a compatible optional
 runtime component.
+The packaged NEURON gap sources follow this rule: exact source bytes and their
+hash manifest ship with the app, while `nrnivmodl` output is load-probed and
+cached below the configured Workstation output root, never in the app bundle or
+a connectome source tree.
+The app-owned BMTK BioNet worker and SONATA translation code may also ship, but
+the BMTK, NEURON, NumPy, and `h5py` packages do not. BioNet is enabled only when
+all four coexist in one user-selected external interpreter.
 
 ## Never included in the core package
 
@@ -27,7 +34,7 @@ runtime component.
 | Morphology corpora | Bulk SWC roots and downloaded neuron collections |
 | Simulation products | recordings, checkpoints, result tables, plots, videos |
 | Build/runtime caches | Escape-SIZ caches, Arbor catalogues, compiled NMODL, MPI state |
-| Simulator installations | NEURON, Arbor, BMTK, VND and their environments |
+| Simulator/scientific runtimes | NEURON, Arbor, BMTK, `h5py`, VND and their environments |
 | Machine-local configuration | absolute paths, credentials, user preferences, recent files |
 
 These are external resources. Workstation stores references and content
@@ -55,9 +62,10 @@ the configured Workstation output root, which defaults to:
 ```
 
 The workspace may contain projects, logs, requests, caches, simulation outputs,
-plots, exported unchanged-SWC-plus-sidecar bundles, and an explicitly managed
-data library. Large user-managed source datasets remain wherever the user
-maintains them and are opened read-only whenever the workflow permits. Data
+plots, run-owned BMTK SONATA networks and native reports, exported unchanged-
+SWC-plus-sidecar bundles, and an explicitly managed data library. Large user-
+managed source datasets remain wherever the user maintains them and are opened
+read-only whenever the workflow permits. Data
 acquisition uses staging, validation, and atomic promotion into the managed
 library; it never writes downloaded data into the application bundle.
 
@@ -77,5 +85,9 @@ published, an automated artifact audit must reject:
 - absolute developer-machine paths;
 - generated simulator or deployment directories; and
 - undeclared executable binaries or dynamic libraries.
+
+Canonical Digifly releases must also contain a byte-identical copy of the
+repository's private project license. A license bundled by a dependency, a
+title-only stub, or a modified copy does not satisfy this requirement.
 
 That audit is a required packaging milestone, not an optional cleanup step.

@@ -89,6 +89,62 @@ and the operations in `resource_management`.
   SHA-256 for every file, persist the new profile, and only then remove the
   source. Cancellation and failure leave the original usable.
 
+## Generic experiment execution
+
+- Classic-HH execution in Arbor and NEURON supports any non-empty selected cell
+  set whose connectivity can be materialized from supported local edge sources.
+  The bounded BMTK BioNet lane supports morphology-backed classic-HH cells with
+  selected chemical contacts and soma stimulation/recording.
+- The generic adapter materializes a schema-v2, run-owned selected-subgraph edge
+  manifest. It contains every selected chemical contact, every selected
+  validated electrical contact, the effective chemical/gap policies, pair
+  overrides, source identities, and a checksum of the copied contact set. The
+  standalone worker rechecks these identities, morphology files, and any
+  compiler/ABI-specific gap mechanism library before simulation.
+- MANC chemical anatomy comes from its immutable indexed SQLite cache. Imported
+  contact weight and postsynaptic coordinates are preserved. Missing kinetics,
+  delay, reversal, or weight values come only from the versioned CircuitSpec
+  chemical policy and are labeled as such per contact; they are never described
+  as connectome measurements.
+- Male-CNS v0.9 chemical anatomy remains in its external Parquet source. The
+  packaged query helper requires DuckDB in the configured scientific runtime
+  and streams only selected-to-selected rows. Source coordinates are converted
+  from nm to µm; confidence and neurotransmitter annotations are retained, but
+  they do not silently change weight or reversal policy.
+- Every selected electrical contact maps `pre_xyz` and `post_xyz` independently
+  through the corresponding run-owned SWC node maps; a missing endpoint alone
+  may use the other endpoint as an explicitly recorded fallback. Arbor junction
+  locsets are derived from exact tagged cable segments; SWC segment identifiers
+  are never treated as Arbor branch IDs.
+- Multi-cell NEURON groups morphology rows into deterministic maximal branch-run
+  sections and retains a direct site for every normalized SWC node. Its odd
+  `nseg` target is approximately 40 µm with no silent per-branch cap; an explicit
+  two-million-total-segment safety gate fails oversized selected circuits.
+- NEURON chemical contacts use `Exp2Syn` plus soma-threshold `NetCon` sources.
+  App-owned, provenance-locked `Gap`, `RectGap`, and `HeteroRectGap` sources are
+  compiled once for the selected external NEURON runtime, hash-checked, load-
+  probed, and cached below the configured output root. Conductance is converted
+  from the manifest's µS to the mechanisms' nS exactly once.
+- BMTK execution materializes a run-owned SONATA network, configuration, and
+  biological-ID crosswalk, then runs `BioNetwork`/`BioSimulator` in a fresh
+  same-interpreter child process for each repetition. Native soma-voltage and
+  spike HDF5 reports are preserved and converted to canonical Digifly result
+  tables. BMTK, NEURON, NumPy, and `h5py` must all resolve inside the selected external
+  interpreter; inherited simulator modules do not satisfy this check.
+- The BMTK lane fails closed for every electrical edge or gap-junction policy,
+  native membrane mechanisms, non-soma or per-compartment stimulation/recording,
+  MPI, PointNet, and DPointNet. These requests are not dropped or approximated.
+- Arbor and NEURON independently apply chemical and gap condition flags while
+  rebuilding the same cells. BMTK independently applies the chemical condition
+  and rejects requested gap execution. Every requested soma trace shares one
+  result contract. Unsupported edge providers, native membrane catalogues, and
+  per-compartment CV mappings remain fail-closed.
+- The app-owned runtime cache may contain small compiled mechanism catalogues
+  and provenance manifests. Connectome data and imported SWCs remain external.
+  Simulator packages, including BMTK, NEURON, Arbor, and `h5py`, are not bundled.
+  A legacy Escape-SIZ staging path may serve as a read-only validated contact
+  snapshot; the generic lane never executes an Escape-SIZ notebook or worker.
+
 ## Change control
 
 Backend-v1 changes after this cutoff must be backward-compatible and additive.

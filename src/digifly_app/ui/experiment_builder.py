@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -46,6 +46,7 @@ from .circuit_viewport import (
     CircuitViewport,
 )
 from .stimulus_preview import StimulusPreview
+from .snapshot import save_image_with_dialog
 from .widgets import (
     Card,
     CollapsibleSection,
@@ -54,6 +55,36 @@ from .widgets import (
     StatusPill,
     make_label_copyable,
 )
+
+
+CANCEL_REQUEST_FILENAME = "cancel.requested"
+CANCEL_MARKER_GRACE_MS = 500
+CANCEL_FORCE_KILL_MS = 7_000
+
+
+def _write_cancellation_request(run_directory: str | Path) -> Path:
+    """Atomically publish a run-owned, credential-free cancellation marker."""
+
+    root = Path(run_directory).expanduser().resolve()
+    marker = root / CANCEL_REQUEST_FILENAME
+    temporary = root / f".{CANCEL_REQUEST_FILENAME}.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "state": "cancel_requested",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(marker)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return marker
 
 
 EXPERIMENT_SETTING_HELP: dict[str, str] = {
@@ -211,6 +242,8 @@ class ExperimentBuilderPage(QWidget):
         output_root: str | Path | None = None,
         neuron_runtime: str | Path | None = None,
         arbor_runtime: str | Path | None = None,
+        bmtk_runtime: str | Path | None = None,
+        digifly_public_root: str | Path | None = None,
     ):
         super().__init__(parent)
         self._configured_output_root = Path(
@@ -225,7 +258,9 @@ class ExperimentBuilderPage(QWidget):
         self._runtime_paths = {
             "neuron": str(neuron_runtime or ""),
             "arbor": str(arbor_runtime or ""),
+            "bmtk": str(bmtk_runtime or ""),
         }
+        self._digifly_public_root = str(digifly_public_root or "")
         self._process: QProcess | None = None
         self._job_dir: Path | None = None
         self._job_store: JobStore | None = None
@@ -591,7 +626,25 @@ class ExperimentBuilderPage(QWidget):
         target_preview_layout = QVBoxLayout(target_preview_card)
         target_preview_layout.setContentsMargins(12, 12, 12, 12)
         target_preview_layout.setSpacing(7)
-        target_preview_layout.addWidget(_section_title("Primary stimulus · target view"))
+        target_preview_header = QHBoxLayout()
+        target_preview_header.addWidget(
+            _section_title("Primary stimulus · target view")
+        )
+        target_preview_header.addStretch(1)
+        self.save_target_visualization_button = QPushButton("Save snapshot…")
+        self.save_target_visualization_button.setObjectName(
+            "SaveTargetVisualizationButton"
+        )
+        self.save_target_visualization_button.setToolTip(
+            "Save the current target-region camera and highlight as a high-resolution PNG"
+        )
+        self.save_target_visualization_button.clicked.connect(
+            lambda: self.target_region_viewport.save_high_resolution_snapshot(
+                "digifly-primary-stimulus-target.png"
+            )
+        )
+        target_preview_header.addWidget(self.save_target_visualization_button)
+        target_preview_layout.addLayout(target_preview_header)
         self.target_region_visualization_label = QLabel(
             "Target region: Soma · load a circuit morphology to see the highlighted target."
         )
@@ -622,7 +675,21 @@ class ExperimentBuilderPage(QWidget):
         stimulus_preview_layout = QVBoxLayout(stimulus_preview_card)
         stimulus_preview_layout.setContentsMargins(17, 14, 17, 16)
         stimulus_preview_layout.setSpacing(9)
-        stimulus_preview_layout.addWidget(_section_title("Live stimulus preview"))
+        stimulus_preview_header = QHBoxLayout()
+        stimulus_preview_header.addWidget(_section_title("Live stimulus preview"))
+        stimulus_preview_header.addStretch(1)
+        self.save_stimulus_visualization_button = QPushButton("Save snapshot…")
+        self.save_stimulus_visualization_button.setObjectName(
+            "SaveStimulusVisualizationButton"
+        )
+        self.save_stimulus_visualization_button.setToolTip(
+            "Save the current stimulus waveform as a high-resolution PNG"
+        )
+        self.save_stimulus_visualization_button.clicked.connect(
+            self._save_stimulus_visualization
+        )
+        stimulus_preview_header.addWidget(self.save_stimulus_visualization_button)
+        stimulus_preview_layout.addLayout(stimulus_preview_header)
         stimulus_preview_hint = QLabel(
             "This simulator-independent trace redraws as the simulation window or primary stimulus controls change."
         )
@@ -969,7 +1036,7 @@ class ExperimentBuilderPage(QWidget):
                 )
             )
         resolved_targets, unmatched_targets = self._resolve_stimulus_targets(
-            all_if_blank=False
+            all_if_blank=True
         )
         stimulus = StimulusSpec(
             target_neuron_ids=tuple(
@@ -1133,10 +1200,28 @@ class ExperimentBuilderPage(QWidget):
         if errors:
             self._show_not_ready(errors[0])
             return
-        adapter = GenericExperimentAdapter(self._runtime_paths)
+        adapter = GenericExperimentAdapter(
+            self._runtime_paths,
+            digifly_public_root=self._digifly_public_root,
+        )
         self.validation_state.setText("Running simulator preflight…")
         self.status_message.emit(self.validation_state.text())
         try:
+            if adapter.needs_gap_catalogue(self._circuit, config):
+                mechanism_label = (
+                    "Arbor gap mechanism catalogue"
+                    if config.engine == "arbor"
+                    else "NEURON gap mechanisms"
+                )
+                self.validation_state.setText(
+                    f"Preparing the app-owned {mechanism_label}…"
+                )
+                self.status_message.emit(self.validation_state.text())
+                adapter.ensure_gap_catalogue(
+                    self._circuit,
+                    config,
+                    output_root=self._output_root(),
+                )
             report = adapter.validate(
                 self._circuit,
                 config,
@@ -1268,6 +1353,7 @@ class ExperimentBuilderPage(QWidget):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
+        process = self._process
         if self._job_store is not None and self._job_dir is not None:
             self._job_store.update_status(self._job_dir, "cancelling")
             self._job_store.append_event(
@@ -1275,12 +1361,54 @@ class ExperimentBuilderPage(QWidget):
                 "cancel_requested",
                 "User requested graceful termination.",
             )
+        marker_written = False
+        if self._plan is not None:
+            try:
+                marker = _write_cancellation_request(self._plan.working_directory)
+            except OSError as exc:
+                self.run_log.appendPlainText(
+                    f"\nCould not publish the cancellation marker ({exc}); "
+                    "falling back to direct termination."
+                )
+            else:
+                marker_written = True
+                self.run_log.appendPlainText(
+                    f"\nCancellation marker published: {marker.name}"
+                )
         self.run_log.appendPlainText(
             "\nCancellation requested; preserving provenance and partial artifacts…"
         )
         self.cancel_button.setEnabled(False)
         self._cancel_requested = True
-        self._process.terminate()
+        if marker_written:
+            QTimer.singleShot(
+                CANCEL_MARKER_GRACE_MS,
+                lambda active=process: self._terminate_cancelled_process(active),
+            )
+        else:
+            self._terminate_cancelled_process(process)
+
+    def _terminate_cancelled_process(self, process: QProcess) -> None:
+        if (
+            self._process is not process
+            or process.state() == QProcess.ProcessState.NotRunning
+        ):
+            return
+        process.terminate()
+        QTimer.singleShot(
+            CANCEL_FORCE_KILL_MS,
+            lambda active=process: self._kill_cancelled_process(active),
+        )
+
+    def _kill_cancelled_process(self, process: QProcess) -> None:
+        if (
+            self._process is process
+            and process.state() != QProcess.ProcessState.NotRunning
+        ):
+            self.run_log.appendPlainText(
+                "\nGraceful cancellation timed out; forcing worker shutdown."
+            )
+            process.kill()
 
     def _read_process_output(self) -> None:
         if self._process is None:
@@ -1387,6 +1515,14 @@ class ExperimentBuilderPage(QWidget):
     def _process_error(self, error: QProcess.ProcessError) -> None:
         message = self._process.errorString() if self._process else str(error)
         self.run_log.appendPlainText(f"\nProcess error: {message}")
+        if self._cancel_requested and error != QProcess.ProcessError.FailedToStart:
+            if self._job_store is not None and self._job_dir is not None:
+                self._job_store.append_event(
+                    self._job_dir,
+                    "cancellation_process_error",
+                    message,
+                )
+            return
         if self._job_store is not None and self._job_dir is not None:
             self._job_store.update_status(self._job_dir, "failed", error=message)
             self._job_store.append_event(self._job_dir, "error", message)
@@ -1416,6 +1552,12 @@ class ExperimentBuilderPage(QWidget):
 
     def set_arbor_runtime(self, value: str | Path) -> None:
         self._runtime_paths["arbor"] = str(value)
+
+    def set_bmtk_runtime(self, value: str | Path) -> None:
+        self._runtime_paths["bmtk"] = str(value)
+
+    def set_digifly_public_root(self, value: str | Path) -> None:
+        self._digifly_public_root = str(value)
 
     def set_output_root(self, value: str | Path) -> None:
         self._configured_output_root = Path(value).expanduser()
@@ -1489,6 +1631,19 @@ class ExperimentBuilderPage(QWidget):
         self.stimulus_preview_summary.setText(
             self.stimulus_preview.summary_text()
         )
+
+    def _save_stimulus_visualization(self) -> None:
+        image = self.stimulus_preview.render_high_resolution()
+        output = save_image_with_dialog(
+            self,
+            image,
+            title="Save high-resolution stimulus visualization",
+            default_name="digifly-stimulus-preview.png",
+        )
+        if output is not None:
+            self.status_message.emit(
+                f"Saved {image.width()} × {image.height()} PNG: {output}"
+            )
 
     def _invalidate(self, *_args: Any) -> None:
         if self._restoring:

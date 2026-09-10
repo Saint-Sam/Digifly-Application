@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Iterable, TYPE_CHECKING
 
 from .models import CheckState, EngineProbe, PreflightCheck, PreflightReport
-from .process_environment import sanitized_external_environment
+from .paths import resource_path, worker_path
+from .process_environment import (
+    external_runtime_launcher,
+    external_runtime_path,
+    sanitized_external_environment,
+)
+from .runtime_discovery import probe_simulator_runtime
 
 if TYPE_CHECKING:
     from .resource_profile import ResourceProfile
@@ -111,27 +118,50 @@ class DigiflyWorkspace:
         self,
         python_executable: str,
         arbor_python_executable: str | None = None,
+        bmtk_python_executable: str | None = None,
     ) -> tuple[EngineProbe, ...]:
         neuron_python = Path(python_executable).expanduser()
         arbor_python = Path(arbor_python_executable or python_executable).expanduser()
+        bmtk_python = (
+            Path(bmtk_python_executable).expanduser()
+            if bmtk_python_executable and str(bmtk_python_executable).strip()
+            else None
+        )
         if self.profile is not None:
             from .resource_profile import ResourceKind
 
             neuron_python = self.profile.runtime_path(ResourceKind.NEURON_RUNTIME) or neuron_python
             arbor_python = self.profile.runtime_path(ResourceKind.ARBOR_RUNTIME) or neuron_python
-        neuron_source = self.phase2_neuron / "digifly" / "phase2"
-        neuron_runtime = _probe_neuron_runtime(str(neuron_python), self.phase2_neuron)
+            bmtk_python = self.profile.runtime_path(ResourceKind.BMTK_RUNTIME) or bmtk_python
+        neuron_worker = worker_path("generic_experiment_worker.py")
+        neuron_mechanism_root = resource_path(
+            "mechanisms", "neuron_gap_junctions"
+        )
+        required_neuron_sources = (
+            neuron_mechanism_root / "Gap.mod",
+            neuron_mechanism_root / "RectGap.mod",
+            neuron_mechanism_root / "HeteroRectGap.mod",
+            neuron_mechanism_root / "source_manifest.json",
+        )
+        neuron_source_ok = neuron_worker.is_file() and all(
+            path.is_file() for path in required_neuron_sources
+        )
+        neuron_runtime = _probe_neuron_runtime(str(neuron_python))
         neuron = EngineProbe(
             key="neuron",
             name="NEURON",
-            source_state=CheckState.PASS if neuron_source.is_dir() else CheckState.FAIL,
+            source_state=CheckState.PASS if neuron_source_ok else CheckState.FAIL,
             runtime_state=neuron_runtime[0],
             summary=(
-                "Native Phase 2 source and runtime are available."
-                if neuron_source.is_dir() and neuron_runtime[0] == CheckState.PASS
-                else "NEURON needs source and runtime configuration."
+                "The app-owned NEURON worker and mechanism sources are ready with the selected runtime."
+                if neuron_source_ok and neuron_runtime[0] == CheckState.PASS
+                else "NEURON needs its packaged worker, mechanism sources, and a compatible external runtime."
             ),
-            details=(str(neuron_source), neuron_runtime[1]),
+            details=(
+                str(neuron_worker),
+                str(neuron_mechanism_root),
+                neuron_runtime[1],
+            ),
         )
 
         arbor_source = self.phase2_arbor / "digifly" / "phase2"
@@ -150,23 +180,35 @@ class DigiflyWorkspace:
         )
 
         bmtk_source = self.phase2_bmtk / "src" / "digifly_bmtk"
-        bmtk_python = next((path for path in self.bmtk_python_candidates if path.is_file()), None)
+        bmtk_worker = worker_path("bmtk_bionet_worker.py")
         bmtk_runtime = (
-            _probe_python_module(str(bmtk_python), "bmtk", clean_environment=True)
+            _probe_bionet_runtime(str(bmtk_python))
             if bmtk_python
-            else (CheckState.WARNING, "No isolated BMTK/DPointNet interpreter was detected.")
+            else (
+                CheckState.WARNING,
+                "No BMTK BioNet interpreter was selected. It must contain BMTK, NEURON, NumPy, and h5py together.",
+            )
         )
         bmtk = EngineProbe(
             key="bmtk",
             name="BMTK / SONATA",
-            source_state=CheckState.PASS if bmtk_source.is_dir() else CheckState.WARNING,
+            source_state=CheckState.PASS if bmtk_worker.is_file() else CheckState.FAIL,
             runtime_state=bmtk_runtime[0],
             summary=(
-                "Interoperability source is present; the selected runtime is optional and isolated."
-                if bmtk_source.is_dir()
-                else "BMTK interoperability source was not found."
+                "The app-owned BioNet worker and a compatible external runtime are ready."
+                if bmtk_worker.is_file() and bmtk_runtime[0] == CheckState.PASS
+                else "BMTK BioNet needs its app-owned worker and one compatible external runtime."
             ),
-            details=(str(bmtk_source), str(bmtk_python or "runtime not configured"), bmtk_runtime[1]),
+            details=(
+                str(bmtk_worker),
+                str(bmtk_python or "runtime not configured"),
+                bmtk_runtime[1],
+                (
+                    f"Optional legacy interoperability source: {bmtk_source}"
+                    if bmtk_source.is_dir()
+                    else "No legacy BMTK source is required by this app-owned lane."
+                ),
+            ),
         )
 
         vnd_path = next((path for path in self.vnd_candidates if path.exists()), None)
@@ -240,15 +282,34 @@ def _probe_python_module(
     return CheckState.WARNING, f"{module} is not installed in {executable}"
 
 
-def _probe_neuron_runtime(python_executable: str, phase2_root: Path) -> tuple[CheckState, str]:
-    import os
-
+def _probe_bionet_runtime(python_executable: str) -> tuple[CheckState, str]:
     executable = Path(python_executable).expanduser()
     if not executable.is_file():
         return CheckState.FAIL, f"Python executable not found: {executable}"
+    result = probe_simulator_runtime(executable, timeout=20.0)
+    if result.error:
+        return CheckState.FAIL, f"BMTK BioNet runtime probe failed: {result.error}"
+    if not result.has_bmtk:
+        return CheckState.FAIL, f"BMTK is not installed in {executable}"
+    if not result.bionet_ready:
+        detail = result.bionet_error or "BioNet, NEURON, NumPy, or h5py could not be imported."
+        return (
+            CheckState.FAIL,
+            f"BMTK {result.bmtk_version} is present, but BioNet is not runnable: {detail}",
+        )
+    return (
+        CheckState.PASS,
+        f"BMTK {result.bmtk_version} BioNet is ready with NEURON {result.neuron_version} "
+        f"in {executable}",
+    )
+
+
+def _probe_neuron_runtime(python_executable: str) -> tuple[CheckState, str]:
+    executable = external_runtime_launcher(python_executable)
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        return CheckState.FAIL, f"Python executable not found: {executable}"
     # Probe the selected scientific interpreter itself rather than accidentally
     # discovering a different user- or system-level NEURON installation.
-    paths = [str(phase2_root)]
     code = (
         "import json, neuron; "
         "print(json.dumps({'version': getattr(neuron, '__version__', 'unknown'), "
@@ -256,7 +317,7 @@ def _probe_neuron_runtime(python_executable: str, phase2_root: Path) -> tuple[Ch
     )
     environment = sanitized_external_environment(
         {
-            "PYTHONPATH": os.pathsep.join(paths),
+            "PATH": external_runtime_path(executable),
             "PYTHONNOUSERSITE": "1",
             "NEURON_MODULE_OPTIONS": "-nogui",
         }

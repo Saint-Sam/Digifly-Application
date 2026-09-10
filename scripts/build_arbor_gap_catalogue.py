@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -107,6 +110,25 @@ def _external_output_dir(requested: str | None) -> Path:
     return Path(tempfile.mkdtemp(prefix="digifly_gap_catalogue_"))
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _python_launcher(value: str) -> Path:
+    """Validate Python while preserving a virtual-environment launcher symlink."""
+
+    python = Path(value).expanduser().absolute()
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise RuntimeError(
+            f"Python interpreter does not exist or is not executable: {python}"
+        )
+    return python
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     report: dict[str, Any] = {
@@ -116,9 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     output: Path | None = None
     try:
-        python = Path(args.python).expanduser().resolve()
-        if not python.is_file():
-            raise RuntimeError(f"Python interpreter does not exist: {python}")
+        python = _python_launcher(args.python)
         version, arbor_root, build_tool = _resolve_build_tool(python)
         output = _external_output_dir(args.output_dir)
         report.update(
@@ -138,9 +158,15 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if args.keep_generated:
             command.extend(("--debug", "generated"))
+        environment = os.environ.copy()
+        current_prefix = environment.get("CMAKE_PREFIX_PATH", "").strip()
+        environment["CMAKE_PREFIX_PATH"] = os.pathsep.join(
+            value for value in (str(arbor_root), current_prefix) if value
+        )
         completed = subprocess.run(
             command,
             cwd=output,
+            env=environment,
             check=False,
             capture_output=True,
             text=True,
@@ -154,8 +180,30 @@ def main(argv: list[str] | None = None) -> int:
             report["failure"] = _classify_failure(build_output)
         else:
             candidates = sorted(output.rglob(f"{CATALOGUE_NAME}-catalogue.*"))
+            if len(candidates) != 1:
+                raise RuntimeError(
+                    f"Expected exactly one compiled catalogue, found {len(candidates)}."
+                )
+            catalogue = candidates[0].resolve()
             report["status"] = "complete"
-            report["catalogue_artifacts"] = [str(path.resolve()) for path in candidates]
+            report["catalogue_artifacts"] = [str(catalogue)]
+            (output / "catalogue_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "catalogue": CATALOGUE_NAME,
+                        "arbor_version": version,
+                        "catalogue_path": str(catalogue),
+                        "catalogue_sha256": _sha256(catalogue),
+                        "source_manifest_sha256": _sha256(SOURCE_DIR / "source_manifest.json"),
+                        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
     except Exception as exc:
         report["status"] = "failed"
         report["failure"] = {"code": "setup_failed", "detail": str(exc)}

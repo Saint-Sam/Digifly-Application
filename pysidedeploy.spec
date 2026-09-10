@@ -15,8 +15,9 @@ exec_directory = .
 # path to the project file relative to project_dir
 project_file =
 
-# application icon (copied into the no-space staging root by build_macos.sh)
-icon = pyside_icon.icns
+# Digifly-owned application icon. The build script stages this source asset
+# together with the repository before PySide deployment starts.
+icon = src/digifly_app/assets/digifly_icon.icns
 
 [python]
 
@@ -44,7 +45,7 @@ modules = Core,DBus,Gui,OpenGL,OpenGLWidgets,Widgets
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
-plugins = accessiblebridge,egldeviceintegrations,generic,iconengines,imageformats,platforminputcontexts,platforms,platforms/darwin,platformthemes,styles,wayland-decoration-client,wayland-graphics-integration-client,wayland-shell-integration,xcbglintegrations
+plugins = accessiblebridge,egldeviceintegrations,generic,iconengines,imageformats,platforms,platforms/darwin,platformthemes,styles,wayland-decoration-client,wayland-graphics-integration-client,wayland-shell-integration,xcbglintegrations
 
 [android]
 
@@ -68,7 +69,7 @@ macos.permissions =
 mode = standalone
 
 # specify any extra nuitka arguments
-extra_args = --quiet --assume-yes-for-downloads --lto=no --jobs=4 --noinclude-qt-translations --include-data-file=src/digifly_app/workers/escape_siz_worker.py=digifly_app/workers/escape_siz_worker.py --include-data-file=src/digifly_app/workers/arbor_escape_siz_worker.py=digifly_app/workers/arbor_escape_siz_worker.py --include-data-file=src/digifly_app/workers/generic_experiment_worker.py=digifly_app/workers/generic_experiment_worker.py --include-data-file=src/digifly_app/workers/arbor_source_soma_diagnostic_worker.py=digifly_app/workers/arbor_source_soma_diagnostic_worker.py --include-data-file=src/digifly_app/workers/arbor_gap_bridge.py=digifly_app/workers/arbor_gap_bridge.py --include-data-file=src/digifly_app/workers/arbor_legacy_cv_bridge.py=digifly_app/workers/arbor_legacy_cv_bridge.py --include-data-file=src/digifly_app/workers/exact_gap_equivalence_auditor.py=digifly_app/workers/exact_gap_equivalence_auditor.py --include-data-dir=mechanisms/arbor_gap_junctions=mechanisms/arbor_gap_junctions --include-data-dir=mechanisms/augustin_2019=mechanisms/augustin_2019 --include-data-dir=presets=presets --include-data-dir=schemas=schemas --include-data-file=scripts/build_arbor_gap_catalogue.py=scripts/build_arbor_gap_catalogue.py --include-data-file=docs/ARCHITECTURE.md=docs/ARCHITECTURE.md --include-data-file=docs/BACKEND_CONTRACT_V1.md=docs/BACKEND_CONTRACT_V1.md --include-data-file=docs/PACKAGING_BOUNDARY.md=docs/PACKAGING_BOUNDARY.md --include-data-file=README.md=README.md
+extra_args = --quiet --assume-yes-for-downloads --disable-cache=ccache --lto=no --jobs=4 --noinclude-qt-translations --include-data-file=src/digifly_app/assets/digifly_icon.png=digifly_app/assets/digifly_icon.png --include-data-file=src/digifly_app/workers/escape_siz_worker.py=digifly_app/workers/escape_siz_worker.py --include-data-file=src/digifly_app/workers/arbor_escape_siz_worker.py=digifly_app/workers/arbor_escape_siz_worker.py --include-data-file=src/digifly_app/workers/generic_experiment_worker.py=digifly_app/workers/generic_experiment_worker.py --include-data-file=src/digifly_app/workers/bmtk_bionet_worker.py=digifly_app/workers/bmtk_bionet_worker.py --include-data-file=src/digifly_app/workers/parquet_edge_query_worker.py=digifly_app/workers/parquet_edge_query_worker.py --include-data-file=src/digifly_app/workers/arbor_source_soma_diagnostic_worker.py=digifly_app/workers/arbor_source_soma_diagnostic_worker.py --include-data-file=src/digifly_app/workers/arbor_gap_bridge.py=digifly_app/workers/arbor_gap_bridge.py --include-data-file=src/digifly_app/workers/arbor_legacy_cv_bridge.py=digifly_app/workers/arbor_legacy_cv_bridge.py --include-data-file=src/digifly_app/workers/exact_gap_equivalence_auditor.py=digifly_app/workers/exact_gap_equivalence_auditor.py --include-data-dir=mechanisms/arbor_gap_junctions=mechanisms/arbor_gap_junctions --include-data-dir=mechanisms/neuron_gap_junctions=mechanisms/neuron_gap_junctions --include-data-dir=presets=presets --include-data-dir=schemas=schemas --include-data-file=scripts/build_arbor_gap_catalogue.py=scripts/build_arbor_gap_catalogue.py --include-data-file=scripts/build_neuron_gap_mechanisms.py=scripts/build_neuron_gap_mechanisms.py --include-data-file=docs/ARCHITECTURE.md=docs/ARCHITECTURE.md --include-data-file=docs/BACKEND_CONTRACT_V1.md=docs/BACKEND_CONTRACT_V1.md --include-data-file=docs/PACKAGING_BOUNDARY.md=docs/PACKAGING_BOUNDARY.md --include-data-file=README.md=README.md --include-data-file=LICENSE=LICENSE
 
 [buildozer]
 

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from typing import Iterable, TYPE_CHECKING
+from typing import Any, Iterable, TYPE_CHECKING
 
 from .circuit import ConnectomeRef
 
@@ -109,6 +109,9 @@ class PairConnectivitySummary:
 _MANC_KEY = "manc:v1.2.1"
 _MANC_DATASET = "manc_v1.2.1"
 _MANC_RELATIVE_ROOT = Path("Phase 1") / _MANC_DATASET / "export_swc"
+_MALE_CNS_KEY = "male-cns:v0.9"
+_MALE_CNS_DATASET = "male-cns_v0.9"
+_MALE_CNS_PARQUET = "malecns_09_synapses.parquet"
 _ARBOR_GAP_RELATIVE_ROOT = (
     Path("Phase 2_Arbor_staging")
     / "Projects"
@@ -199,6 +202,13 @@ def _is_manc_v121(source: ConnectomeRef) -> bool:
     }
 
 
+def _is_male_cns_v09(source: ConnectomeRef) -> bool:
+    return source.key.casefold() == _MALE_CNS_KEY or source.dataset.casefold() in {
+        _MALE_CNS_DATASET,
+        _MALE_CNS_KEY,
+    }
+
+
 def _is_legacy_full_manc_root(source: ConnectomeRef, root: Path) -> bool:
     return (
         source.key.casefold() == "manc:v1.2.1:full-local"
@@ -279,6 +289,12 @@ class ConnectomeEdgeCatalog:
             )
         )
         self.chemical_db = self.root / "edges" / "master_edges_cache.sqlite"
+        self._canonical_male_cns = bool(
+            _is_male_cns_v09(source)
+            and self.root.name == "export_swc"
+            and self.root.parent.name == _MALE_CNS_DATASET
+        )
+        self.chemical_parquet = self.root.parent / _MALE_CNS_PARQUET
         self.arbor_gap_root = (
             self.public_root / _ARBOR_GAP_RELATIVE_ROOT if self.public_root else None
         )
@@ -411,6 +427,157 @@ class ConnectomeEdgeCatalog:
             self._chemical_summary(first, second),
             self._gap_summary(first, second),
         )
+
+    def selected_chemical_contacts(
+        self, neuron_ids: Iterable[str | int]
+    ) -> tuple[dict[str, Any], ...]:
+        """Return the exact selected-to-selected MANC contact rows.
+
+        The indexed native SQLite file remains immutable.  This query uses the
+        ``pre_id`` index and bounds both endpoints, so runtime work scales with
+        the chosen circuit rather than the complete connectome.
+        """
+
+        selected = tuple(dict.fromkeys(str(value).strip() for value in neuron_ids))
+        if not selected:
+            return ()
+        if not self._canonical_manc:
+            raise ValueError(
+                "Chemical execution needs an indexed local edge source for this connectome."
+            )
+        path = self.chemical_db
+        if not path.is_file() or "edges" not in _sqlite_tables(path):
+            raise ValueError("The indexed local MANC chemical edge cache is not loaded.")
+        placeholders = ",".join("?" for _value in selected)
+        query = (
+            "SELECT rowid AS source_edge_rowid, pre_id, post_id, weight_uS, "
+            "delay_ms, tau1_ms, tau2_ms, syn_e_rev_mV, pre_x, pre_y, pre_z, "
+            "post_x, post_y, post_z, syn_index, pre_syn_index, post_syn_index, "
+            "pre_match_um, post_match_um FROM edges "
+            f"WHERE pre_id IN ({placeholders}) AND post_id IN ({placeholders}) "
+            "ORDER BY pre_id, post_id, rowid"
+        )
+        with _readonly_sqlite(path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(query, (*selected, *selected))
+            return tuple(dict(row) for row in rows)
+
+    @property
+    def is_male_cns(self) -> bool:
+        return self._canonical_male_cns
+
+    def selected_gap_contacts(
+        self, neuron_ids: Iterable[str | int]
+    ) -> tuple[dict[str, str], ...]:
+        """Return manifest-validated gap rows inside the selected cell set."""
+
+        selected = {str(value).strip() for value in neuron_ids if str(value).strip()}
+        if len(selected) < 2:
+            return ()
+        if not self._canonical_manc or self.arbor_gap_root is None:
+            raise ValueError("No validated electrical-edge source is loaded for this connectome.")
+        path = self.arbor_gap_root / _ARBOR_GAP_FILENAME
+        manifest = self.arbor_gap_root / "manifest.json"
+        if not path.is_file() or not manifest.is_file():
+            raise ValueError("The validated electrical-edge source is not loaded.")
+        scoped_ids, expected_hash, expected_rows = _gap_manifest_record(manifest)
+        if not selected.issubset(scoped_ids):
+            outside = ", ".join(sorted(selected - scoped_ids))
+            raise ValueError(
+                "Electrical connectivity is unknown outside the validated local scope: "
+                + outside
+            )
+        if _sha256(path) != expected_hash:
+            raise ValueError("The electrical-edge table SHA-256 does not match its manifest.")
+        output: list[dict[str, str]] = []
+        row_count = 0
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            if not {"pre_id", "post_id"}.issubset(reader.fieldnames or ()):
+                raise ValueError("The electrical-edge table lacks pre_id/post_id columns.")
+            for row in reader:
+                row_count += 1
+                if str(row.get("pre_id") or "") in selected and str(
+                    row.get("post_id") or ""
+                ) in selected:
+                    output.append(dict(row))
+        if row_count != expected_rows:
+            raise ValueError(
+                f"The electrical-edge table has {row_count} rows; its manifest declares {expected_rows}."
+            )
+        return tuple(output)
+
+    def chemical_source_record(self) -> dict[str, Any]:
+        """Return a cheap immutable-cache identity for run provenance."""
+
+        path = self.chemical_db.resolve()
+        if not path.is_file():
+            raise ValueError("The indexed local MANC chemical edge cache is not loaded.")
+        with _readonly_sqlite(path) as connection:
+            schema = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='edges'"
+                ).fetchone()[0]
+            )
+            meta_rows = connection.execute("SELECT k, v FROM meta ORDER BY k").fetchall()
+        stat = path.stat()
+        identity = {
+            "schema": schema,
+            "meta": [[str(key), str(value)] for key, value in meta_rows],
+            "size_bytes": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            "kind": "immutable_sqlite",
+            "label": "MANC v1.2.1 indexed local chemical edge cache",
+            "path": str(path),
+            **identity,
+            "identity_sha256": fingerprint,
+        }
+
+    def male_cns_source_record(self) -> dict[str, Any]:
+        """Return the external Male-CNS Parquet identity without hashing 7.8 GB."""
+
+        if not self._canonical_male_cns:
+            raise ValueError("This connectome is not the canonical Male-CNS v0.9 source.")
+        path = self.chemical_parquet.resolve()
+        if not path.is_file():
+            raise ValueError("The Male-CNS v0.9 chemical contact table is not loaded.")
+        stat = path.stat()
+        identity = {
+            "schema_contract": "male-cns-v0.9-synapses-parquet-v1",
+            "size_bytes": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            "kind": "immutable_parquet",
+            "label": "Male-CNS v0.9 external chemical contact table",
+            "path": str(path),
+            **identity,
+            "identity_sha256": fingerprint,
+        }
+
+    def gap_source_record(self) -> dict[str, Any]:
+        if self.arbor_gap_root is None:
+            raise ValueError("No validated electrical-edge source is loaded.")
+        path = (self.arbor_gap_root / _ARBOR_GAP_FILENAME).resolve()
+        manifest = (self.arbor_gap_root / "manifest.json").resolve()
+        if not path.is_file() or not manifest.is_file():
+            raise ValueError("The validated electrical-edge source is not loaded.")
+        return {
+            "kind": "sha256_files",
+            "label": "Validated Escape-SIZ Arbor gap-contact bundle",
+            "path": str(path),
+            "sha256": _sha256(path),
+            "manifest_path": str(manifest),
+            "manifest_sha256": _sha256(manifest),
+        }
 
 
 def pair_connection_summary(

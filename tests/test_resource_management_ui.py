@@ -5,11 +5,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
 from digifly_app.core.data_library import import_local_source, list_managed_resources
 from digifly_app.core.resource_profile import (
     PROFILE_PATH_ENV,
+    ResourceKind,
     ResourceProfile,
     make_default_profile,
 )
@@ -76,6 +77,52 @@ def test_data_library_selected_resource_controls_toggle_and_soft_delete(
         page.trash_selected()
         application.processEvents()
         assert page.table.rowCount() == 0
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_data_library_first_open_registers_standalone_swcs_without_a_simulator(
+    tmp_path: Path,
+    monkeypatch,
+):
+    application = QApplication.instance() or QApplication([])
+    home = tmp_path / "home"
+    home.mkdir()
+    profile_path = home / "profile" / "resources-v2.json"
+    swcs = tmp_path / "my-swcs"
+    swcs.mkdir()
+    (swcs / "cell.swc").write_text("1 1 0 0 0 1 -1\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(PROFILE_PATH_ENV, str(profile_path))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(swcs),
+    )
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("tester-swcs", True),
+    )
+
+    page = DataLibraryPage()
+    try:
+        assert profile_path.is_file()
+        initial = ResourceProfile.load(profile_path)
+        assert initial.workspace_root is None
+        assert initial.binding(ResourceKind.NEURON_RUNTIME) is None
+        assert initial.binding(ResourceKind.ARBOR_RUNTIME) is None
+        assert initial.binding(ResourceKind.BMTK_RUNTIME) is None
+
+        page.register_existing_folder()
+        application.processEvents()
+
+        restored = ResourceProfile.load(profile_path)
+        binding = restored.binding(ResourceKind.MORPHOLOGY_SOURCE)
+        assert binding is not None
+        assert binding.resolved_path == swcs.resolve()
+        assert "no files were copied" in page.action_status.text()
     finally:
         page.close()
         application.processEvents()

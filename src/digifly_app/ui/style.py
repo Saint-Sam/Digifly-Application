@@ -237,6 +237,20 @@ QToolButton#ThemeToggle:hover, QToolButton#ThemeToggle:focus {
 }
 QToolButton#ThemeToggle:pressed { background: @button_pressed@; }
 QWidget#CollapsibleSectionBody { background: @section_body@; border-top: 1px solid @section_border@; }
+QFrame[resultDisclosure="true"] { background: @section@; }
+QWidget#ResultDisclosureHeader {
+    min-height: 42px; background: @section_header@; border-radius: 10px;
+}
+QToolButton#ResultDisclosureToggle {
+    min-height: 40px; padding: 0 5px; border: 0; background: transparent;
+    color: @strong@; font-size: 16px; font-weight: 650; text-align: left;
+}
+QToolButton#ResultDisclosureToggle:hover { color: @title@; }
+QWidget#ResultDisclosureBody { background: @section_body@; border-top: 1px solid @section_border@; }
+QLabel#ArtifactSummary { font-size: 12px; font-weight: 700; }
+QLabel#ArtifactSummary[artifactState="pass"] { color: @name_available_text@; }
+QLabel#ArtifactSummary[artifactState="warning"] { color: @warning_text@; }
+QLabel#ArtifactSummary[artifactState="info"] { color: @muted@; }
 QOpenGLWidget#CircuitViewport { background: @viewport_background@; border: 1px solid @section_border@; border-radius: 8px; }
 QRubberBand { border: 1px solid @rubber_band@; background-color: @rubber_band_fill@; }
 QLabel#Brand { color: @brand@; font-size: 22px; font-weight: 700; }

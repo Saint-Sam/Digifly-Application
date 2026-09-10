@@ -231,6 +231,7 @@ def test_hh_settings_use_expandable_sections_without_losing_values(tmp_path):
             "passive_properties",
             "soma_hh",
             "branch_hh",
+            "chemical_synapses",
             "gap_junctions",
             "apply_save",
         )

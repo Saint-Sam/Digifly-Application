@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QPaintEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QImage, QPaintEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 from .style import DARK_THEME, normalize_theme, theme_color
+from .snapshot import HIGH_RESOLUTION_WIDTH, render_widget_high_resolution
 
 
 def pulse_intervals(
@@ -98,6 +99,15 @@ class StimulusPreview(QWidget):
             pulse_count=int(self._protocol["pulse_count"]),
             waveform=str(self._protocol["waveform"]),
         )
+
+    def render_high_resolution(
+        self,
+        *,
+        width: int = HIGH_RESOLUTION_WIDTH,
+    ) -> QImage:
+        """Render the live stimulus diagram as a 4K-width PNG-ready image."""
+
+        return render_widget_high_resolution(self, width=width)
 
     def summary_text(self) -> str:
         protocol = self._protocol

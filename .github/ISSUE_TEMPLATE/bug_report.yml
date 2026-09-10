@@ -1,0 +1,100 @@
+name: Early tester bug report
+description: Report a reproducible problem found during private Digifly testing.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Digifly. Do not attach API tokens, credential files,
+        connectome/SWC data, full environment dumps, or screenshots and logs
+        containing personal paths. Redact private information before submitting.
+
+  - type: input
+    id: revision
+    attributes:
+      label: Commit or build
+      description: Paste the short commit hash, or the exact maintainer build name.
+      placeholder: abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Run `python --version` in the activated Digifly environment.
+      placeholder: Python 3.12.x
+    validations:
+      required: true
+
+  - type: dropdown
+    id: work-area
+    attributes:
+      label: Affected work area
+      options:
+        - Startup or installation
+        - Workspace
+        - Data Library
+        - Circuit Builder
+        - Experiment Builder
+        - Results
+        - Engines
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest repeatable sequence, using generic resource names.
+      placeholder: |
+        1. Launch from source
+        2. Open ...
+        3. Select ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Explain what happened and include a short, redacted error if available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional, non-sensitive context
+      description: Optional simulator version, resource type/size, or sanitized screenshot.
+
+  - type: checkboxes
+    id: privacy-check
+    attributes:
+      label: Privacy check
+      options:
+        - label: I checked this report and its attachments for tokens, credentials, datasets, and personal paths.
+          required: true
+        - label: I understand that this private alpha and its builds may not be redistributed.
+          required: true

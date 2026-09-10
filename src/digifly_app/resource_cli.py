@@ -22,7 +22,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     initialize = subparsers.add_parser("init", help="Create a machine-local resource profile.")
     initialize.add_argument("--profile", default=str(default_profile_path()))
-    initialize.add_argument("--workspace", required=True)
+    initialize.add_argument(
+        "--workspace",
+        help="Optional legacy Digifly Public workspace; standalone data profiles do not need one.",
+    )
     initialize.add_argument("--output", required=True)
     initialize.add_argument(
         "--managed-data",

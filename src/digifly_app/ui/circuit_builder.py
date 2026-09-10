@@ -66,6 +66,7 @@ from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
     ChannelAssignment,
+    ChemicalSynapsePolicy,
     GapJunctionPolicy,
     MembraneMechanismSpec,
     mechanism_capability_message,
@@ -92,10 +93,18 @@ ENGINE_PROFILES = (
     (
         "arbor",
         "Arbor",
-        "Default design target; validated for specific staged Phase 2 Arbor workflows.",
+        "Default design target; general classic-HH execution plus curated Phase 2 workflows.",
     ),
-    ("neuron", "NEURON", "Reference multicompartment target for native Digifly mechanisms."),
-    ("bmtk", "BMTK / SONATA", "Future SONATA/BioNet adapter target; no runnable plan in this slice."),
+    (
+        "neuron",
+        "NEURON",
+        "Morphology-backed classic-HH target with chemical and app-owned electrical mechanisms.",
+    ),
+    (
+        "bmtk",
+        "BMTK / SONATA",
+        "Bounded morphology-backed BioNet/SONATA target for classic HH and chemical contacts.",
+    ),
 )
 
 
@@ -335,6 +344,17 @@ class CircuitBuilderPage(QWidget):
         mode_row.addWidget(self.soma_points_button)
         mode_row.addWidget(self.full_skeletons_button)
         mode_row.addStretch(1)
+        self.save_visualization_button = QPushButton("Save snapshot…")
+        self.save_visualization_button.setObjectName("SaveCircuitVisualizationButton")
+        self.save_visualization_button.setToolTip(
+            "Save the current camera and overlays as a high-resolution PNG"
+        )
+        self.save_visualization_button.clicked.connect(
+            lambda: self.viewport.save_high_resolution_snapshot(
+                "digifly-circuit-visualization.png"
+            )
+        )
+        mode_row.addWidget(self.save_visualization_button)
         viewport_top.addLayout(mode_row)
         self.viewport_summary = QLabel("No morphology loaded")
         self.viewport_summary.setObjectName("Strong")
@@ -578,6 +598,73 @@ class CircuitBuilderPage(QWidget):
                 form.addRow(definition.label, editor)
             group_layout.addLayout(form)
 
+        chemical_layout = add_hh_section(
+            "chemical_synapses", "Chemical-synapse policy"
+        )
+        chemical_help = QLabel(
+            "Imported contacts define pre/post neurons and postsynaptic placement. "
+            "This saved policy supplies electrophysiology that is absent from many "
+            "connectome exports; each value and its provenance are written into the run manifest."
+        )
+        chemical_help.setObjectName("Muted")
+        chemical_help.setWordWrap(True)
+        chemical_layout.addWidget(chemical_help)
+        chemical_form = QFormLayout()
+        self.chemical_mechanism_label = QLabel("Exp2Syn · per imported contact")
+        chemical_form.addRow("Mechanism", self.chemical_mechanism_label)
+        self.chemical_default_weight = self._new_gap_editor(
+            0.0, 1000.0, 0.000001, 7, " µS"
+        )
+        self.chemical_default_weight.setObjectName("ChemicalDefaultWeight")
+        chemical_form.addRow("Fallback contact weight", self.chemical_default_weight)
+        self.chemical_weight_scale = self._new_gap_editor(0.0, 1000000.0, 0.1, 5)
+        self.chemical_weight_scale.setObjectName("ChemicalWeightScale")
+        chemical_form.addRow("Imported weight scale", self.chemical_weight_scale)
+        self.chemical_delay = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
+        self.chemical_delay.setObjectName("ChemicalDefaultDelay")
+        chemical_form.addRow("Fallback delay", self.chemical_delay)
+        self.chemical_tau1 = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
+        self.chemical_tau1.setObjectName("ChemicalTau1")
+        chemical_form.addRow("Rise tau", self.chemical_tau1)
+        self.chemical_tau2 = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
+        self.chemical_tau2.setObjectName("ChemicalTau2")
+        chemical_form.addRow("Decay tau", self.chemical_tau2)
+        self.chemical_reversal = self._new_gap_editor(-200.0, 200.0, 1.0, 3, " mV")
+        self.chemical_reversal.setObjectName("ChemicalReversal")
+        chemical_form.addRow("Reversal", self.chemical_reversal)
+        self.chemical_threshold = self._new_gap_editor(-200.0, 200.0, 1.0, 3, " mV")
+        self.chemical_threshold.setObjectName("ChemicalSpikeThreshold")
+        chemical_form.addRow("Presynaptic threshold", self.chemical_threshold)
+        self.chemical_geom_delay = QCheckBox("Use soma-to-contact distance")
+        self.chemical_geom_delay.setObjectName("ChemicalGeometricDelay")
+        chemical_form.addRow("Geometric delay", self.chemical_geom_delay)
+        self.chemical_base_delay = self._new_gap_editor(0.0, 10000.0, 0.1, 4, " ms")
+        chemical_form.addRow("Release delay", self.chemical_base_delay)
+        self.chemical_velocity = self._new_gap_editor(
+            0.000001, 10000000.0, 100.0, 3, " µm/ms"
+        )
+        chemical_form.addRow("Conduction velocity", self.chemical_velocity)
+        for editor in (
+            self.chemical_default_weight,
+            self.chemical_weight_scale,
+            self.chemical_delay,
+            self.chemical_tau1,
+            self.chemical_tau2,
+            self.chemical_reversal,
+            self.chemical_threshold,
+            self.chemical_base_delay,
+            self.chemical_velocity,
+        ):
+            editor.valueChanged.connect(self._chemical_controls_changed)
+        self.chemical_geom_delay.toggled.connect(self._chemical_controls_changed)
+        chemical_layout.addLayout(chemical_form)
+        save_chemical_policy = QPushButton(
+            "Set policy for all imported chemical contacts"
+        )
+        save_chemical_policy.setObjectName("ApplyChemicalPolicyButton")
+        save_chemical_policy.clicked.connect(self.apply_chemical_policy)
+        chemical_layout.addWidget(save_chemical_policy)
+
         gap_layout = add_hh_section("gap_junctions", "Gap-junction policy")
         gap_help = QLabel(
             "GJs join two electrical-edge endpoints, so they cannot be attached to a neuron alone. "
@@ -698,6 +785,7 @@ class CircuitBuilderPage(QWidget):
 
         self._set_hh(HodgkinHuxleySpec())
         self._set_membrane(self.spec.membrane)
+        self._set_chemical_policy(self.spec.chemical_synapse_policy)
         self._set_gap_policy(self.spec.gap_junction_policy)
         self.refresh_connectomes()
         self.query_edit.textEdited.connect(self._selection_controls_changed)
@@ -751,9 +839,9 @@ class CircuitBuilderPage(QWidget):
             profile for profile in ENGINE_PROFILES if profile[0] == key
         )
         parity = {
-            "arbor": "The staged runtime passes curated HH/passive scenarios, and the dedicated Escape-SIZ adapter uses app-owned Gap, RectGap, and HeteroRectGap equation ports. Arbitrary Circuit Builder translation and other Drosophila MOD channels remain capability-gated.",
-            "neuron": "Reference path for native HH, NMODL channels, and rectifying/heterotypic gap mechanisms.",
-            "bmtk": "PointNet/DPointNet are LIF/GLIF lanes and do not consume this cable-HH draft. A general BioNet cable adapter is future work.",
+            "arbor": "General selected-cell classic-HH chemical/electrical execution is available, and the dedicated Escape-SIZ adapter uses app-owned Gap, RectGap, and HeteroRectGap equation ports. Other Drosophila MOD channels remain capability-gated.",
+            "neuron": "General multi-cell classic-HH execution supports chemical contacts and exact app-owned Gap, RectGap, and HeteroRectGap mechanisms. Other native Drosophila channels remain capability-gated.",
+            "bmtk": "The bounded BioNet lane runs morphology-backed classic-HH cells, selected chemical contacts, soma clamps, voltage, and spikes. Electrical edges, native mechanisms, non-soma/per-compartment mapping, MPI, PointNet, and DPointNet remain fail-closed.",
         }[key]
         self.engine_note.setText(
             f"{profile_summary}  {parity}  Local pair connectivity is inspected read-only and "
@@ -807,7 +895,9 @@ class CircuitBuilderPage(QWidget):
                     self.overview.workspace_edit.text()
                 ).expanduser().resolve()
                 profile_matches_workspace = bool(
-                    profile is not None and profile.workspace_root == workspace_root
+                    profile is not None
+                    and profile.workspace_root is not None
+                    and profile.workspace_root == workspace_root
                 )
                 preferred_index = next(
                     (
@@ -1175,6 +1265,9 @@ class CircuitBuilderPage(QWidget):
                 neuron_ids=tuple(item.record.neuron_id for item in morphologies),
                 hh=HodgkinHuxleySpec.from_dict(self.spec.hh.to_dict()),
                 membrane=MembraneMechanismSpec.from_dict(self.spec.membrane.to_dict()),
+                chemical_synapse_policy=ChemicalSynapsePolicy.from_dict(
+                    self.spec.chemical_synapse_policy.to_dict()
+                ),
                 gap_junction_policy=GapJunctionPolicy.from_dict(
                     self.spec.gap_junction_policy.to_dict()
                 ),
@@ -1411,6 +1504,12 @@ class CircuitBuilderPage(QWidget):
         else:
             pair = self._edge_catalog.pair_summary(neuron_a, neuron_b)
             chemical, gap = pair.chemical, pair.gap_junction
+        deferred_male_chemical = bool(
+            self._edge_catalog is not None
+            and self._edge_catalog.is_male_cns
+            and self._edge_catalog.chemical_parquet.is_file()
+        )
+        chemical_toggle_available = chemical.has_connections or deferred_male_chemical
         override = self.spec.connection_override(neuron_a, neuron_b)
         chemical_enabled = (
             True
@@ -1424,16 +1523,18 @@ class CircuitBuilderPage(QWidget):
         )
         self._setting_connection_controls = True
         try:
-            self.chemical_pair_check.setEnabled(chemical.has_connections)
+            self.chemical_pair_check.setEnabled(chemical_toggle_available)
             self.chemical_pair_check.setChecked(
-                bool(chemical_enabled) if chemical.has_connections else False
+                bool(chemical_enabled) if chemical_toggle_available else False
             )
             self.gap_pair_check.setEnabled(gap.has_connections)
             self.gap_pair_check.setChecked(
                 bool(gap_enabled) if gap.has_connections else False
             )
             self.chemical_pair_check.setToolTip(
-                chemical.source_path or chemical.unavailable_reason
+                str(self._edge_catalog.chemical_parquet)
+                if deferred_male_chemical and self._edge_catalog is not None
+                else chemical.source_path or chemical.unavailable_reason
             )
             self.gap_pair_check.setToolTip(gap.source_path or gap.unavailable_reason)
         finally:
@@ -1441,7 +1542,7 @@ class CircuitBuilderPage(QWidget):
 
         chemical_state = (
             f" Plan state: {'enabled' if chemical_enabled else 'disabled'}."
-            if chemical.has_connections
+            if chemical_toggle_available
             else ""
         )
         gap_state = (
@@ -1449,9 +1550,17 @@ class CircuitBuilderPage(QWidget):
             if gap.has_connections
             else ""
         )
+        chemical_readout = (
+            "Chemical: Male-CNS contacts for this pair are streamed from the external "
+            "Parquet source during Experiment preflight; no 7.8 GB scan is copied into the app."
+            if deferred_male_chemical
+            else self._connection_class_readout(
+                "Chemical", chemical, neuron_a, neuron_b
+            )
+        )
         self.pair_connection_readout.setText(
             f"{neuron_a} ↔ {neuron_b}\n"
-            f"{self._connection_class_readout('Chemical', chemical, neuron_a, neuron_b)}"
+            f"{chemical_readout}"
             f"{chemical_state}\n"
             f"{self._connection_class_readout('Gap junction', gap, neuron_a, neuron_b)}"
             f"{gap_state}"
@@ -1756,6 +1865,49 @@ class CircuitBuilderPage(QWidget):
         finally:
             self._setting_mechanism_controls = prior_guard
 
+    def _read_chemical_policy(self) -> ChemicalSynapsePolicy:
+        return ChemicalSynapsePolicy(
+            default_weight_uS=self.chemical_default_weight.value(),
+            weight_scale=self.chemical_weight_scale.value(),
+            default_delay_ms=self.chemical_delay.value(),
+            use_geometric_delay=self.chemical_geom_delay.isChecked(),
+            base_release_delay_ms=self.chemical_base_delay.value(),
+            conduction_velocity_um_per_ms=self.chemical_velocity.value(),
+            tau1_ms=self.chemical_tau1.value(),
+            tau2_ms=self.chemical_tau2.value(),
+            reversal_mV=self.chemical_reversal.value(),
+            spike_threshold_mV=self.chemical_threshold.value(),
+        )
+
+    def _set_chemical_policy(self, policy: ChemicalSynapsePolicy) -> None:
+        prior_guard = self._setting_mechanism_controls
+        self._setting_mechanism_controls = True
+        try:
+            self.chemical_default_weight.setValue(policy.default_weight_uS)
+            self.chemical_weight_scale.setValue(policy.weight_scale)
+            self.chemical_delay.setValue(policy.default_delay_ms)
+            self.chemical_geom_delay.setChecked(policy.use_geometric_delay)
+            self.chemical_base_delay.setValue(policy.base_release_delay_ms)
+            self.chemical_velocity.setValue(policy.conduction_velocity_um_per_ms)
+            self.chemical_tau1.setValue(policy.tau1_ms)
+            self.chemical_tau2.setValue(policy.tau2_ms)
+            self.chemical_reversal.setValue(policy.reversal_mV)
+            self.chemical_threshold.setValue(policy.spike_threshold_mV)
+        finally:
+            self._setting_mechanism_controls = prior_guard
+        self._update_chemical_control_state()
+
+    def _chemical_controls_changed(self, *_args: Any) -> None:
+        if self._setting_mechanism_controls:
+            return
+        self._update_chemical_control_state()
+
+    def _update_chemical_control_state(self) -> None:
+        geometric = self.chemical_geom_delay.isChecked()
+        self.chemical_base_delay.setEnabled(geometric)
+        self.chemical_velocity.setEnabled(geometric)
+        self.chemical_delay.setEnabled(not geometric)
+
     def _read_gap_policy(self) -> GapJunctionPolicy:
         conductance_basis = str(self.gap_basis_combo.currentData() or "per_site")
         return GapJunctionPolicy(
@@ -1927,6 +2079,7 @@ class CircuitBuilderPage(QWidget):
             self.limit_spin.setValue(spec.query.max_neurons)
             self._set_hh(spec.hh)
             self._set_membrane(spec.membrane)
+            self._set_chemical_policy(spec.chemical_synapse_policy)
             self._set_gap_policy(spec.gap_junction_policy)
             self.connectome_combo.setCurrentIndex(index)
         finally:
@@ -1988,6 +2141,7 @@ class CircuitBuilderPage(QWidget):
             self.limit_spin.setValue(64)
             self._set_hh(self.spec.hh)
             self._set_membrane(self.spec.membrane)
+            self._set_chemical_policy(self.spec.chemical_synapse_policy)
             self._set_gap_policy(self.spec.gap_junction_policy)
             self._clear_loaded_assets()
             self.set_selected_engine_key("arbor")
@@ -2046,6 +2200,18 @@ class CircuitBuilderPage(QWidget):
         self.status_message.emit(
             f"Mass applied HH + membrane channels to {count} loaded neuron(s)"
         )
+
+    def apply_chemical_policy(self) -> None:
+        try:
+            self.spec.chemical_synapse_policy = self._read_chemical_policy()
+        except ValueError as exc:
+            self.status_message.emit(f"Chemical-synapse policy is invalid: {exc}")
+            return
+        self.circuit_changed.emit(self.spec)
+        self.status_message.emit(
+            "Stored Exp2Syn kinetics, delay, threshold, and weight handling for all imported chemical contacts"
+        )
+        self._update_override_summary()
 
     def apply_gap_policy(self) -> None:
         self.spec.gap_junction_policy = self._read_gap_policy()

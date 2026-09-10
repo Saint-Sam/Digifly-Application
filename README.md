@@ -1,47 +1,105 @@
 # Digifly Workstation
 
+<p align="center">
+  <img src="src/digifly_app/assets/digifly_icon.png" width="180" alt="Digifly paired giant-fiber mark">
+</p>
+
 Digifly Workstation is a standalone desktop application for configuring, validating,
 running, and reviewing Digifly experiments. It does not modify Digifly's source
-code. Instead, it opens a Digifly workspace. Circuit Builder owns morphology,
+code or imported datasets. It uses its own local workspace and can optionally
+link an existing legacy Digifly source tree. Circuit Builder owns morphology,
 connectivity, and biophysics; the notebook-independent Experiment Builder owns
 stimuli, runtime manipulations, timing, recording, and compute controls. Generic
 execution remains gated until each requested mechanism and mapping passes an
-adapter's capability and comparison checks. The first executable generic subset
-runs one morphology-backed classic-HH neuron in either Arbor or NEURON and
-saves its complete app-owned provenance, soma traces, spikes, and plots.
+adapter's capability and comparison checks. The executable generic subset runs
+supported morphology-backed classic-HH selected cell sets in Arbor or NEURON
+with imported chemical and validated electrical contacts. A bounded BMTK
+BioNet/SONATA lane runs morphology-backed classic-HH cells with selected
+chemical contacts, soma current clamps, soma voltage, and spikes. Every run
+saves complete app-owned provenance and canonical result artifacts.
 
 The app has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders
 soma-point or full-skeleton representations, and stores a classic-HH draft plus
 stable SWC child-node selections. It now also preserves exact native Phase 2 Na/K/Ca mechanism
-identities, regional conductance densities, and a separate gap-junction edge
-policy. Multi-neuron chemical/gap connectivity, native channel catalogues,
-per-compartment CV mappings, and BMTK remain fail-closed; they are never
-silently omitted by the executable single-cell subset. The dormant Escape-SIZ
+identities, regional conductance densities, and separate chemical-synapse and
+gap-junction edge policies. General selected-subgraph chemical execution is
+available for the indexed local MANC source; electrical execution uses the
+manifest-validated local gap-contact scope. Unsupported edge sources and native
+channel catalogues remain fail-closed; BMTK also rejects electrical contacts,
+non-soma/per-compartment mapping, MPI, PointNet, and DPointNet requests rather
+than silently omitting them. The generic adapter writes a schema-v2 run-owned manifest
+of every selected contact and its effective model parameters.
+The dormant Escape-SIZ
 NEURON and Arbor adapters remain available as
 versioned scientific backends and provenance references, but Escape-SIZ is no
 longer an application tab or project model.
+
+## Early tester quick start
+
+This is a private alpha. Invited collaborators are authorized by Digifly to
+clone and run this repository solely for private evaluation and feedback. That
+authorization does not permit redistribution, publication, sublicensing, or
+production use of the source or a built application.
+
+Use Python 3.11 or 3.12 and launch the app from source:
+
+```bash
+git clone https://github.com/Saint-Sam/Digifly-Application.git
+cd Digifly-Application
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+python -m digifly_app
+```
+
+Python 3.11 may be substituted for 3.12. No connectome, SWC collection, API
+token, or simulator installation is required for the base interface smoke test;
+scientific resources remain outside the checkout. Follow the short, audited
+[early-testing flow](docs/TESTING.md) before filing a report.
 
 ## What the first milestone includes
 
 - A native Qt desktop interface for macOS, Windows, and Linux.
 - Workspace discovery for NEURON, Arbor, BMTK, and VND assets.
 - A Circuit Builder preview with Arbor as its default saved intent and selectors
-  for future NEURON or BMTK adapter targets; these selectors do not create a
-  runnable plan yet.
+  for NEURON or BMTK adapter targets. Each engine creates a capability-gated
+  runnable plan for its implemented subset.
 - A notebook-independent Experiment Builder that receives a read-only
   `CircuitSpec` snapshot and serializes simulation timing, pulse protocols,
   conditions, ablations, runtime mechanism scales, recordings, seeds,
   repetitions, and worker allocation in a separate `ExperimentSpec`.
-- A real, cancellable Arbor/NEURON classic-HH run path for one loaded neuron,
+- Real, cancellable Arbor, NEURON, and bounded BMTK BioNet classic-HH run paths
+  for supported selected circuits,
   including engine preflight, normalized-name collision protection, immutable
   request documents, run/job manifests, stdout capture, soma voltage CSV,
   threshold-crossing spike CSV, optional PNG, and automatic Results handoff.
-  Every run writes a parent-before-child SWC and source-to-run node map inside
-  the run folder so both engines receive the same validated topology. Arbor's
+  Arbor and NEURON runs write a parent-before-child SWC and source-to-run node
+  map inside the run folder so both receive the same validated topology. Arbor's
   explicit segment-tree conversion additionally records a sub-resolution root
   stub because Arbor cannot simulate a zero-length SWC root; the source is
   never modified.
+- General selected-cell Arbor and NEURON network lanes. They extract only selected-to-
+  selected rows from the external indexed MANC cache, preserve each imported
+  chemical contact as an `Exp2Syn` site, map every chemical and electrical
+  endpoint through run-owned SWC node maps, and independently apply chemical
+  and gap condition switches. The connectome data remain outside the package.
+- A bounded BMTK BioNet lane that emits run-owned SONATA nodes, selected
+  chemical edges and biological-ID crosswalks, then preserves native BioNet
+  soma-voltage/spike reports alongside canonical Digifly CSV and summary
+  artifacts. BMTK, NEURON, NumPy, and `h5py` must coexist in the selected external
+  interpreter. Electrical edges, native membrane mechanisms, non-soma or
+  per-compartment stimulation/recording, MPI, PointNet, and DPointNet fail
+  closed in this lane.
+- Male-CNS v0.9 uses the same run-owned chemical manifest without importing its
+  7.8 GB Parquet table. A packaged streaming query helper runs in the selected
+  scientific Python (which must provide DuckDB), converts source nanometers to
+  SWC micrometers, and copies only selected-to-selected contacts plus their
+  confidence and neurotransmitter annotations.
+- An explicit chemical-synapse policy records fallback weight, weight scaling,
+  delay or geometric-delay parameters, `Exp2Syn` rise/decay constants,
+  reversal potential, and presynaptic spike threshold. Run manifests mark each
+  effective parameter as connectome-sourced or circuit-policy-sourced.
 - Local SWC-source discovery and neuron queries by ID, type, or family, such as
   `10000, 10002`, `type:GFC2`, `family:DN`, and `all:IN`.
 - A default one-marker-per-neuron soma overview with an obvious **Soma points** /
@@ -81,6 +139,9 @@ longer an application tab or project model.
 - App-owned Arbor NMODL sources for `Gap`, `RectGap`, and `HeteroRectGap`, plus
   a fail-closed worker bridge that loads the compiled catalogue under the
   `digifly_` prefix and never substitutes Arbor's built-in `gj`.
+- Byte-locked app-owned NEURON copies of `Gap`, `RectGap`, and `HeteroRectGap`,
+  with an isolated builder that selects the configured runtime's `nrnivmodl`,
+  load-probes the compiled library, and reuses only a version/hash-valid cache.
 - Explicit separation of build-time and runtime-safe controls.
 - Cache, contact-policy, environment, disk, and output preflight checks.
 - Exact command preview with no shell interpolation.
@@ -109,10 +170,13 @@ python -m pip install -e ".[test]"
 digifly-workstation
 ```
 
-## Open the macOS build
+## Maintainer-only macOS build
 
-The locally verified development bundle is `dist/Digifly Workstation.app`.
-Double-click it in Finder. New projects default to
+`dist/Digifly Workstation.app` is generated locally, ignored by Git, and is not
+part of an early tester's repository checkout. This section is for maintainers
+or testers who receive a build directly from a maintainer; everyone else should
+use the source launch above. Double-click the supplied app in Finder. New
+projects default to
 `~/Digifly Workstation Workspace`, keeping large caches and simulation recordings
 outside both the application bundle and `Digifly Public`.
 
@@ -207,12 +271,14 @@ control are recorded in
 interfaces instead of manipulating managed files, checkpoints, credentials, or
 profiles directly.
 
-The Workspace page keeps separate **NEURON Python** and **Arbor Python**
-choices. **Find or install NEURON / Arbor** links to the simulators' official
-guides and offers a consent-gated, read-only search of PATH and common Conda or
-virtual-environment locations. Discovery reads package metadata in isolated
-child processes and saves only approved interpreter paths to the machine-local
-resource profile.
+The Workspace page keeps separate **NEURON Python**, **Arbor Python**, and
+**BMTK/BioNet Python** choices. **Find or install simulator runtimes** links to
+the official guides and offers a consent-gated, read-only search of PATH and
+common Conda or virtual-environment locations. Discovery reads package metadata
+in isolated child processes and saves only approved interpreter paths to the
+machine-local resource profile. A BMTK choice is runnable only when BMTK,
+NEURON, NumPy, and `h5py` import from that same selected interpreter; the app never
+borrows a simulator module from inherited `PYTHONPATH` state.
 
 Audit recent manifest-declared SWC imports without scanning large legacy
 connectome trees, then optionally review radius-only repairs:
@@ -306,14 +372,18 @@ Arbor versions or architectures.
 ## Repository status
 
 This folder is deliberately separate from `Digifly Public` and is ready to
-become the `Digifly Workstation` repository. A license has not been chosen yet;
-that decision should be made before a public release.
+become the `Digifly Workstation` repository. It is currently private and
+proprietary under the [Digifly Workstation Private Development License](LICENSE);
+no public use or redistribution permission is granted. Third-party software,
+datasets, models, and mechanism sources retain their own terms.
+
+Local macOS builds remain ad-hoc signed. The repository also contains a
+fail-closed Developer ID/notarization lane for private distribution once an
+Apple signing certificate is installed; see the [deployment guide](docs/DEPLOYMENT.md).
 
 See [Architecture](docs/ARCHITECTURE.md) and
-[Roadmap](docs/ROADMAP.md) for the integration plan. The preserved starting
-point and package/data contract are recorded in
-[Phase 0 baseline](docs/PHASE0_BASELINE.md) and
-[Packaging boundary](docs/PACKAGING_BOUNDARY.md). The distributable package
+[Roadmap](docs/ROADMAP.md) for the integration plan. The package/data contract
+is recorded in [Packaging boundary](docs/PACKAGING_BOUNDARY.md). The distributable package
 foundation is recorded in [Phase 1 acceptance](docs/PHASE1_ACCEPTANCE.md).
 The machine-local data/runtime boundary is recorded in
 [Phase 2 acceptance](docs/PHASE2_ACCEPTANCE.md).
@@ -365,9 +435,10 @@ dense-grid comparison again passed 0 of 11 source somas despite high waveform
 correlations. The next acceptance step is resolving that upstream absolute-
 voltage mismatch. Result metadata keeps `equivalence_claim` false.
 
-The custom-gap adapter does not make arbitrary Circuit Builder designs runnable
-and does not establish parity for the other native Drosophila membrane MOD
-channels. Unsupported generic mappings remain capability-gated instead of being
-silently approximated. Translating the Circuit Builder design into validated
-execution plans is the next integration boundary. VND remains an optional
-external viewer rather than a simulator dependency.
+The generic Arbor and NEURON lanes now translate supported arbitrary selected
+classic-HH designs; the dedicated custom-gap comparison still does not establish
+parity for other native Drosophila membrane MOD channels. The bounded BMTK
+BioNet lane adds real SONATA execution for its chemical-only soma subset.
+Unsupported mappings remain capability-gated instead of being silently
+approximated. VND remains an optional external viewer rather than a simulator
+dependency.
