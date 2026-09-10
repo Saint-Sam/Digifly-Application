@@ -86,8 +86,9 @@ Developer ID proves who signed an app; it does not grant rights to third-party
 material. Before sharing even a privately licensed build, finish the
 third-party notice/source review, resolve redistribution permission for the
 Augustin/ModelDB mechanism derivatives, confirm ownership of the Digifly gap
-sources, and replace the temporary PySide icon. Qt Virtual Keyboard is not used
-by Digifly and is explicitly excluded from the build and artifact audit.
+sources, and preserve the provenance for the Digifly-owned paired-GF icon. The
+temporary PySide icon has been removed. Qt Virtual Keyboard is not used by
+Digifly and is explicitly excluded from the build and artifact audit.
 The current native build is Apple-Silicon (`arm64`) with a macOS 11.1 binary
 deployment target; its supported macOS/CPU test matrix must be declared before
 it is sent to other machines.
