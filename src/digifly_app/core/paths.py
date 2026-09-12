@@ -9,6 +9,7 @@ import sys
 
 RESOURCE_ROOT_ENV = "DIGIFLY_WORKSTATION_RESOURCE_ROOT"
 SHARE_DIRECTORY = "digifly-workstation"
+BUNDLED_ARBOR_DISABLE_ENV = "DIGIFLY_DISABLE_BUNDLED_ARBOR"
 
 
 def _looks_like_resource_root(path: Path) -> bool:
@@ -58,6 +59,24 @@ def resource_path(*parts: str) -> Path:
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"Application resource paths must be relative: {relative}")
     return resource_root().joinpath(relative)
+
+
+def bundled_arbor_python() -> Path | None:
+    """Return Digifly's private Arbor interpreter when the app ships one."""
+
+    if os.environ.get(BUNDLED_ARBOR_DISABLE_ENV, "").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }:
+        return None
+    candidates = (
+        resource_path("runtimes", "arbor", "bin", "python3"),
+        Path(sys.executable).resolve().parent.parent
+        / "Resources" / "runtimes" / "arbor" / "bin" / "python3",
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def package_root() -> Path:

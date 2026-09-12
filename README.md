@@ -54,8 +54,11 @@ Download the Mac build matching the test machine from
    Security**, then open it again.
 
 The application contains its own interface runtime; testers do not need to
-install Python or build the source. No connectome, SWC collection, API token,
-or simulator installation is required for the base interface smoke test.
+install Python or build the source. Private Apple-silicon builds also contain
+an isolated Arbor 0.12.2 runtime, so Arbor experiments work without a separate
+simulator installation. Intel builds and NEURON/BMTK execution continue to use
+user-selected external runtimes. No connectome, SWC collection, or API token is
+required for the base interface smoke test.
 Scientific resources remain outside the application and are configured through
 the first-launch workflow. Follow the short, audited [early-testing
 flow](docs/TESTING.md) before filing a report.

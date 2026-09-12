@@ -11,6 +11,7 @@ import argparse
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import tarfile
@@ -114,6 +115,8 @@ FORBIDDEN_RELEASE_NAMES = frozenset(
         "qtvirtualkeyboardqml",
     }
 )
+BUNDLED_ARBOR_ALLOW_ENV = "DIGIFLY_ALLOW_BUNDLED_ARBOR"
+BUNDLED_ARBOR_MARKER = "DIGIFLY_RUNTIME.json"
 
 
 @dataclass(frozen=True)
@@ -332,6 +335,12 @@ def _inside_native_bundle(path: PurePosixPath, *, artifact_is_app: bool) -> bool
     return len(parts) > app_index + 2 and parts[app_index + 1] == "Contents"
 
 
+def _inside_approved_arbor_root(path: PurePosixPath) -> bool:
+    parts = tuple(part.casefold() for part in path.parts)
+    wanted = ("contents", "resources", "runtimes", "arbor")
+    return any(parts[index : index + len(wanted)] == wanted for index in range(len(parts)))
+
+
 def audit_artifact(
     artifact: str | Path,
     *,
@@ -345,12 +354,21 @@ def audit_artifact(
     artifact_is_app = path.is_dir() and path.suffix.casefold() == ".app"
     component_entries: dict[str, _Entry] = {}
     private_license_entry: _Entry | None = None
+    bundled_arbor_marker: _Entry | None = None
     vendored_roots: set[str] = set()
+    allow_bundled_arbor = (
+        release_kind == "app"
+        and os.environ.get(BUNDLED_ARBOR_ALLOW_ENV, "").strip().casefold()
+        in {"1", "true", "yes", "on"}
+    )
     count = total = 0
     for entry in _entries(path):
         count += 1
         total += entry.size
         logical = PurePosixPath(entry.name)
+        approved_arbor_entry = allow_bundled_arbor and _inside_approved_arbor_root(logical)
+        if approved_arbor_entry and logical.name == BUNDLED_ARBOR_MARKER:
+            bundled_arbor_marker = entry
         parts = set(logical.parts)
         suffix = logical.suffix.casefold()
         if release_kind is not None and any(
@@ -373,7 +391,7 @@ def audit_artifact(
             and hashlib.sha256(entry.data).hexdigest() == PRIVATE_LICENSE_SHA256
         ):
             private_license_entry = entry
-        vendored = _vendored_runtime_root(logical)
+        vendored = None if approved_arbor_entry else _vendored_runtime_root(logical)
         if vendored is not None:
             runtime_root, detail = vendored
             if runtime_root not in vendored_roots:
@@ -383,7 +401,7 @@ def audit_artifact(
                 )
         if logical.is_absolute() or ".." in logical.parts:
             issues.append(ArtifactIssue("unsafe_member_path", entry.name, "Archive member path is unsafe."))
-        forbidden = sorted(parts & GENERATED_PARTS)
+        forbidden = sorted(parts & GENERATED_PARTS) if not approved_arbor_entry else []
         if forbidden:
             issues.append(
                 ArtifactIssue(
@@ -400,7 +418,7 @@ def audit_artifact(
                     f"{entry.size} bytes exceeds the {max_file_bytes}-byte limit.",
                 )
             )
-        if suffix in DATASET_SUFFIXES:
+        if suffix in DATASET_SUFFIXES and not approved_arbor_entry:
             issues.append(
                 ArtifactIssue(
                     "scientific_dataset",
@@ -418,7 +436,7 @@ def audit_artifact(
                     "Compiled binaries are forbidden outside a native application bundle.",
                 )
             )
-        if entry.data is not None and suffix in TEXT_SUFFIXES:
+        if entry.data is not None and suffix in TEXT_SUFFIXES and not approved_arbor_entry:
             for pattern in MACHINE_PATH_PATTERNS:
                 if pattern.search(entry.data):
                     issues.append(
@@ -429,6 +447,24 @@ def audit_artifact(
                         )
                     )
                     break
+    if allow_bundled_arbor:
+        try:
+            marker = json.loads((bundled_arbor_marker.data if bundled_arbor_marker else b"").decode())
+            valid_marker = (
+                marker.get("component") == "Arbor"
+                and marker.get("version") == "0.12.2"
+                and marker.get("policy") == "temporary-bundled-runtime-v1"
+            )
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+            valid_marker = False
+        if not valid_marker:
+            issues.append(
+                ArtifactIssue(
+                    "invalid_bundled_arbor_runtime",
+                    "Contents/Resources/runtimes/arbor",
+                    "The explicit bundled-Arbor exception requires its valid runtime marker.",
+                )
+            )
     if release_kind is not None:
         if private_license_entry is None:
             issues.append(

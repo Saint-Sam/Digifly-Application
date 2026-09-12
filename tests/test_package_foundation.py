@@ -366,6 +366,39 @@ def test_artifact_audit_rejects_obvious_vendored_simulator_packages(
     assert any(issue.code == "bundled_simulator_runtime" for issue in report.issues)
 
 
+def test_app_audit_allows_only_explicit_marked_bundled_arbor(tmp_path: Path, monkeypatch):
+    app = tmp_path / "Digifly Workstation.app"
+    runtime = app / "Contents/Resources/runtimes/arbor"
+    package = runtime / "lib/python3.12/site-packages/arbor"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# bundled Arbor\n", encoding="utf-8")
+    (runtime / "DIGIFLY_RUNTIME.json").write_text(
+        '{"component":"Arbor","version":"0.12.2",'
+        '"policy":"temporary-bundled-runtime-v1"}\n',
+        encoding="utf-8",
+    )
+
+    rejected = audit_artifact(app)
+    assert any(issue.code == "bundled_simulator_runtime" for issue in rejected.issues)
+
+    monkeypatch.setenv("DIGIFLY_ALLOW_BUNDLED_ARBOR", "1")
+    allowed = audit_artifact(app)
+    assert not any(issue.code == "bundled_simulator_runtime" for issue in allowed.issues)
+    assert not any(issue.code == "invalid_bundled_arbor_runtime" for issue in allowed.issues)
+
+
+def test_app_audit_rejects_unmarked_bundled_arbor_exception(tmp_path: Path, monkeypatch):
+    app = tmp_path / "Digifly Workstation.app"
+    package = app / "Contents/Resources/runtimes/arbor/lib/python3.12/site-packages/arbor"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# bundled Arbor\n", encoding="utf-8")
+    monkeypatch.setenv("DIGIFLY_ALLOW_BUNDLED_ARBOR", "1")
+
+    report = audit_artifact(app)
+
+    assert any(issue.code == "invalid_bundled_arbor_runtime" for issue in report.issues)
+
+
 @pytest.mark.parametrize(
     "filename",
     ("libnrnmech.so", "nrnmech.dll", "digifly_gap-catalogue.dylib"),

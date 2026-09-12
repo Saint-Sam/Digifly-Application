@@ -38,6 +38,9 @@ jobs:
           DIGIFLY_MINIMUM_MACOS: "14.0"
           DIGIFLY_RELEASE_VERSION: ${{ inputs.app_version }}
           DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
+          # Arbor 0.12.2 supplies an official macOS 14 arm64 wheel but no
+          # macOS x86_64 wheel. Intel remains external-runtime compatible.
+          DIGIFLY_BUNDLE_ARBOR: ${{ matrix.architecture == 'arm64' && '1' || '0' }}
         run: |
           ./scripts/setup_dev.sh
           ./scripts/build_macos.sh

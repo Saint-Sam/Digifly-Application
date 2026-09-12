@@ -26,7 +26,19 @@ The app-owned BMTK BioNet worker and SONATA translation code may also ship, but
 the BMTK, NEURON, NumPy, and `h5py` packages do not. BioNet is enabled only when
 all four coexist in one user-selected external interpreter.
 
-## Never included in the core package
+## Temporary bundled-Arbor exception
+
+Private macOS arm64 tester builds currently include an isolated Arbor 0.12.2
+runtime under `Contents/Resources/runtimes/arbor`. It is never installed into
+the user's system and external Arbor selections remain supported. The exception
+is controlled by `DIGIFLY_BUNDLE_ARBOR=1` at build time and can be reverted to
+the original external-only boundary with `DIGIFLY_BUNDLE_ARBOR=0`. At run time,
+`DIGIFLY_DISABLE_BUNDLED_ARBOR=1` suppresses automatic use of the included
+runtime. The artifact audit accepts this one exact location only when explicitly
+enabled and requires a versioned runtime marker. Arbor 0.12.2 does not publish a
+macOS x86_64 wheel, so Intel tester builds retain the external-Arbor behavior.
+
+## Never included in the core package (except the explicit Arbor rule above)
 
 | Category | Examples |
 | --- | --- |

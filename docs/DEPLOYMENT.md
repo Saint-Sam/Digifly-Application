@@ -80,10 +80,11 @@ those checks pass. Submission reports and standard-error diagnostics are retaine
 `deployment/notarization`.
 
 The Developer ID lane deliberately starts with no entitlements. Digifly runs
-NEURON, Arbor, and BMTK as separate external processes, so the GUI currently
-does not need development-only execution exceptions or relaxed library
-validation. Add an entitlement only after a hardened-runtime test demonstrates
-a specific need.
+NEURON, Arbor, and BMTK as separate child processes; the temporary bundled
+Arbor runtime remains a separate executable under the app's Resources folder.
+The GUI therefore does not need development-only execution exceptions or
+relaxed library validation. Add an entitlement only after a hardened-runtime
+test demonstrates a specific need.
 
 This machine currently has no valid code-signing identity installed, so the
 first Developer ID run cannot be performed until step 1 is complete.

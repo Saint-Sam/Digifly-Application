@@ -222,6 +222,8 @@ if [[ ! -f "$stage_bundle/Contents/Info.plist" || ! -x "$stage_bundle/Contents/M
   exit 3
 fi
 
+"$project_dir/scripts/bundle_arbor_runtime_macos.sh" "$stage_bundle"
+
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.workstation" "$stage_bundle/Contents/Info.plist"
@@ -263,7 +265,8 @@ if ! /usr/bin/file "$candidate_bundle/Contents/MacOS/main" | /usr/bin/grep -q " 
 fi
 # Enforce the same dataset, generated-state, oversized-file, and developer-path
 # boundary used for wheel/sdist releases before the previous app is moved.
-"$stage_python" -m digifly_app.packaging.audit "$candidate_bundle"
+DIGIFLY_ALLOW_BUNDLED_ARBOR="${DIGIFLY_BUNDLE_ARBOR:-1}" \
+  "$stage_python" -m digifly_app.packaging.audit "$candidate_bundle"
 if [[ "$build_mode" == "developer-id" ]]; then
   DIGIFLY_NOTARY_DIAGNOSTICS_DIR="$source_deploy_dir/notarization" \
     "$project_dir/scripts/notarize_macos_app.sh" "$candidate_bundle" "$release_zip"

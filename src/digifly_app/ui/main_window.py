@@ -63,7 +63,7 @@ from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
-from digifly_app.core.paths import package_root, resource_path
+from digifly_app.core.paths import bundled_arbor_python, package_root, resource_path
 from digifly_app.core.resource_profile import ResourceKind, load_default_profile
 from digifly_app.core.resource_profile import (
     default_profile_path,
@@ -401,7 +401,7 @@ class OverviewPage(QWidget):
             _page_header(
                 "Workspace",
                 "Connect the Digifly ecosystem",
-                "Link native source/data trees and isolated runtimes. Nothing is copied into this app repository.",
+                "Link native source/data trees and isolated runtimes. Bundled Arbor is ready when included in this build.",
             )
         )
 
@@ -417,7 +417,13 @@ class OverviewPage(QWidget):
         )
         self.output_edit = QLineEdit(str(_workspace_home() / "runs"))
         self.python_edit = QLineEdit("/opt/anaconda3/bin/python")
-        self.arbor_python_edit = QLineEdit("/opt/anaconda3/bin/python")
+        included_arbor = bundled_arbor_python()
+        self.arbor_python_edit = QLineEdit(str(included_arbor or "/opt/anaconda3/bin/python"))
+        if included_arbor is not None:
+            self.arbor_python_edit.setToolTip(
+                "Bundled Arbor 0.12.2 — ready without a separate installation. "
+                "You may still choose another Arbor Python."
+            )
         self.bmtk_python_edit = QLineEdit("")
         self.bmtk_python_edit.setPlaceholderText(
             "Choose one Python containing BMTK, BioNet, NEURON, NumPy, and h5py"
@@ -2552,6 +2558,8 @@ class MainWindow(QMainWindow):
             validator=_valid_runtime_path,
             preserve_final_symlink=True,
         )
+        if not arbor_python:
+            arbor_python = bundled_arbor_python()
         bmtk_python = _first_valid_path(
             profile_bmtk,
             saved_bmtk_python,
