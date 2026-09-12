@@ -16,7 +16,12 @@ class CredentialStoreError(RuntimeError):
 
 
 def normalize_neuprint_token(value: str) -> str:
-    """Accept neuPrint's copied JSON token document or a bare token string."""
+    """Accept legacy neuPrint tokens and current DatasetGateway API keys.
+
+    neuPrint historically copied a JSON document containing ``token``.  Newer
+    authenticated deployments use a DatasetGateway key named ``dsg_token``.
+    Both are still sent to neuPrintHTTP as an ordinary Bearer credential.
+    """
 
     raw = str(value or "").strip()
     if not raw:
@@ -27,10 +32,18 @@ def normalize_neuprint_token(value: str) -> str:
             decoded = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError("The neuPrint token text is not valid JSON or a bare token") from exc
-        token = decoded.get("token") if isinstance(decoded, dict) else decoded
+        if isinstance(decoded, dict):
+            token = decoded.get("dsg_token") or decoded.get("token")
+        else:
+            token = decoded
+    elif raw.startswith("dsg_token="):
+        token = raw.removeprefix("dsg_token=").split(";", 1)[0]
     normalized = str(token or "").strip().strip('"')
     if not normalized or any(character in normalized for character in "\r\n"):
-        raise ValueError("The neuPrint token is empty or malformed")
+        raise ValueError(
+            "The neuPrint credential is empty or malformed. Paste the complete "
+            "DatasetGateway API key (dsg_token) or legacy neuPrint token."
+        )
     return normalized
 
 

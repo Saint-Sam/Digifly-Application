@@ -256,7 +256,13 @@ def _default_transport(
     except HTTPError as exc:
         status = int(getattr(exc, "code", 0) or 0)
         if status in {401, 403}:
-            detail = "neuPrint rejected the application token"
+            detail = (
+                "neuPrint rejected this credential. Sign in to the neuPrint website, "
+                "copy a current DatasetGateway API key (dsg_token), and replace the "
+                "saved credential in Digifly."
+                if status == 401
+                else "neuPrint accepted the credential but it does not have access to this dataset"
+            )
         elif status == 404:
             detail = "The requested neuPrint dataset or skeleton was not found"
         else:

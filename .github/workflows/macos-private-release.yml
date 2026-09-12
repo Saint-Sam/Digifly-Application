@@ -66,6 +66,19 @@ jobs:
           pattern: Digifly-Workstation-macOS-*
           path: release-assets
           merge-multiple: true
+      - name: Give downloads the permanent prerelease names
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          release_version="${RELEASE_TAG#v}"
+          for architecture in arm64 x86_64; do
+            source="release-assets/Digifly-Workstation-${APP_VERSION}-macOS-${architecture}.zip"
+            target="release-assets/Digifly-Workstation-${release_version}-macOS-${architecture}.zip"
+            mv "$source" "$target"
+            sha256sum "$target" | sed "s|  release-assets/|  |" > "${target}.sha256"
+            rm "${source}.sha256"
+          done
       - name: Attach both Mac builds to the prerelease
         env:
           GH_TOKEN: ${{ github.token }}

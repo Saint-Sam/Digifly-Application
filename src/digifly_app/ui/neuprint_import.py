@@ -58,7 +58,7 @@ from digifly_app.core.resource_profile import ResourceProfile
 from .widgets import Card
 
 
-TOKEN_HELP_URL = "https://connectome-neuprint.github.io/neuprint-python/docs/quickstart.html"
+TOKEN_HELP_URL = "https://neuprint.janelia.org/account"
 
 SELECTION_OPTIONS = (
     ("Body IDs", "body_ids", "Example: 10000, 10002"),
@@ -128,7 +128,7 @@ class NeuPrintImportDialog(QDialog):
         title = QLabel("Download neuron data from neuPrint")
         title.setObjectName("PageTitle")
         detail = QLabel(
-            "Connect with your personal application token, preview a bounded neuron set, "
+            "Connect with your personal neuPrint credential, preview a bounded neuron set, "
             "review its exact destination, then download resumable SWCs and optional "
             "selected connectivity into the managed library."
         )
@@ -149,12 +149,12 @@ class NeuPrintImportDialog(QDialog):
         token_layout.setContentsMargins(0, 0, 0, 0)
         self.token_edit = QLineEdit()
         self.token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token_edit.setPlaceholderText("Paste the token JSON or bare token")
+        self.token_edit.setPlaceholderText("Paste a DatasetGateway API key or legacy token")
         token_layout.addWidget(self.token_edit, 1)
         help_button = QPushButton("Token help")
         help_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(TOKEN_HELP_URL)))
         token_layout.addWidget(help_button)
-        connection_form.addRow("Application token", token_row)
+        connection_form.addRow("neuPrint credential", token_row)
         token_options = QWidget()
         token_options_layout = QHBoxLayout(token_options)
         token_options_layout.setContentsMargins(0, 0, 0, 0)
@@ -175,7 +175,7 @@ class NeuPrintImportDialog(QDialog):
         self.load_saved_button.clicked.connect(self._load_saved_token)
         token_options_layout.addWidget(self.load_saved_button)
         token_options_layout.addStretch(1)
-        connection_form.addRow("Token source", token_options)
+        connection_form.addRow("Credential source", token_options)
         connection_actions = QWidget()
         connection_actions_layout = QHBoxLayout(connection_actions)
         connection_actions_layout.setContentsMargins(0, 0, 0, 0)

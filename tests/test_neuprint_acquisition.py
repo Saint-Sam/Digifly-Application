@@ -72,6 +72,18 @@ def test_token_json_and_os_credential_adapter_keep_only_an_opaque_reference(monk
     assert store.get("https://neuprint.janelia.org") is None
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (json.dumps({"dsg_token": SECRET}), SECRET),
+        (f"dsg_token={SECRET}; Path=/; Secure", SECRET),
+        (SECRET, SECRET),
+    ],
+)
+def test_current_dataset_gateway_credential_formats(value, expected):
+    assert normalize_neuprint_token(value) == expected
+
+
 def _profile(tmp_path: Path):
     workspace = tmp_path / "Digifly Public"
     workspace.mkdir()
