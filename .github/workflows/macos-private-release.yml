@@ -66,4 +66,5 @@ jobs:
       - name: Attach both Mac builds to the prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "${{ inputs.release_tag }}" release-assets/* --clobber
