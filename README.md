@@ -42,11 +42,12 @@ clone and run this repository solely for private evaluation and feedback. That
 authorization does not permit redistribution, publication, sublicensing, or
 production use of the source or a built application.
 
-Download the current Apple-silicon Mac build from
+Download the Mac build matching the test machine from
 [Digifly Workstation 0.1.0 alpha 1](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.1):
 
-1. Download `Digifly-Workstation-0.1.0-alpha.1-macOS-arm64.zip` from the
-   release's **Assets** section.
+1. In the release's **Assets** section, download the `macOS-arm64` ZIP for an
+   Apple-silicon Mac or the `macOS-x86_64` ZIP for an Intel Mac. Both target
+   macOS 14.0 or newer.
 2. Unzip it, then right-click **Digifly Workstation** and choose **Open**.
 3. Confirm **Open** when macOS warns that the developer cannot be verified.
    If macOS still blocks it, approve the app in **System Settings → Privacy &

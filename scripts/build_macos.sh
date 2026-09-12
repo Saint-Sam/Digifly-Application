@@ -41,7 +41,10 @@ source_deploy_dir="$project_dir/deployment"
 release_dir="$project_dir/dist"
 release_bundle="$release_dir/Digifly Workstation.app"
 release_archive_dir="$release_dir/previous_builds"
-release_zip="${DIGIFLY_RELEASE_ZIP:-$release_dir/Digifly-Workstation-0.1.0-macos-$(/usr/bin/uname -m).zip}"
+release_version="${DIGIFLY_RELEASE_VERSION:-0.1.0}"
+minimum_macos="${DIGIFLY_MINIMUM_MACOS:-14.0}"
+release_architecture="$(/usr/bin/uname -m)"
+release_zip="${DIGIFLY_RELEASE_ZIP:-$release_dir/Digifly-Workstation-$release_version-macOS-$release_architecture.zip}"
 build_number="${DIGIFLY_BUILD_NUMBER:-1}"
 build_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 stage_root="$(mktemp -d /private/tmp/digifly-workstation-build.XXXXXX)"
@@ -127,6 +130,14 @@ if [[ ! "$build_number" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
   echo "DIGIFLY_BUILD_NUMBER must be one to three dot-separated non-negative integers." >&2
   exit 2
 fi
+if [[ ! "$release_version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]]; then
+  echo "DIGIFLY_RELEASE_VERSION must be a two- or three-part numeric app version." >&2
+  exit 2
+fi
+if [[ ! "$minimum_macos" =~ ^[0-9]+([.][0-9]+){1,2}$ ]]; then
+  echo "DIGIFLY_MINIMUM_MACOS must be a numeric macOS version such as 14.0." >&2
+  exit 2
+fi
 if [[ -e "$candidate_root" ]]; then
   echo "Refusing to overwrite stale release candidate at $candidate_root" >&2
   exit 2
@@ -191,6 +202,7 @@ export PIP_CACHE_DIR="$stage_deploy_dir/.pip-cache"
 export TMPDIR="$stage_root/tmp"
 export NUITKA_ASSUME_YES_FOR_DOWNLOADS="yes"
 export PIP_NO_INDEX="1"
+export MACOSX_DEPLOYMENT_TARGET="$minimum_macos"
 
 cd "$stage_root"
 "$stage_python" "$deploy_script" \
@@ -213,7 +225,12 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.workstation" "$stage_bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.0" "$stage_bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $release_version" "$stage_bundle/Contents/Info.plist"
+if /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$stage_bundle/Contents/Info.plist" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $minimum_macos" "$stage_bundle/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $minimum_macos" "$stage_bundle/Contents/Info.plist"
+fi
 if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$stage_bundle/Contents/Info.plist" >/dev/null 2>&1; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$stage_bundle/Contents/Info.plist"
 else
@@ -238,6 +255,10 @@ fi
 codesign --verify --deep --strict "$candidate_bundle"
 if [[ ! -x "$candidate_bundle/Contents/MacOS/main" ]]; then
   echo "Release candidate lost its executable permission during copying." >&2
+  exit 4
+fi
+if ! /usr/bin/file "$candidate_bundle/Contents/MacOS/main" | /usr/bin/grep -q " $release_architecture"; then
+  echo "Release executable does not match host architecture $release_architecture." >&2
   exit 4
 fi
 # Enforce the same dataset, generated-state, oversized-file, and developer-path
@@ -288,4 +309,7 @@ build_succeeded=1
 echo "Built and verified $release_bundle"
 if [[ "$build_mode" == "developer-id" ]]; then
   echo "Developer ID release archive: $release_zip"
+else
+  "$project_dir/scripts/archive_macos_app.sh" "$release_bundle" "$release_zip"
+  echo "Ad-hoc private-testing archive: $release_zip"
 fi

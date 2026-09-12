@@ -1,0 +1,69 @@
+name: macOS private release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing prerelease tag to receive the Mac downloads
+        required: true
+        default: v0.1.0-alpha.1
+      app_version:
+        description: Numeric macOS application version
+        required: true
+        default: 0.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.architecture == 'arm64' && 'arm64' || 'x64' }}
+          cache: pip
+      - name: Build the architecture-native app
+        env:
+          DIGIFLY_MINIMUM_MACOS: "14.0"
+          DIGIFLY_RELEASE_VERSION: ${{ inputs.app_version }}
+          DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          ./scripts/setup_dev.sh
+          ./scripts/build_macos.sh
+      - name: Confirm architecture and minimum macOS
+        run: |
+          test "$(uname -m)" = "${{ matrix.architecture }}"
+          file "dist/Digifly Workstation.app/Contents/MacOS/main" | grep " ${{ matrix.architecture }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' 'dist/Digifly Workstation.app/Contents/Info.plist')" = "14.0"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Digifly-Workstation-macOS-${{ matrix.architecture }}
+          path: |
+            dist/Digifly-Workstation-${{ inputs.app_version }}-macOS-${{ matrix.architecture }}.zip
+            dist/Digifly-Workstation-${{ inputs.app_version }}-macOS-${{ matrix.architecture }}.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Digifly-Workstation-macOS-*
+          path: release-assets
+          merge-multiple: true
+      - name: Attach both Mac builds to the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" release-assets/* --clobber

@@ -131,6 +131,21 @@ def test_macos_build_audits_candidate_before_promoting_it():
     assert build_script.index(audit) < build_script.index(promote)
 
 
+def test_macos_private_build_declares_and_archives_supported_target():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "scripts" / "build_macos.sh").read_text(encoding="utf-8")
+    workflow = (root / ".github" / "workflows" / "macos-private-release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'minimum_macos="${DIGIFLY_MINIMUM_MACOS:-14.0}"' in build_script
+    assert "MACOSX_DEPLOYMENT_TARGET" in build_script
+    assert "LSMinimumSystemVersion" in build_script
+    assert 'scripts/archive_macos_app.sh' in build_script
+    assert "architecture: arm64" in workflow
+    assert "architecture: x86_64" in workflow
+    assert 'DIGIFLY_MINIMUM_MACOS: "14.0"' in workflow
+
+
 def test_developer_id_lane_signs_and_notarizes_before_promotion():
     build_script = (
         Path(__file__).resolve().parents[1] / "scripts" / "build_macos.sh"

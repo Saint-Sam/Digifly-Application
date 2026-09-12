@@ -4,6 +4,14 @@ Digifly Workstation uses Qt for Python's supported `pyside6-deploy` path. The ch
 `pysidedeploy.spec` keeps the simulator worker and architecture guide inside the
 bundle while leaving NEURON, Arbor, BMTK, and VND as external runtime profiles.
 
+## Supported private-test Macs
+
+The private alpha targets macOS 14.0 or newer. Apple-silicon and Intel Macs use
+separate architecture-native downloads; changing a plist label cannot make an
+arm64 executable run on Intel. The release workflow builds and verifies both
+`arm64` and `x86_64` archives before attaching them to the same GitHub
+prerelease.
+
 ## Local macOS build
 
 From the repository root:
@@ -89,8 +97,10 @@ Augustin/ModelDB mechanism derivatives, confirm ownership of the Digifly gap
 sources, and preserve the provenance for the Digifly-owned paired-GF icon. The
 temporary PySide icon has been removed. Qt Virtual Keyboard is not used by
 Digifly and is explicitly excluded from the build and artifact audit.
-The current native build is Apple-Silicon (`arm64`) with a macOS 11.1 binary
-deployment target; its supported macOS/CPU test matrix must be declared before
-it is sent to other machines.
+Local builds use the host CPU architecture and declare macOS 14.0 as their
+minimum system version. The GitHub private-release workflow produces separate
+Apple-silicon (`arm64`) and Intel (`x86_64`) artifacts. Both must pass their
+native runner build, bundle audit, code-signature check, archive test, and
+minimum-version assertion before publication.
 
 Generated Nuitka and Qt deployment directories are ignored by Git.
