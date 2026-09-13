@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any, Mapping
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -63,6 +63,12 @@ from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
+from digifly_app.core.updates import (
+    UpdateAsset,
+    UpdateStatus,
+    check_for_update,
+    download_verified_update,
+)
 from digifly_app.core.paths import (
     bundled_arbor_python,
     container_runtime_launcher,
@@ -121,6 +127,25 @@ from .widgets import Card, CheckRow, EngineCard, StatusPill, clear_layout, make_
 ORGANIZATION_NAME = "Digifly"
 APPLICATION_NAME = "Digifly Workstation"
 LEGACY_APPLICATION_NAME = "Digifly App"
+
+
+class UpdateWorker(QThread):
+    """Keep release checks and large downloads off the interface thread."""
+
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, asset: UpdateAsset | None = None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.asset = asset
+
+    def run(self) -> None:
+        try:
+            result = check_for_update() if self.asset is None else download_verified_update(self.asset)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
 
 
 def _workspace_home() -> Path:
@@ -2245,6 +2270,12 @@ class MainWindow(QMainWindow):
         topbar_layout.addWidget(self.project_label)
         topbar_layout.addStretch()
         self.read_only_badge = StatusPill(CheckState.INFO, "DRY-RUN SAFE")
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.setToolTip(
+            "Check the official Digifly release. Updates never replace your workspace, runs, or SWCs."
+        )
+        self.update_button.clicked.connect(self._check_for_updates)
+        topbar_layout.addWidget(self.update_button)
         topbar_layout.addWidget(self.read_only_badge)
         right.addWidget(topbar)
         self.pages = QStackedWidget()
@@ -2318,6 +2349,57 @@ class MainWindow(QMainWindow):
 
     def _theme_toggled(self, use_light_theme: bool) -> None:
         self._apply_theme(LIGHT_THEME if use_light_theme else DARK_THEME)
+
+    def _check_for_updates(self) -> None:
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking…")
+        self._update_worker = UpdateWorker(parent=self)
+        self._update_worker.succeeded.connect(self._update_check_finished)
+        self._update_worker.failed.connect(self._update_failed)
+        self._update_worker.finished.connect(self._update_worker.deleteLater)
+        self._update_worker.start()
+
+    def _update_check_finished(self, result: object) -> None:
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check for updates")
+        if not isinstance(result, UpdateStatus):
+            self._update_failed("The update service returned an unexpected response.")
+            return
+        if not result.available or result.asset is None:
+            QMessageBox.information(self, "Digifly is current", result.reason)
+            return
+        answer = QMessageBox.question(
+            self,
+            "Digifly update available",
+            "A newer Digifly build is available. Download and verify it now?\n\n"
+            "Your saved runs, custom SWCs, downloaded connectomes, and credentials will not be changed.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Downloading update…")
+        self._update_worker = UpdateWorker(result.asset, self)
+        self._update_worker.succeeded.connect(self._update_download_finished)
+        self._update_worker.failed.connect(self._update_failed)
+        self._update_worker.finished.connect(self._update_worker.deleteLater)
+        self._update_worker.start()
+
+    def _update_download_finished(self, result: object) -> None:
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check for updates")
+        archive = Path(str(result))
+        QMessageBox.information(
+            self,
+            "Update verified",
+            "The update was downloaded and passed its integrity check. "
+            "Automatic replacement will be enabled after the platform installer helper is validated.\n\n"
+            f"Staged file: {archive}",
+        )
+
+    def _update_failed(self, message: str) -> None:
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check for updates")
+        QMessageBox.warning(self, "Could not check for updates", message)
 
     def _apply_theme(self, theme: object, *, persist: bool = True) -> None:
         self.theme = normalize_theme(theme)

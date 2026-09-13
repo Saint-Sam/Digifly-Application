@@ -53,6 +53,7 @@ jobs:
         shell: pwsh
         env:
           DIGIFLY_RELEASE_VERSION: ${{ inputs.app_version }}
+          DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
           DIGIFLY_ARBOR_VERSION: "0.12.2"
         run: |
           ./scripts/setup_dev.ps1

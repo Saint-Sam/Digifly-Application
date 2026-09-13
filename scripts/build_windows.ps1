@@ -11,6 +11,9 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage, $dist -Force | Out-Null
 robocopy $project $stage /E /XD .git .venv deployment dist __pycache__ | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "Could not stage the Windows build." }
+$buildNumber = if ($env:DIGIFLY_BUILD_NUMBER) { $env:DIGIFLY_BUILD_NUMBER } else { "1" }
+$buildInfo = @{ version = $version; build = $buildNumber; built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+$buildInfo | ConvertTo-Json -Compress | Set-Content (Join-Path $stage "digifly_build.json") -Encoding ascii
 Copy-Item (Join-Path $project ".venv") (Join-Path $stage ".venv") -Recurse
 $iconSource = Join-Path $stage "src\digifly_app\assets\digifly_icon.png"
 $iconTarget = Join-Path $stage "src\digifly_app\assets\digifly_icon.ico"
@@ -19,9 +22,20 @@ if ($LASTEXITCODE -ne 0) { throw "Could not create the Windows application icon.
 
 Push-Location $stage
 try {
-    & ".venv\Scripts\pyside6-deploy.exe" -c "pysidedeploy.windows.spec" --keep-deployment-files -f main.py
-    if ($LASTEXITCODE -ne 0) { throw "PySide deployment failed." }
-    $bundle = Join-Path $stage "main.dist"
+    $nuitkaArgs = @(
+        "-m", "nuitka", "main.py", "--standalone", "--enable-plugin=pyside6",
+        "--output-dir=deployment", "--assume-yes-for-downloads", "--lto=no", "--jobs=4",
+        "--windows-console-mode=disable", "--windows-icon-from-ico=$iconTarget",
+        "--include-data-file=src/digifly_app/assets/digifly_icon.png=digifly_app/assets/digifly_icon.png",
+        "--include-data-dir=src/digifly_app/workers=digifly_app/workers",
+        "--include-data-dir=mechanisms=mechanisms", "--include-data-dir=presets=presets",
+        "--include-data-dir=schemas=schemas", "--include-data-dir=docs=docs",
+        "--include-data-file=digifly_build.json=digifly_build.json",
+        "--include-data-file=README.md=README.md", "--include-data-file=LICENSE=LICENSE"
+    )
+    & ".venv\Scripts\python.exe" @nuitkaArgs
+    if ($LASTEXITCODE -ne 0) { throw "Windows application compilation failed." }
+    $bundle = Join-Path $stage "deployment\main.dist"
     $exe = Join-Path $bundle "main.exe"
     if (-not (Test-Path $exe)) { throw "Windows deployment did not create main.exe." }
     Rename-Item $exe "Digifly Workstation.exe"

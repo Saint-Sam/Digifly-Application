@@ -164,6 +164,9 @@ rsync -a \
   --exclude '/dist/' \
   --exclude '__pycache__/' \
   "$project_dir/" "$stage_root/"
+cat > "$stage_root/digifly_build.json" <<EOF
+{"version":"$release_version","build":"$build_number","built_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
 # Clone the environment as well as the source. A symlink here is not enough:
 # Nuitka resolves PySide's Qt libraries to their physical location before its
 # dependency scan. APFS clone-on-write keeps this fast and space-efficient.
