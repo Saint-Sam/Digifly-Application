@@ -47,6 +47,11 @@ class SimulatorRuntime:
 def _common_environment_roots() -> tuple[Path, ...]:
     home = Path.home()
     return (
+        home / "miniconda3" / "envs",
+        home / "anaconda3" / "envs",
+        home / "AppData" / "Local" / "miniconda3" / "envs",
+        home / "AppData" / "Local" / "anaconda3" / "envs",
+        home / "AppData" / "Local" / "Programs" / "Python",
         Path("/opt/anaconda3/envs"),
         Path("/opt/homebrew/Caskroom/miniconda/base/envs"),
         home / "anaconda3" / "envs",
@@ -69,12 +74,13 @@ def runtime_candidates(
     """Enumerate one launcher per environment without dereferencing its symlink."""
     candidates: list[Path] = [Path(value).expanduser() for value in explicit if str(value).strip()]
     if include_path:
-        for name in ("python3", "python"):
+        for name in ("python.exe", "python3", "python"):
             located = shutil.which(name)
             if located:
                 candidates.append(Path(located))
     candidates.extend(
         (
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "python.exe",
             Path("/opt/anaconda3/bin/python"),
             Path("/opt/homebrew/bin/python3"),
             Path("/usr/local/bin/python3"),
@@ -98,6 +104,7 @@ def runtime_candidates(
                 continue
             candidates.extend(
                 (
+                    environment / "python.exe",
                     environment / "bin" / "python",
                     environment / "bin" / "python3",
                     environment / "Scripts" / "python.exe",

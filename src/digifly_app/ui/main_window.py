@@ -63,7 +63,12 @@ from digifly_app.core.project import DigiflyProject
 from digifly_app.core.resources import ResourceSnapshot, capture_resources
 from digifly_app.core.results import load_escape_siz_result
 from digifly_app.core.workspace import DigiflyWorkspace
-from digifly_app.core.paths import bundled_arbor_python, package_root, resource_path
+from digifly_app.core.paths import (
+    bundled_arbor_python,
+    container_runtime_launcher,
+    package_root,
+    resource_path,
+)
 from digifly_app.core.resource_profile import ResourceKind, load_default_profile
 from digifly_app.core.resource_profile import (
     default_profile_path,
@@ -416,15 +421,18 @@ class OverviewPage(QWidget):
             "Optional — choose an existing Digifly Public source workspace"
         )
         self.output_edit = QLineEdit(str(_workspace_home() / "runs"))
-        self.python_edit = QLineEdit("/opt/anaconda3/bin/python")
+        container_runtime = container_runtime_launcher()
+        self.python_edit = QLineEdit(str(container_runtime or "/opt/anaconda3/bin/python"))
         included_arbor = bundled_arbor_python()
-        self.arbor_python_edit = QLineEdit(str(included_arbor or "/opt/anaconda3/bin/python"))
+        self.arbor_python_edit = QLineEdit(
+            str(container_runtime or included_arbor or "/opt/anaconda3/bin/python")
+        )
         if included_arbor is not None:
             self.arbor_python_edit.setToolTip(
                 "Bundled Arbor 0.12.2 — ready without a separate installation. "
                 "You may still choose another Arbor Python."
             )
-        self.bmtk_python_edit = QLineEdit("")
+        self.bmtk_python_edit = QLineEdit(str(container_runtime or ""))
         self.bmtk_python_edit.setPlaceholderText(
             "Choose one Python containing BMTK, BioNet, NEURON, NumPy, and h5py"
         )
@@ -2558,14 +2566,19 @@ class MainWindow(QMainWindow):
             validator=_valid_runtime_path,
             preserve_final_symlink=True,
         )
-        if not arbor_python:
-            arbor_python = bundled_arbor_python()
         bmtk_python = _first_valid_path(
             profile_bmtk,
             saved_bmtk_python,
             validator=_valid_runtime_path,
             preserve_final_symlink=True,
         )
+        container_runtime = container_runtime_launcher()
+        if not worker_python and container_runtime:
+            worker_python = container_runtime
+        if not arbor_python:
+            arbor_python = container_runtime or bundled_arbor_python()
+        if not bmtk_python and container_runtime:
+            bmtk_python = container_runtime
         # Import only read-only input/runtime bindings from the legacy app on
         # first launch. Workstation outputs deliberately remain in their new
         # default root so the two applications cannot overwrite each other's

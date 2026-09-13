@@ -1,0 +1,23 @@
+FROM python:3.12.11-slim-bookworm
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MPLBACKEND=Agg \
+    NEURON_MODULE_OPTIONS=-nogui
+
+WORKDIR /opt/digifly
+COPY . /opt/digifly
+RUN python -m pip install --no-cache-dir \
+      "arbor==0.12.2" \
+      "NEURON==9.0.1" \
+      "bmtk>=1.1,<2" \
+      "h5py>=3.11,<4" \
+      "matplotlib>=3.9,<4" \
+      "numpy>=1.26,<3" \
+      "pandas>=2.2,<3" \
+      "pyarrow>=17,<24" \
+    && python -c "import arbor, bmtk, neuron; from bmtk.simulator import bionet; tree=arbor.segment_tree(); assert tree.size == 0; print('Arbor', arbor.__version__); print('NEURON', neuron.__version__); print('BMTK', bmtk.__version__)"
+
+LABEL org.opencontainers.image.source="https://github.com/Saint-Sam/Digifly-Application"
+LABEL org.opencontainers.image.description="Reproducible Arbor, NEURON, and BMTK runtime for Digifly Workstation"

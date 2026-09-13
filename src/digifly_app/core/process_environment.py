@@ -83,16 +83,22 @@ def external_runtime_path(
     inherited: str | None = None,
 ) -> str:
     """Build a deterministic PATH while retaining non-bundle user tools."""
-    entries = [
-        str(external_runtime_launcher(python_executable).parent),
-        "/Applications/NEURON/bin",
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ]
+    runtime_dir = external_runtime_launcher(python_executable).parent
+    entries = [str(runtime_dir)]
+    if os.name == "nt":
+        entries.extend((str(runtime_dir / "Scripts"), str(runtime_dir / "Library" / "bin")))
+    else:
+        entries.extend(
+            (
+                "/Applications/NEURON/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            )
+        )
     inherited_path = inherited if inherited is not None else os.environ.get("PATH", "")
     for entry in inherited_path.split(os.pathsep):
         if entry and ".app/Contents/MacOS" not in entry:

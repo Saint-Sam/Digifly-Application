@@ -10,6 +10,7 @@ import sys
 RESOURCE_ROOT_ENV = "DIGIFLY_WORKSTATION_RESOURCE_ROOT"
 SHARE_DIRECTORY = "digifly-workstation"
 BUNDLED_ARBOR_DISABLE_ENV = "DIGIFLY_DISABLE_BUNDLED_ARBOR"
+CONTAINER_RUNTIME_IMAGE = "ghcr.io/saint-sam/digifly-simulators:0.1.0-alpha.1"
 
 
 def _looks_like_resource_root(path: Path) -> bool:
@@ -69,9 +70,27 @@ def bundled_arbor_python() -> Path | None:
     }:
         return None
     candidates = (
+        resource_path("runtimes", "arbor", "python.exe"),
+        resource_path("runtimes", "arbor", "Scripts", "python.exe"),
         resource_path("runtimes", "arbor", "bin", "python3"),
+        Path(sys.executable).resolve().parent / "runtimes" / "arbor" / "python.exe",
+        Path(sys.executable).resolve().parent / "runtimes" / "arbor" / "Scripts" / "python.exe",
         Path(sys.executable).resolve().parent.parent
         / "Resources" / "runtimes" / "arbor" / "bin" / "python3",
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def container_runtime_launcher() -> Path | None:
+    """Return the packaged Docker-backed Python-compatible launcher."""
+
+    candidates = (
+        resource_path("runtimes", "docker", "digifly-python.exe"),
+        Path(sys.executable).resolve().parent
+        / "runtimes" / "docker" / "digifly-python.exe",
     )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):

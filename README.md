@@ -63,6 +63,13 @@ Scientific resources remain outside the application and are configured through
 the first-launch workflow. Follow the short, audited [early-testing
 flow](docs/TESTING.md) before filing a report.
 
+The Windows tester build uses Docker Desktop as its scientific runtime. Digifly
+ships a small Docker launcher and uses the versioned
+`ghcr.io/saint-sam/digifly-simulators` image containing Arbor, NEURON, and BMTK.
+Experiments mount their run folder read/write and only referenced input folders
+read-only. Connectomes, imported SWCs, saved runs, credentials, and the managed
+Data Library stay on the host and are never built into the image.
+
 ## What the first milestone includes
 
 - A native Qt desktop interface for macOS, Windows, and Linux.

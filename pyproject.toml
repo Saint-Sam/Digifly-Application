@@ -36,6 +36,7 @@ test = [
 ]
 deploy = [
   "Nuitka==2.7.11",
+  "Pillow>=11,<13",
 ]
 package = [
   "build>=1.2,<2",
@@ -60,6 +61,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 digifly_app = [
   "assets/*.icns",
+  "assets/*.ico",
   "assets/*.md",
   "assets/*.png",
 ]
