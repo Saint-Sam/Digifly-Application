@@ -27,12 +27,14 @@ try {
         "--output-dir=deployment", "--assume-yes-for-downloads", "--lto=no", "--jobs=4",
         "--windows-console-mode=disable", "--windows-icon-from-ico=$iconTarget",
         "--include-data-file=src/digifly_app/assets/digifly_icon.png=digifly_app/assets/digifly_icon.png",
-        "--include-data-dir=src/digifly_app/workers=digifly_app/workers",
         "--include-data-dir=mechanisms=mechanisms", "--include-data-dir=presets=presets",
         "--include-data-dir=schemas=schemas", "--include-data-dir=docs=docs",
         "--include-data-file=digifly_build.json=digifly_build.json",
         "--include-data-file=README.md=README.md", "--include-data-file=LICENSE=LICENSE"
     )
+    Get-ChildItem "src\digifly_app\workers\*.py" | ForEach-Object {
+        $nuitkaArgs += "--include-data-file=$($_.FullName)=digifly_app/workers/$($_.Name)"
+    }
     & ".venv\Scripts\python.exe" @nuitkaArgs
     if ($LASTEXITCODE -ne 0) { throw "Windows application compilation failed." }
     $bundle = Join-Path $stage "deployment\main.dist"
@@ -44,6 +46,14 @@ try {
     & ".venv\Scripts\python.exe" -m nuitka --onefile --output-dir=$launcherDir --output-filename="digifly-python.exe" "scripts\docker_python_launcher.py"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $launcherDir "digifly-python.exe"))) {
         throw "Could not build the Docker simulator launcher."
+    }
+    $requiredWorkers = @(
+        "generic_experiment_worker.py", "arbor_escape_siz_worker.py",
+        "bmtk_bionet_worker.py", "escape_siz_worker.py"
+    )
+    foreach ($worker in $requiredWorkers) {
+        $workerPath = Join-Path $bundle "digifly_app\workers\$worker"
+        if (-not (Test-Path $workerPath)) { throw "Packaged simulator worker is missing: $worker" }
     }
     $archive = Join-Path $dist "Digifly-Workstation-$version-Windows-x86_64.zip"
     if (Test-Path $archive) { Remove-Item -Force $archive }

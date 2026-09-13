@@ -142,7 +142,7 @@ def test_macos_private_build_declares_and_archives_supported_target():
     assert "LSMinimumSystemVersion" in build_script
     assert 'scripts/archive_macos_app.sh' in build_script
     assert "architecture: arm64" in workflow
-    assert "architecture: x86_64" in workflow
+    assert "architecture: x86_64" not in workflow
     assert 'DIGIFLY_MINIMUM_MACOS: "14.0"' in workflow
 
 
