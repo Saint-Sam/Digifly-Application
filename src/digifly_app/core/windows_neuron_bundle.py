@@ -65,8 +65,11 @@ def validate_manifest(directory: Path) -> dict:
 
 
 def safe_member(info: zipfile.ZipInfo) -> PurePosixPath:
-    path = PurePosixPath(info.filename)
-    if (path.is_absolute() or not path.parts or ".." in path.parts or "\\" in info.filename
+    # ZipInfo normalizes backslashes on Windows. Inspect the original spelling
+    # too so a malformed member cannot evade the same cross-platform guard.
+    original_name = info.orig_filename
+    path = PurePosixPath(original_name)
+    if (path.is_absolute() or not path.parts or ".." in path.parts or "\\" in original_name
             or any(":" in part or part.endswith((" ", "."))
                 or part.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *("COM"+str(i) for i in range(1,10)), *("LPT"+str(i) for i in range(1,10))}
                 for part in path.parts) or stat.S_ISLNK(info.external_attr >> 16)):

@@ -22,6 +22,11 @@ TAG = "v0.1.0-alpha.1"
 OLD = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64.zip"
 OLD_SHA = "cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851"
 BACKUP = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20260913.zip"
+KNOWN_ROLLBACKS = {
+    OLD_SHA: BACKUP,
+    "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261015-interface-only.zip",
+}
 
 
 _TOKEN = None
@@ -98,6 +103,10 @@ def publish(archive: Path, review=None):
         raise ValueError("Redistribution review is absent, stale or lacks permission evidence")
     if approval.get("technical_windows_package_passed") is not True:
         raise ValueError("Actual Windows package review is missing")
+    previous_sha = approval.get("previous_alias_sha256", OLD_SHA)
+    if previous_sha not in KNOWN_ROLLBACKS:
+        raise ValueError("The previous download is not one of this task's checksum-pinned releases")
+    backup_name = KNOWN_ROLLBACKS[previous_sha]
     report = audit_artifact(archive)
     if not report.ok:
         raise ValueError("Actual Windows archive audit failed: " + json.dumps(report.to_dict()))
@@ -111,6 +120,16 @@ def publish(archive: Path, review=None):
                 raise ValueError("Actual Windows ZIP payload changed: " + name)
         build = json.loads(zipped.read("digifly_build.json"))
         notices = json.loads(zipped.read("THIRD_PARTY_COMPONENTS.json"))
+        includes_neuron = "installers/neuron/DIGIFLY_NEURON_RUNTIME.json" in marker["files"]
+        if includes_neuron:
+            runtime = json.loads(zipped.read("installers/neuron/DIGIFLY_NEURON_RUNTIME.json"))
+            from digifly_app.core.windows_neuron_bundle import INSTALLER_SHA256, RUNTIME_ID
+            if (runtime.get("runtime_id") != RUNTIME_ID or runtime.get("neuron_installer_sha256") != INSTALLER_SHA256
+                    or approval.get("neuron_windows_ui_install_run_passed") is not True):
+                raise ValueError("Included NEURON requires actual source-bound packaged install/Run review")
+            for name, record in runtime["artifacts"].items():
+                if marker["files"].get("installers/neuron/" + name) != record:
+                    raise ValueError("Included NEURON artifact differs from checked package")
         if (build.get("source_commit") != approval.get("ci_source_commit")
                 or notices.get("schema") != "digifly-windows-notice-inventory-v1"
                 or "mechanisms/augustin_2019/NOTICE.md" not in marker["files"]):
@@ -140,16 +159,16 @@ def publish(archive: Path, review=None):
     current = upload(archive)
     upload(archive.with_suffix(archive.suffix + ".sha256"))
     # Only now, with the new versioned download durable, preserve the old alias.
-    if OLD in before and before[OLD].get("digest") == "sha256:" + OLD_SHA:
-        if BACKUP in before:
+    if OLD in before and before[OLD].get("digest") == "sha256:" + previous_sha:
+        if backup_name in before:
             raise ValueError("Ambiguous old/backup state; refusing destructive replacement")
-        api(f"repos/{REPO}/releases/assets/{before[OLD]['id']}", "--method", "PATCH", "-f", "name=" + BACKUP)
+        api(f"repos/{REPO}/releases/assets/{before[OLD]['id']}", "--method", "PATCH", "-f", "name=" + backup_name)
         if OLD + ".sha256" in before:
-            api(f"repos/{REPO}/releases/assets/{before[OLD + '.sha256']['id']}", "--method", "PATCH", "-f", "name=" + BACKUP + ".original-sha256.txt")
+            api(f"repos/{REPO}/releases/assets/{before[OLD + '.sha256']['id']}", "--method", "PATCH", "-f", "name=" + backup_name + ".original-sha256.txt")
     elif OLD in before and before[OLD].get("digest") != "sha256:" + checksum:
         raise ValueError("Old Windows alias changed unexpectedly; preserved without overwrite")
     latest = {a["name"]: a for a in api(f"repos/{REPO}/releases/{release['id']}")["assets"]}
-    if BACKUP not in latest or latest[BACKUP].get("digest") != "sha256:" + OLD_SHA:
+    if backup_name not in latest or latest[backup_name].get("digest") != "sha256:" + previous_sha:
         raise ValueError("Checksum-pinned old Windows rollback asset is not preserved")
     alias_dir = archive.parent / "windows-alias"
     alias_dir.mkdir(exist_ok=True)
@@ -164,12 +183,17 @@ def publish(archive: Path, review=None):
     note = ("<!-- current-windows-start -->\n## Current Windows tester — October 15, 2026\n\n"
             f"Download [{archive.name}]({current['browser_download_url']}). "
             "Extract All and open **Digifly Workstation.exe**. The old Windows link now serves this build; "
-            "the checksum-pinned September ZIP is preserved as rollback. Mac downloads are unchanged.\n\n"
+            "previous checksum-pinned builds are preserved as rollback. Mac downloads are unchanged.\n\n"
             f"[Exact app source](https://github.com/{REPO}/tree/{approval['ci_source_commit']}) · "
             f"[Windows build and checks](https://github.com/{REPO}/actions/runs/{approval['ci_run_id']})\n\n"
-            "Native Windows UI/Parquet engineering checks passed on Windows Server 2022 CI. "
-            "Unsigned alpha; Windows 11 clean-machine, native NEURON installer/compiler, simulator "
-            "equivalence and user-selected experiment testing remain unverified. Arbor deferred. "
+            + ("Includes offline NEURON9.0.2 + private Python3.12.10/NumPy/Matplotlib/DuckDB. "
+               "In Workspace runtime setup choose **Install included NEURON**, then **Use selected runtimes**. "
+               "Actual extracted app private installation and bounded built-in-HH Run passed on WindowsServer2022 CI; "
+               "no registry/globalPATH/other-installation changes. No BioNet/NetPyNE/Arbor runtime included. "
+               "Windows11 clean-machine, custom-mechanism compiler, MPI and cross-OS scientific equivalence remain unverified. "
+               if includes_neuron else "Native Windows UI/Parquet engineering checks passed on WindowsServer2022 CI. "
+               "Windows11 clean-machine/native NEURON/simulator equivalence remain unverified. ")
+            + "Unsigned alpha; user-selected experiments remain unverified. Arbor deferred. "
             "No dataset/SWC/token included; transfer your Parquet separately.\n<!-- current-windows-end -->\n\n")
     notes = archive.parent / "windows-release-notes.md"
     notes.write_text(note + body, "utf-8")
@@ -177,8 +201,9 @@ def publish(archive: Path, review=None):
     final = api(f"repos/{REPO}/releases/{release['id']}")
     if {a["id"]: a.get("digest") for a in final["assets"] if "macOS" in a["name"]} != mac_before:
         raise ValueError("Mac asset preservation check failed")
-    receipt.update(download_url=current["browser_download_url"], old_backup_sha256=OLD_SHA,
-                   old_backup_asset_id=latest[BACKUP]["id"], mac_assets_unchanged=True)
+    receipt.update(download_url=current["browser_download_url"], old_backup_sha256=previous_sha,
+                   old_backup_asset_id=latest[backup_name]["id"], mac_assets_unchanged=True,
+                   included_neuron=includes_neuron)
     (archive.parent / "windows-publication-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", "utf-8")
     print(json.dumps(receipt, indent=2))
 
