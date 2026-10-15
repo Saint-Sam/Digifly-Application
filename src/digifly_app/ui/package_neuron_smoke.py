@@ -24,7 +24,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
     record = {"ok": False, "scope": "Windows private NEURON install plus actual app Run on tiny engineering fixture; not user-selected presets/paper/equivalence acceptance"}
-    original_question, original_warning = QMessageBox.question, QMessageBox.warning
+    original_question, original_warning, original_critical = QMessageBox.question, QMessageBox.warning, QMessageBox.critical
     errors = []
     try:
         os.environ["LOCALAPPDATA"] = str(destination / "Local App Data")
@@ -49,6 +49,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         # No simulator/preflight/result is mocked or replaced.
         QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Yes if len(args)>1 and args[1]=="Install included NEURON?" else QMessageBox.StandardButton.No
         QMessageBox.warning = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
+        QMessageBox.critical = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
         QTest.mouseClick(dialog.install_neuron_button, Qt.MouseButton.LeftButton)
         deadline = time.monotonic() + 180
         while dialog._thread is not None and time.monotonic() < deadline:
@@ -97,6 +98,6 @@ def run_neuron_package_smoke(destination: Path) -> int:
     except Exception:
         record["error"] = traceback.format_exc()
     finally:
-        QMessageBox.question, QMessageBox.warning = original_question, original_warning
+        QMessageBox.question, QMessageBox.warning, QMessageBox.critical = original_question, original_warning, original_critical
     (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
     return 0 if record["ok"] else 1

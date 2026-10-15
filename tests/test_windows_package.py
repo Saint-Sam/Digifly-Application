@@ -83,7 +83,8 @@ def test_publication_stops_before_network_without_redistribution_review(tmp_path
         publisher.publish(tmp_path / "no-artifact.zip")
 
 
-def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch):
+@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c"])
+def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch, previous):
     import hashlib
     publisher = module("publish_windows_release")
     gate = module("windows_package")
@@ -102,9 +103,9 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
     review = tmp_path / "review.json"
     review.write_text(json.dumps({"artifact_sha256": sha, "permission_evidence": "software fixture, not a licensing opinion",
-        "technical_windows_package_passed": True, "ci_run_id": 1, "ci_source_commit": "fixture-source"}))
+        "technical_windows_package_passed": True, "ci_run_id": 1, "ci_source_commit": "fixture-source", "previous_alias_sha256": previous}))
     assets = {
-        publisher.OLD: {"id": 10, "name": publisher.OLD, "digest": "sha256:" + publisher.OLD_SHA},
+        publisher.OLD: {"id": 10, "name": publisher.OLD, "digest": "sha256:" + previous},
         publisher.OLD + ".sha256": {"id": 11, "name": publisher.OLD + ".sha256", "digest": "old-checksum-fixture"},
         "macOS-fixture.zip": {"id": 20, "name": "macOS-fixture.zip", "digest": "mac-fixture-unchanged"},
     }
@@ -133,11 +134,12 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
         return ""
     monkeypatch.setattr(publisher, "gh", fake_gh)
     publisher.publish(archive, review)
-    assert assets[publisher.BACKUP]["id"] == 10
-    assert assets[publisher.BACKUP]["digest"] == "sha256:" + publisher.OLD_SHA
+    backup = publisher.KNOWN_ROLLBACKS[previous]
+    assert assets[backup]["id"] == 10
+    assert assets[backup]["digest"] == "sha256:" + previous
     assert assets[publisher.OLD]["digest"] == "sha256:" + sha
     assert assets["macOS-fixture.zip"] == {"id": 20, "name": "macOS-fixture.zip", "digest": "mac-fixture-unchanged"}
-    assert mutations.index(("upload", archive.name)) < mutations.index(("rename", publisher.OLD, publisher.BACKUP))
+    assert mutations.index(("upload", archive.name)) < mutations.index(("rename", publisher.OLD, backup))
 
 
 def test_notice_only_overlay_preserves_original_payload_and_rejects_changed_notice(tmp_path):

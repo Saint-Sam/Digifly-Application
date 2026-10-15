@@ -31,7 +31,14 @@ from typing import Any, Mapping, Sequence
 try:
     from . import independent_trials as _trials
 except ImportError:
-    import independent_trials as _trials
+    # CPython's private Windows ._pth isolation intentionally omits the script
+    # directory. Load this app-owned sibling explicitly, never from CWD or an
+    # ambient PYTHONPATH. This changes helper discovery, not model execution.
+    _trials_spec = importlib.util.spec_from_file_location("digifly_independent_trials", Path(__file__).with_name("independent_trials.py"))
+    if _trials_spec is None or _trials_spec.loader is None:
+        raise ImportError("The app-owned independent-trial helper is missing")
+    _trials = importlib.util.module_from_spec(_trials_spec)
+    _trials_spec.loader.exec_module(_trials)
 
 
 REQUEST_SCHEMA_VERSION = 1
