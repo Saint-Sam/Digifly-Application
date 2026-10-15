@@ -30,6 +30,13 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--package-neuron-test":
+        import argparse
+        from digifly_app.ui.package_neuron_smoke import run_neuron_package_smoke
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--package-neuron-test", type=Path, required=True)
+        args = parser.parse_args()
+        return run_neuron_package_smoke(args.package_neuron_test)
     if len(sys.argv) > 1 and sys.argv[1] == "--package-smoke-test":
         import argparse
         from digifly_app.ui.package_smoke import run_package_smoke

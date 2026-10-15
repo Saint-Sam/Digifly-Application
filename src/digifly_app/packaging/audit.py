@@ -399,6 +399,7 @@ def audit_artifact(
     )
     count = total = 0
     windows_binaries = {}
+    approved_neuron_archives = set()
     if release_kind == "windows":
         try:
             marker_entry = next(e for e in _entries(path) if e.name == "digifly_windows_package.json")
@@ -409,6 +410,21 @@ def audit_artifact(
                                 if PurePosixPath(name).suffix.casefold() in BINARY_SUFFIXES}
             if "Digifly Workstation.exe" not in windows_binaries:
                 raise ValueError("Windows application entrypoint absent")
+            # One explicit Windows offline-runtime exception, not arbitrary
+            # simulator vendoring or a global larger-file waiver.
+            offline = next((e for e in _entries(path) if e.name == "installers/neuron/DIGIFLY_NEURON_RUNTIME.json"), None)
+            if offline is not None:
+                from ..core.windows_neuron_bundle import INSTALLER_SHA256, RUNTIME_ID
+                declared = json.loads(offline.data.decode("utf-8"))
+                if (declared.get("runtime_id") != RUNTIME_ID or declared.get("neuron_installer_sha256") != INSTALLER_SHA256
+                        or declared.get("schema") != "digifly-offline-neuron-v1"):
+                    raise ValueError("Unknown bundled NEURON source identity")
+                for name, record in declared["artifacts"].items():
+                    relative = "installers/neuron/" + name
+                    if relative not in marker["files"] or marker["files"][relative] != record:
+                        raise ValueError("Bundled NEURON artifact differs from package inventory")
+                    if name == "runtime.zip":
+                        approved_neuron_archives.add(relative)
         except (StopIteration, KeyError, ValueError, TypeError, AttributeError):
             issues.append(ArtifactIssue("invalid_windows_package", "digifly_windows_package.json", "Windows binaries require a declared package inventory."))
     for entry in _entries(path):
@@ -461,7 +477,7 @@ def audit_artifact(
                     f"Generated directory is not releasable: {', '.join(forbidden)}",
                 )
             )
-        if entry.size > max_file_bytes:
+        if entry.size > (1024**3 if entry.name in approved_neuron_archives else max_file_bytes):
             issues.append(
                 ArtifactIssue(
                     "oversized_file",

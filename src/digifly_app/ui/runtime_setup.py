@@ -26,6 +26,10 @@ from PySide6.QtWidgets import (
 from digifly_app.core.runtime_discovery import (
     SimulatorRuntime,
     discover_simulator_runtimes,
+    probe_simulator_runtime,
+)
+from digifly_app.core.windows_neuron_bundle import (
+    included_neuron_available, default_install_root, install_included_neuron,
 )
 
 
@@ -51,6 +55,19 @@ class _DiscoveryWorker(QObject):
             self.failed.emit(str(exc))
             return
         self.completed.emit(results)
+
+
+class _IncludedNeuronWorker(_DiscoveryWorker):
+    @Slot()
+    def run(self) -> None:
+        try:
+            python = install_included_neuron()
+            result = probe_simulator_runtime(python, timeout=30)
+            if not result.has_neuron or result.neuron_version != "9.0.2":
+                raise ValueError(result.neuron_error or result.error or "Installed NEURON probe failed")
+            self.completed.emit((result,))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class RuntimeSetupDialog(QDialog):
@@ -134,6 +151,10 @@ class RuntimeSetupDialog(QDialog):
         self.search_button.setProperty("primary", True)
         self.search_button.clicked.connect(self.request_search)
         guidance.addWidget(self.search_button, 2, 0, 1, 2)
+        self.install_neuron_button = QPushButton("Install included NEURON 9.0.2…")
+        self.install_neuron_button.setVisible(included_neuron_available())
+        self.install_neuron_button.clicked.connect(self.request_included_neuron)
+        guidance.addWidget(self.install_neuron_button, 3, 0, 1, 2)
         content_layout.addLayout(guidance)
 
         self.progress = QProgressBar()
@@ -210,6 +231,38 @@ class RuntimeSetupDialog(QDialog):
             self.use_button.setFocus(Qt.FocusReason.TabFocusReason)
             return True
         return super().eventFilter(watched, event)
+
+    @Slot()
+    def request_included_neuron(self) -> None:
+        if self._thread is not None:
+            return
+        answer = QMessageBox.question(self, "Install included NEURON?",
+            "Install a private NEURON9.0.2 + Python3.12.10 runtime at:\n"
+            + str(default_install_root()) + "\n\nEverything is included; no download or administrator access is required. "
+            "Other Python/NEURON installations, registry, file associations and global PATH are not changed. "
+            "A built-in HH installation health check will run, not your experiment. "
+            "BioNet/NetPyNE and arbitrary custom-channel Windows support are not certified by this setup. "
+            "After verification, choose Use selected runtimes to connect it to Digifly.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.search_button.setEnabled(False)
+        self.install_neuron_button.setEnabled(False)
+        self.use_button.setEnabled(False)
+        self.progress.setVisible(True)
+        self.status.setText("Installing private NEURON and checking its actual simulation engine…")
+        thread = QThread(self)
+        worker = _IncludedNeuronWorker(())
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._discovery_completed)
+        worker.failed.connect(self._discovery_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._thread, self._worker = thread, worker
+        thread.start()
 
     @Slot()
     def request_search(self) -> None:
@@ -337,6 +390,7 @@ class RuntimeSetupDialog(QDialog):
         self._worker = None
         self.progress.setVisible(False)
         self.search_button.setEnabled(True)
+        self.install_neuron_button.setEnabled(True)
         self.use_button.setEnabled(self._choice_available)
 
     @Slot()

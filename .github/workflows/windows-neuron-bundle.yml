@@ -1,0 +1,90 @@
+name: Windows with included NEURON 20261015
+on:
+  push:
+    branches: [windows-neuron-20261015]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Prepare exact offline official Windows runtime
+        shell: pwsh
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/build_windows_neuron_payload.py --destination "$env:GITHUB_WORKSPACE/neuron-offline" --work "$env:RUNNER_TEMP/neuron-build"
+          if ($LASTEXITCODE -ne 0) { throw 'Official runtime payload build failed' }
+          python -c "from pathlib import Path; from digifly_app.core.windows_neuron_bundle import install_included_neuron; install_included_neuron(directory=Path('neuron-offline'), destination=Path(r'$env:RUNNER_TEMP/private-neuron-test'))"
+          if ($LASTEXITCODE -ne 0) { throw 'Private installed runtime/HH check failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: included-neuron-runtime-20261015
+          if-no-files-found: warn
+          path: |
+            neuron-offline/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: included-neuron-runtime-health-20261015
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/private-neuron-test/digifly-install-receipt.json
+  app:
+    needs: runtime
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261015.2
+      DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: included-neuron-runtime-20261015
+          path: downloaded-runtime
+      - name: Source tests and native Windows UI build
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./scripts/setup_dev.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
+          ./.venv/Scripts/python.exe -m pytest tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py --junitxml=neuron-source-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }
+          $env:DIGIFLY_NEURON_PAYLOAD = (Resolve-Path downloaded-runtime).Path
+          ./scripts/build_windows.ps1
+      - name: Extract real app and install/use included NEURON through UI
+        shell: pwsh
+        run: |
+          Expand-Archive "dist/Digifly-Workstation-$env:DIGIFLY_RELEASE_VERSION-Windows-x86_64.zip" -DestinationPath "$env:RUNNER_TEMP/extracted-app"
+          $exe = "$env:RUNNER_TEMP/extracted-app/Digifly Workstation.exe"
+          $report = "$env:GITHUB_WORKSPACE/neuron-ui-evidence"
+          $p = Start-Process -FilePath $exe -ArgumentList @('--package-neuron-test', $report) -PassThru
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); throw 'Native packaged setup check timed out' }
+          if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json"; throw 'Native packaged setup/Run check failed' }
+          ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/extracted-app"
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted final artifact changed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Windows-with-NEURON-20261015
+          if-no-files-found: warn
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            neuron-source-tests.xml
+            neuron-ui-evidence/receipt.json
+            neuron-ui-evidence/*.png

@@ -60,6 +60,13 @@ try {
     }
     & $python "scripts\collect_windows_notices.py" --bundle $bundle
     if ($LASTEXITCODE -ne 0) { throw "Dependency license/notice inventory failed." }
+    if ($env:DIGIFLY_NEURON_PAYLOAD) {
+        $offline = Join-Path $bundle "installers\neuron"
+        New-Item -ItemType Directory -Path $offline | Out-Null
+        Copy-Item (Join-Path $env:DIGIFLY_NEURON_PAYLOAD "*") $offline
+        & $python -c "from pathlib import Path; import sys; from digifly_app.core.windows_neuron_bundle import validate_manifest; validate_manifest(Path(sys.argv[1]))" $offline
+        if ($LASTEXITCODE -ne 0) { throw "Included NEURON payload failed source/hash validation." }
+    }
     & $python "scripts\windows_package.py" seal --bundle $bundle --source $stage --version $version
     if ($LASTEXITCODE -ne 0) { throw "Windows package audit failed." }
     $archive = Join-Path $dist "Digifly-Workstation-$version-Windows-x86_64.zip"

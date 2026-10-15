@@ -32,6 +32,8 @@ def stage(source: Path, destination: Path, *, release_snapshot=False) -> None:
     if release_snapshot:
         paths.extend(source / name for name in (
             ".github/workflows/windows-current-release.yml", "scripts/publish_windows_release.py",
+            ".github/workflows/windows-neuron-bundle.yml", "scripts/build_windows_neuron_payload.py",
+            "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
             "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh"))
     records = {}

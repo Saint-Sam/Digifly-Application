@@ -11,6 +11,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import urllib.request
+import urllib.parse
+import zipfile
+
+from digifly_app.packaging.audit import audit_artifact
 
 REPO = "Saint-Sam/Digifly-Application"
 TAG = "v0.1.0-alpha.1"
@@ -19,26 +24,100 @@ OLD_SHA = "cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851"
 BACKUP = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20260913.zip"
 
 
+_TOKEN = None
+
+
+def _request(endpoint, *, method="GET", payload=None, upload=None):
+    global _TOKEN
+    if _TOKEN is None:
+        _TOKEN = os.environ.get("GH_TOKEN")
+        if not _TOKEN:
+            auth = subprocess.run(["/Library/Developer/CommandLineTools/usr/bin/git", "credential", "fill"],
+                input="protocol=https\nhost=github.com\npath=Saint-Sam/Digifly-Application.git\n\n",
+                capture_output=True, text=True, timeout=15,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            fields = dict(line.split("=", 1) for line in auth.stdout.splitlines() if "=" in line)
+            _TOKEN = fields.get("password") if auth.returncode == 0 else None
+        if not _TOKEN:
+            raise ValueError("Existing GitHub authentication is unavailable; no credential displayed")
+    if not endpoint.startswith(f"repos/{REPO}/"):
+        raise ValueError("Publisher refuses endpoints outside the exact app repository")
+    host = "uploads.github.com" if upload else "api.github.com"
+    data = upload.read_bytes() if upload else json.dumps(payload).encode() if payload is not None else None
+    headers = {"Authorization": "Bearer " + _TOKEN, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Digifly-reviewed-Windows-release"}
+    if data is not None:
+        headers["Content-Type"] = "application/octet-stream" if upload else "application/json"
+    req = urllib.request.Request("https://" + host + "/" + endpoint, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=180) as response:
+        return json.loads(response.read())
+
+
 def gh(*args):
-    result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True, timeout=180)
-    return result.stdout
+    """Use the standard CLI in CI, or its narrowly scoped REST equivalent locally."""
+    if shutil.which("gh"):
+        result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True, timeout=180)
+        return result.stdout
+    if args[0] == "api":
+        method, payload = "GET", {}
+        tail = list(args[2:])
+        while tail:
+            option, value, *tail = tail
+            if option == "--method":
+                method = value
+            elif option == "-f":
+                key, value = value.split("=", 1)
+                payload[key] = value
+            else:
+                raise ValueError("Unsupported release API option")
+        return json.dumps(_request(args[1], method=method, payload=payload if method != "GET" else None))
+    if args[:2] in (("release", "upload"), ("release", "edit")) and args[2] == TAG:
+        release = _request(f"repos/{REPO}/releases/tags/{TAG}")
+        if args[1] == "upload":
+            file = Path(args[3])
+            return json.dumps(_request(f"repos/{REPO}/releases/{release['id']}/assets?name=" + urllib.parse.quote(file.name), method="POST", upload=file))
+        notes = Path(args[args.index("--notes-file") + 1]).read_text("utf-8")
+        return json.dumps(_request(f"repos/{REPO}/releases/{release['id']}", method="PATCH", payload={"body": notes}))
+    raise ValueError("Unsupported release operation")
 
 
 def api(endpoint, *args):
     return json.loads(gh("api", endpoint, *args))
 
 
-def publish(archive: Path):
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != REPO:
-        raise ValueError("Publisher is restricted to this repository's authorized CI")
-    review = Path(__file__).resolve().parents[1] / "docs/WINDOWS_REDISTRIBUTION_REVIEW.json"
+def publish(archive: Path, review=None):
+    if os.environ.get("GITHUB_REPOSITORY", REPO) != REPO:
+        raise ValueError("Publisher is restricted to the exact app repository")
+    review = review or Path(__file__).resolve().parents[1] / "docs/WINDOWS_REDISTRIBUTION_REVIEW.json"
     if not review.is_file():
-        raise ValueError("Public replacement held: Augustin/ModelDB permission and complete bundled-dependency notices remain unresolved. Build-only evaluation is distinct from a cleared release.")
+        raise ValueError("Public replacement held: exact artifact-bound notice and Windows technical review is missing.")
     # This binds the human licensing review to one exact artifact. It cannot
     # establish legal permission by itself, and no review is supplied by default.
     approval = json.loads(review.read_text("utf-8"))
     if approval.get("artifact_sha256") != hashlib.sha256(archive.read_bytes()).hexdigest() or not approval.get("permission_evidence"):
         raise ValueError("Redistribution review is absent, stale or lacks permission evidence")
+    if approval.get("technical_windows_package_passed") is not True:
+        raise ValueError("Actual Windows package review is missing")
+    report = audit_artifact(archive)
+    if not report.ok:
+        raise ValueError("Actual Windows archive audit failed: " + json.dumps(report.to_dict()))
+    with zipfile.ZipFile(archive) as zipped:
+        marker = json.loads(zipped.read("digifly_windows_package.json"))
+        if set(zipped.namelist()) != {*marker["files"], "digifly_windows_package.json"} or zipped.testzip():
+            raise ValueError("Actual Windows ZIP members/CRC differ")
+        for name, record in marker["files"].items():
+            data = zipped.read(name)
+            if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                raise ValueError("Actual Windows ZIP payload changed: " + name)
+        build = json.loads(zipped.read("digifly_build.json"))
+        notices = json.loads(zipped.read("THIRD_PARTY_COMPONENTS.json"))
+        if (build.get("source_commit") != approval.get("ci_source_commit")
+                or notices.get("schema") != "digifly-windows-notice-inventory-v1"
+                or "mechanisms/augustin_2019/NOTICE.md" not in marker["files"]):
+            raise ValueError("Compiled source identity or source-specific notices are missing")
+    run = api(f"repos/{REPO}/actions/runs/{int(approval['ci_run_id'])}")
+    if run.get("conclusion") != "success" or run.get("head_sha") != approval.get("ci_source_commit"):
+        raise ValueError("Windows CI run is not successful or differs from reviewed source")
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     receipt = {"repository": REPO, "tag": TAG, "sha256": checksum, "versioned_asset": archive.name}
     release = api(f"repos/{REPO}/releases/tags/{TAG}")
@@ -86,6 +165,8 @@ def publish(archive: Path):
             f"Download [{archive.name}]({current['browser_download_url']}). "
             "Extract All and open **Digifly Workstation.exe**. The old Windows link now serves this build; "
             "the checksum-pinned September ZIP is preserved as rollback. Mac downloads are unchanged.\n\n"
+            f"[Exact app source](https://github.com/{REPO}/tree/{approval['ci_source_commit']}) · "
+            f"[Windows build and checks](https://github.com/{REPO}/actions/runs/{approval['ci_run_id']})\n\n"
             "Native Windows UI/Parquet engineering checks passed on Windows Server 2022 CI. "
             "Unsigned alpha; Windows 11 clean-machine, native NEURON installer/compiler, simulator "
             "equivalence and user-selected experiment testing remain unverified. Arbor deferred. "
@@ -105,4 +186,6 @@ def publish(archive: Path):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("archive", type=Path)
-    publish(p.parse_args().archive)
+    p.add_argument("--review", type=Path)
+    args = p.parse_args()
+    publish(args.archive, args.review)

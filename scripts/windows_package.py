@@ -40,6 +40,9 @@ def check(bundle):
     if marker["schema"] != "digifly-windows-package-v1" or marker["files"] != inventory(bundle):
         raise ValueError("Windows payload differs from its sealed inventory")
     pe_x64((bundle / "Digifly Workstation.exe").read_bytes())
+    if (bundle / "installers/neuron/DIGIFLY_NEURON_RUNTIME.json").is_file():
+        from digifly_app.core.windows_neuron_bundle import validate_manifest
+        validate_manifest(bundle / "installers/neuron")
     report = audit_artifact(bundle)
     if not report.ok:
         raise ValueError(json.dumps(report.to_dict(), indent=2))

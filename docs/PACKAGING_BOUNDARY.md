@@ -28,6 +28,29 @@ all four coexist in one user-selected external interpreter.
 
 ## Temporary bundled-Arbor exception
 
+### October15 Windows NEURON bundle — explicit human override
+
+The user now requests NEURON included with the Windows download. The only new
+exception is `installers/neuron/`: the checksum-pinned unmodified official9.0.2
+Windows installer plus a sealed, inventoried private runtime derived from that
+installer and official CPython3.12.10 embed distribution. NumPy, Matplotlib and
+DuckDB dependencies and their original notices accompany this runtime. No user
+SWCs, graph, credentials, saved experiment or scientific run belongs in it.
+Arbor/BioNet/NetPyNE are not added to this exception.
+
+The app must obtain explicit installation consent before expanding the offline
+payload to a new per-user Digifly runtime directory outside the read-only app.
+Never execute upstream NSIS association/registry/PATH actions, overwrite another
+runtime, delete a failed installation, elevate, change global Python/PATH or
+silently change a saved selection. Validate all source/artifact/member hashes,
+safe paths, size/disk bounds, then actual loaded NEURON and finite built-in-HH
+health output. Only an explicit Use selected runtimes connects it to the app.
+The core audit permits a larger archive only at that declared exact Windows
+path with matching pinned source/package inventory; ordinary vendoring/data
+guards remain. Actual packaged Windows setup and Run testing are required before
+delivery. This exception is not full Windows11, arbitrary-channel, BioNet,
+NetPyNE, MPI, numerical-equivalence or scientific replication acceptance.
+
 Private macOS arm64 tester builds currently include an isolated Arbor 0.12.2
 runtime under `Contents/Resources/runtimes/arbor`. It is never installed into
 the user's system and external Arbor selections remain supported. The exception

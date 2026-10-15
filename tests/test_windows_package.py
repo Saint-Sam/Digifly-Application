@@ -81,3 +81,96 @@ def test_publication_stops_before_network_without_redistribution_review(tmp_path
     monkeypatch.setenv("GITHUB_REPOSITORY", "Saint-Sam/Digifly-Application")
     with pytest.raises(ValueError, match="Public replacement held"):
         publisher.publish(tmp_path / "no-artifact.zip")
+
+
+def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch):
+    import hashlib
+    publisher = module("publish_windows_release")
+    gate = module("windows_package")
+    bundle = fixture_bundle(tmp_path)
+    (bundle / "digifly_build.json").write_text(json.dumps({"source_commit": "fixture-source"}))
+    (bundle / "THIRD_PARTY_COMPONENTS.json").write_text(json.dumps({"schema": "digifly-windows-notice-inventory-v1"}))
+    notice = bundle / "mechanisms/augustin_2019/NOTICE.md"
+    notice.parent.mkdir(parents=True, exist_ok=True)
+    notice.write_bytes((ROOT / "mechanisms/augustin_2019/NOTICE.md").read_bytes())
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "windows_source_manifest.json").write_text(json.dumps({"files": {}}))
+    gate.seal(bundle, source, "fixture")
+    archive = tmp_path / "Digifly-Workstation-fixture-Windows-x86_64.zip"
+    gate.archive(bundle, archive)
+    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"artifact_sha256": sha, "permission_evidence": "software fixture, not a licensing opinion",
+        "technical_windows_package_passed": True, "ci_run_id": 1, "ci_source_commit": "fixture-source"}))
+    assets = {
+        publisher.OLD: {"id": 10, "name": publisher.OLD, "digest": "sha256:" + publisher.OLD_SHA},
+        publisher.OLD + ".sha256": {"id": 11, "name": publisher.OLD + ".sha256", "digest": "old-checksum-fixture"},
+        "macOS-fixture.zip": {"id": 20, "name": "macOS-fixture.zip", "digest": "mac-fixture-unchanged"},
+    }
+    mutations = []
+    def fake_gh(*args):
+        if args[0] == "api":
+            if "/actions/runs/" in args[1]:
+                return json.dumps({"conclusion": "success", "head_sha": "fixture-source"})
+            if "/releases/assets/" in args[1]:
+                identifier = int(args[1].rsplit("/", 1)[-1])
+                old_name, asset = next((key, value) for key, value in assets.items() if value["id"] == identifier)
+                new_name = args[-1].removeprefix("name=")
+                del assets[old_name]
+                assets[new_name] = {**asset, "name": new_name}
+                mutations.append(("rename", old_name, new_name))
+                return json.dumps(assets[new_name])
+            return json.dumps({"id": 1, "body": "Historical Mac notes", "assets": list(assets.values())})
+        if args[:2] == ("release", "upload"):
+            file = Path(args[3])
+            assert file.name not in assets
+            assets[file.name] = {"id": 100 + len(assets), "name": file.name,
+                "digest": "sha256:" + hashlib.sha256(file.read_bytes()).hexdigest(), "browser_download_url": "https://example.invalid/fixture"}
+            mutations.append(("upload", file.name))
+            return ""
+        assert args[:2] == ("release", "edit")
+        return ""
+    monkeypatch.setattr(publisher, "gh", fake_gh)
+    publisher.publish(archive, review)
+    assert assets[publisher.BACKUP]["id"] == 10
+    assert assets[publisher.BACKUP]["digest"] == "sha256:" + publisher.OLD_SHA
+    assert assets[publisher.OLD]["digest"] == "sha256:" + sha
+    assert assets["macOS-fixture.zip"] == {"id": 20, "name": "macOS-fixture.zip", "digest": "mac-fixture-unchanged"}
+    assert mutations.index(("upload", archive.name)) < mutations.index(("rename", publisher.OLD, publisher.BACKUP))
+
+
+def test_notice_only_overlay_preserves_original_payload_and_rejects_changed_notice(tmp_path):
+    import hashlib
+    import zipfile
+    gate, overlay = module("windows_package"), module("augment_windows_notices")
+    bundle = fixture_bundle(tmp_path)
+    (bundle / "THIRD_PARTY_COMPONENTS.json").write_text(json.dumps({"components": []}))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "windows_source_manifest.json").write_text(json.dumps({"files": {}}))
+    gate.seal(bundle, source, "fixture")
+    base = tmp_path / "Digifly-Workstation-base-Windows-x86_64.zip"
+    gate.archive(bundle, base)
+    extra, additional = tmp_path / "extra", tmp_path / "additional"
+    extra.mkdir()
+    additional.mkdir()
+    for name in overlay.SOURCES:
+        (extra / name).write_text("test notice, not licensing evidence")
+    data = b"software-fixture full notice"
+    (additional / "notice.html").write_bytes(data)
+    (additional / "notices_manifest.json").write_text(json.dumps({
+        "schema": "digifly-extra-license-notices-v1", "component": "fixture", "version": "fixture",
+        "license": "fixture", "scope": "software test only", "notices": [{"file": "notice.html",
+        "sha256": hashlib.sha256(data).hexdigest(), "source_url": "https://example.invalid/fixture"}]}))
+    final = tmp_path / "Digifly-Workstation-final-Windows-x86_64.zip"
+    assert overlay.augment(base, extra, final, additional)["audit"]["ok"]
+    with zipfile.ZipFile(base) as old, zipfile.ZipFile(final) as new:
+        for name in old.namelist():
+            if name not in {"THIRD_PARTY_COMPONENTS.json", "digifly_windows_package.json"}:
+                assert old.read(name) == new.read(name)
+    with pytest.raises(ValueError, match="must not overwrite"):
+        overlay.augment(base, extra, final, additional)
+    (additional / "notice.html").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="checksum/collision"):
+        overlay.augment(base, extra, tmp_path / "new.zip", additional)

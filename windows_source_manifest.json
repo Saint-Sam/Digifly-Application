@@ -30,8 +30,8 @@
       "bytes": 8916
     },
     "docs/PACKAGING_BOUNDARY.md": {
-      "sha256": "90cb26b0eb4d74c436f13b46088de6e73fed3fdd2593a7e99cdd241867e30d17",
-      "bytes": 5798
+      "sha256": "e31da8f137059c34a782a684d0a9737c2412ca69edf584ae54141ea3e8c00878",
+      "bytes": 7325
     },
     "docs/PDCM_ATHENE_RUNBOOK.md": {
       "sha256": "0ec6b14884e4d77108e102f3c5e91ca379fd7c6cc7412fc20e048583abf37de1",
@@ -174,8 +174,8 @@
       "bytes": 22474
     },
     "scripts/build_windows.ps1": {
-      "sha256": "12ac2bdb9a7684d94bbe5107db06dad010677038f720d5426369a5b9935b9fd1",
-      "bytes": 6017
+      "sha256": "71f9578f07359e4963cb5d7360901394b805964ba62604257cbd0e864653cd64",
+      "bytes": 6530
     },
     "scripts/collect_windows_notices.py": {
       "sha256": "99b9ddb090b7fa2edc78cf8bd3c4042a1985eef5a22dd16213ea57213d8d5e48",
@@ -250,12 +250,12 @@
       "bytes": 3446
     },
     "scripts/stage_windows_source.py": {
-      "sha256": "0985f8b0725d545be558d7216dbfd7656ec65ea1acffa39ad762b59ea8c1aba6",
-      "bytes": 3540
+      "sha256": "9c36a02e53890ee235313ce84451cc24b5fea08e4986a1a0755aa13d8f0c0fa8",
+      "bytes": 3767
     },
     "scripts/windows_package.py": {
-      "sha256": "8cd5be02f0fd5183843e65d21907f5e3c90a440a541d584ee20c4b2be1c8c645",
-      "bytes": 4308
+      "sha256": "b348437ca5c36949a24fa7880471dd7b83a48885d46e11184246a0951d7184e7",
+      "bytes": 4518
     },
     "src/digifly_app/__init__.py": {
       "sha256": "8c8f1660cfff39fb78e65d7a1e7cc4051f87d81d3cf10204f5e1f32bfb06a147",
@@ -266,8 +266,8 @@
       "bytes": 80
     },
     "src/digifly_app/app.py": {
-      "sha256": "252f819ead72e190efcde810b992a7eb3dbf2334c35e880f4a96f29619739f89",
-      "bytes": 2086
+      "sha256": "04da1cabb0a73a544cb6178c79627a7ae1a855de01dbb1ded3a72dc773551465",
+      "bytes": 2483
     },
     "src/digifly_app/assets/BRANDING.md": {
       "sha256": "e0548e2021dd88a2617d3cbee27e1edac61f327647c65e4be924bf3d2d9eed88",
@@ -437,6 +437,10 @@
       "sha256": "11203c8fbd435b7911f3f7960c581543464d2e038df94b284502091eb0a94b1a",
       "bytes": 5466
     },
+    "src/digifly_app/core/windows_neuron_bundle.py": {
+      "sha256": "1352543fee1bfe74b804115854954811345d92da68740f1e5d25d57c46a0a7c5",
+      "bytes": 8025
+    },
     "src/digifly_app/core/workspace.py": {
       "sha256": "a67f9bfde7b88d68e7c979085466e8f31cea11fca43413b1a81263ca0118c8d0",
       "bytes": 15344
@@ -466,8 +470,8 @@
       "bytes": 67
     },
     "src/digifly_app/packaging/audit.py": {
-      "sha256": "0dff1e1b7d7aca395a3752f3941ee102a21c5d5496c10a1c32caf45f610795ff",
-      "bytes": 23141
+      "sha256": "b11b05da7ad2b11e8e6adeca80685e2c2f39a2d8995ff0c336e76212feab784b",
+      "bytes": 24405
     },
     "src/digifly_app/pdcm_bionet/__init__.py": {
       "sha256": "4bd538c95bab54b0c276fae22ac43f570178f88c0f3839296d7db6856bd51cfc",
@@ -633,6 +637,10 @@
       "sha256": "885b9b74d0d521c6eefc5866a6e6f6bfc36547bdb2cc29cc9f822b56fbfc80a0",
       "bytes": 34438
     },
+    "src/digifly_app/ui/package_neuron_smoke.py": {
+      "sha256": "6a6135da5ab354aae6e9ebb6586ebce12bec8b730489b2b470fcd1955ded8d2f",
+      "bytes": 6247
+    },
     "src/digifly_app/ui/package_smoke.py": {
       "sha256": "f99d891a908da5fffb58597e359227feb80aac88846fd11d967298a2b48dff01",
       "bytes": 4420
@@ -654,8 +662,8 @@
       "bytes": 17640
     },
     "src/digifly_app/ui/runtime_setup.py": {
-      "sha256": "cd57830d7cf969a0be90cf28325a85da01179bdd18ee3ce603b507637ffa67a6",
-      "bytes": 15949
+      "sha256": "ef00248a60e6be867dbe7343703eb25c1b4de35f6b25d326823a6cb20d3abfd5",
+      "bytes": 18702
     },
     "src/digifly_app/ui/snapshot.py": {
       "sha256": "ed7546fc4ac45fbc4f11648e766b79225c56ab9f746adbe9ad493f0b072441d2",
@@ -766,16 +774,36 @@
       "bytes": 4707
     },
     "scripts/publish_windows_release.py": {
-      "sha256": "2fcfe899dc9a70dcc394b168242c0ce7bde2c594a79f9f958cf5a9e4b4fe4ed7",
-      "bytes": 6221
+      "sha256": "6b85bf891ab1818961f2c63beced4fe0d14824e172153f0b92a27d7bc6d49c77",
+      "bytes": 11059
+    },
+    ".github/workflows/windows-neuron-bundle.yml": {
+      "sha256": "7d30dedc79fc97463f193fb93d1ba499beb9bec767778f19be4a3f1da7409d78",
+      "bytes": 3932
+    },
+    "scripts/build_windows_neuron_payload.py": {
+      "sha256": "9e3938645744efcd1b51fdaf4947ddb0c459b0b2a93ab7a92b1e148d5b6dcee7",
+      "bytes": 6207
+    },
+    "tests/test_windows_neuron_bundle.py": {
+      "sha256": "0ab621a35caf40b9ad0717cac6dfb1aef7362d4c727b9b8262cff393e5bdbf14",
+      "bytes": 1865
+    },
+    "scripts/augment_windows_notices.py": {
+      "sha256": "9e81e404352635fc44c105719cf15d174fe3355bafa0cc686a6b01389eb6cc60",
+      "bytes": 5984
+    },
+    "scripts/collect_qtpdf_notices.py": {
+      "sha256": "47df29515182c5b7cd3c5a3b0825578999aebc07e5874aa1400b137388257b81",
+      "bytes": 2159
     },
     "tests/test_windows_release.py": {
       "sha256": "ed8a109be26cb9f1d0310304ba66ae4b90b37756f28e8165131e1fdcf9b084ce",
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "d4a1ab92c493a634a7593887256c03e6ae254c2501e6ee1c01ee6a5484e67ba7",
-      "bytes": 3606
+      "sha256": "b79b759a4476970ac5f2202dfe450654cb7777ef9d3a558c63e64b5af08b19a9",
+      "bytes": 9017
     },
     "tests/test_package_foundation.py": {
       "sha256": "b237c5ef0e10e5ddcd73712c4b9871b4c6c620c8a80b44d35dd664419f8b8dba",
