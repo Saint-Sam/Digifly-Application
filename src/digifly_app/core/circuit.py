@@ -145,6 +145,9 @@ class ConnectomeRef:
     label: str
     root: str
     dataset: str = ""
+    pair_graph_path: str = ""
+    pair_graph_index: str = ""
+    pair_graph_sha256: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -157,6 +160,9 @@ class ConnectomeRef:
             label=str(raw.get("label") or raw.get("key") or "Unselected"),
             root=str(raw.get("root") or ""),
             dataset=str(raw.get("dataset") or ""),
+            pair_graph_path=str(raw.get("pair_graph_path") or ""),
+            pair_graph_index=str(raw.get("pair_graph_index") or ""),
+            pair_graph_sha256=str(raw.get("pair_graph_sha256") or ""),
         )
 
 

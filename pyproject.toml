@@ -10,12 +10,11 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 classifiers = [
-  "Private :: Do Not Upload",
   "Development Status :: 3 - Alpha",
   "Environment :: MacOS X",
   "Environment :: Win32 (MS Windows)",
   "Environment :: X11 Applications :: Qt",
-  "License :: Other/Proprietary License",
+  "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -41,6 +40,9 @@ deploy = [
 package = [
   "build>=1.2,<2",
 ]
+paper-figures = [
+  "matplotlib>=3.8,<4",
+]
 
 [project.scripts]
 digifly-app = "digifly_app.app:main"
@@ -48,6 +50,8 @@ digifly-doctor = "digifly_app.cli:doctor_main"
 digifly-package-audit = "digifly_app.packaging.audit:main"
 digifly-resources = "digifly_app.resource_cli:main"
 digifly-swc-quality = "digifly_app.swc_quality_cli:main"
+digifly-replicate-pdcm = "digifly_app.pdcm_cli:main"
+digifly-figure10 = "digifly_app.pdcm_figure10_cli:main"
 
 [project.gui-scripts]
 digifly-workstation = "digifly_app.app:main"
@@ -64,17 +68,34 @@ digifly_app = [
   "assets/*.ico",
   "assets/*.md",
   "assets/*.png",
+  "pdcm_bionet/mod/*.mod",
+  "pdcm_bionet/primary_v3/*.json",
+  "pdcm_bionet/primary_v3/scripts/*.py",
+  "pdcm_bionet/primary_v3/src/digifly_app/*.py",
+  "pdcm_bionet/primary_v3/src/digifly_app/workers/*.py",
+  "pdcm_bionet/primary_v3/src/digifly_app/pdcm_bionet/*.py",
+  "pdcm_bionet/primary_v3/src/digifly_app/pdcm_bionet/mod/*.mod",
+  "pdcm_bionet/primary_v4/*.json",
+  "pdcm_bionet/primary_v4/scripts/*.py",
+  "pdcm_bionet/primary_v4/src/digifly_app/*.py",
+  "pdcm_bionet/primary_v4/src/digifly_app/workers/*.py",
+  "pdcm_bionet/primary_v4/src/digifly_app/pdcm_bionet/*.py",
+  "pdcm_bionet/primary_v4/src/digifly_app/pdcm_bionet/mod/*.mod",
 ]
 
 [tool.setuptools.data-files]
 "share/digifly-workstation" = [
   "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
 ]
 "share/digifly-workstation/docs" = [
   "docs/ARCHITECTURE.md",
   "docs/BACKEND_CONTRACT_V1.md",
   "docs/PACKAGING_BOUNDARY.md",
   "docs/PHASE3_DATA_ACQUISITION_PLAN.md",
+  "docs/PDCM_REPLICATION.md",
+  "docs/PDCM_ATHENE_RUNBOOK.md",
+  "docs/NETPYNE_WORKBENCH_PLAN.md",
   "docs/SWC_IMPORT_QUALITY.md",
 ]
 "share/digifly-workstation/mechanisms/arbor_gap_junctions" = [
@@ -110,6 +131,23 @@ digifly_app = [
   "schemas/digifly-resources-v2.schema.json",
 ]
 "share/digifly-workstation/scripts" = [
+  "scripts/analyze_pdcm_run.py",
+  "scripts/analyze_pdcm_sampling.py",
+  "scripts/assess_pdcm_figures_5_7.py",
+  "scripts/render_pdcm_fullscale_figures.py",
+  "scripts/render_pdcm_scaling_figure.py",
+  "scripts/render_pdcm_figure8_partial.py",
+  "scripts/render_pdcm_figure9_positions.py",
+  "scripts/render_pdcm_figure9_convergence.py",
+  "scripts/render_pdcm_figure9_spectral.py",
+  "scripts/render_pdcm_figure10.py",
+  "scripts/render_pdcm_figure10_th1.py",
+  "scripts/render_pdcm_figure10_paper_methods.py",
+  "scripts/render_pdcm_figure10_cd_layout.py",
+  "scripts/compare_pdcm_figure10_conditions.py",
+  "scripts/run_pdcm_athene.sh",
+  "scripts/install_pdcm_athene_layer.sh",
+  "scripts/probe_neuron_mpi.py",
   "scripts/build_arbor_gap_catalogue.py",
   "scripts/build_neuron_gap_mechanisms.py",
 ]

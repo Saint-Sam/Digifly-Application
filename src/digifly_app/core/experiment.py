@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any, Mapping
 
 from .circuit import CircuitSpec
@@ -35,7 +36,7 @@ class StimulusSpec:
 
     @property
     def final_offset_ms(self) -> float:
-        if self.pulse_count <= 1:
+        if self.waveform != "pulse_train" or self.pulse_count <= 1:
             return self.delay_ms + self.pulse_width_ms
         return (
             self.delay_ms
@@ -87,10 +88,10 @@ class ConditionSpec:
         errors: list[str] = []
         if not self.name.strip():
             errors.append("Every condition needs a name.")
-        if self.stimulus_scale < 0:
+        if not math.isfinite(self.stimulus_scale) or self.stimulus_scale < 0:
             errors.append(f"Condition {self.name!r} has a negative stimulus scale.")
         for mechanism, scale in self.mechanism_scales.items():
-            if not str(mechanism).strip() or float(scale) < 0:
+            if not str(mechanism).strip() or not math.isfinite(float(scale)) or float(scale) < 0:
                 errors.append(f"Condition {self.name!r} has an invalid mechanism scale.")
         return errors
 

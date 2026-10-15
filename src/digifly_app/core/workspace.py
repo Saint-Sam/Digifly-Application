@@ -119,6 +119,7 @@ class DigiflyWorkspace:
         python_executable: str,
         arbor_python_executable: str | None = None,
         bmtk_python_executable: str | None = None,
+        netpyne_python_executable: str | None = None,
     ) -> tuple[EngineProbe, ...]:
         neuron_python = Path(python_executable).expanduser()
         arbor_python = Path(arbor_python_executable or python_executable).expanduser()
@@ -127,12 +128,18 @@ class DigiflyWorkspace:
             if bmtk_python_executable and str(bmtk_python_executable).strip()
             else None
         )
+        netpyne_python = (
+            Path(netpyne_python_executable).expanduser()
+            if netpyne_python_executable and str(netpyne_python_executable).strip()
+            else None
+        )
         if self.profile is not None:
             from .resource_profile import ResourceKind
 
             neuron_python = self.profile.runtime_path(ResourceKind.NEURON_RUNTIME) or neuron_python
             arbor_python = self.profile.runtime_path(ResourceKind.ARBOR_RUNTIME) or neuron_python
             bmtk_python = self.profile.runtime_path(ResourceKind.BMTK_RUNTIME) or bmtk_python
+            netpyne_python = self.profile.runtime_path(ResourceKind.NETPYNE_RUNTIME) or netpyne_python
         neuron_worker = worker_path("generic_experiment_worker.py")
         neuron_mechanism_root = resource_path(
             "mechanisms", "neuron_gap_junctions"
@@ -211,6 +218,25 @@ class DigiflyWorkspace:
             ),
         )
 
+        netpyne_worker = worker_path("pdcm_netpyne_worker.py")
+        netpyne_runtime = (
+            _probe_netpyne_runtime(str(netpyne_python))
+            if netpyne_python
+            else (CheckState.WARNING, "No NetPyNE interpreter was selected. It must also contain NEURON.")
+        )
+        netpyne = EngineProbe(
+            key="netpyne",
+            name="NetPyNE",
+            source_state=CheckState.PASS if netpyne_worker.is_file() else CheckState.FAIL,
+            runtime_state=netpyne_runtime[0],
+            summary=(
+                "The app-owned PDCM benchmark worker and a NetPyNE/NEURON runtime are available."
+                if netpyne_worker.is_file() and netpyne_runtime[0] == CheckState.PASS
+                else "NetPyNE needs its app-owned worker and one Python containing NetPyNE and NEURON."
+            ),
+            details=(str(netpyne_worker), str(netpyne_python or "runtime not configured"), netpyne_runtime[1]),
+        )
+
         vnd_path = next((path for path in self.vnd_candidates if path.exists()), None)
         vnd = EngineProbe(
             key="vnd",
@@ -220,7 +246,7 @@ class DigiflyWorkspace:
             summary="External VND application detected." if vnd_path else "VND is optional and was not detected.",
             details=(str(vnd_path) if vnd_path else "No configured VND application path",),
         )
-        return neuron, arbor, bmtk, vnd
+        return neuron, arbor, bmtk, netpyne, vnd
 
 
 def _path_check(
@@ -302,6 +328,18 @@ def _probe_bionet_runtime(python_executable: str) -> tuple[CheckState, str]:
         f"BMTK {result.bmtk_version} BioNet is ready with NEURON {result.neuron_version} "
         f"in {executable}",
     )
+
+
+def _probe_netpyne_runtime(python_executable: str) -> tuple[CheckState, str]:
+    executable = external_runtime_launcher(python_executable)
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        return CheckState.FAIL, f"Python executable not found: {executable}"
+    result = probe_simulator_runtime(executable, timeout=30.0)
+    if result.error:
+        return CheckState.FAIL, f"NetPyNE runtime probe failed: {result.error}"
+    if not result.has_netpyne or not result.has_neuron:
+        return CheckState.FAIL, "NetPyNE and NEURON must both be installed in the selected Python."
+    return CheckState.PASS, f"NetPyNE {result.netpyne_version} with NEURON {result.neuron_version} in {executable}"
 
 
 def _probe_neuron_runtime(python_executable: str) -> tuple[CheckState, str]:

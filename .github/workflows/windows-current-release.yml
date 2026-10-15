@@ -1,0 +1,91 @@
+name: Current Windows tester 20261015
+
+on:
+  push:
+    branches: [windows-current-20261015]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-current-20261015
+  cancel-in-progress: false
+
+jobs:
+  windows-current:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261015.1
+      DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Isolated app build and Parquet reader environments
+        shell: pwsh
+        run: |
+          ./scripts/setup_dev.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Build setup failed' }
+          python -m venv .data-reader
+          ./.data-reader/Scripts/python.exe -m pip install duckdb==1.5.2
+          if ($LASTEXITCODE -ne 0) { throw 'Reader setup failed' }
+      - name: Native Windows adapter and release-gate regressions
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:DIGIFLY_TEST_PARQUET_PYTHON = (Resolve-Path .data-reader/Scripts/python.exe).Path
+          ./.venv/Scripts/python.exe -m pytest tests/test_windows_release.py tests/test_windows_package.py tests/test_pair_graph.py --junitxml=windows-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Windows regressions failed' }
+      - name: Compile current Windows UI without Arbor or Docker
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - name: Extract ZIP and exercise actual packaged UI and Parquet dialog
+        shell: pwsh
+        run: |
+          $zip = "dist/Digifly-Workstation-$env:DIGIFLY_RELEASE_VERSION-Windows-x86_64.zip"
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP/digifly-extracted"
+          $exe = "$env:RUNNER_TEMP/digifly-extracted/Digifly Workstation.exe"
+          $reader = (Resolve-Path .data-reader/Scripts/python.exe).Path
+          $report = "$env:GITHUB_WORKSPACE/windows-ui-evidence"
+          $process = Start-Process -FilePath $exe -ArgumentList @('--package-smoke-test', $report, '--data-reader', $reader) -PassThru
+          if (-not $process.WaitForExit(90000)) { $process.Kill(); throw 'Packaged UI check timed out' }
+          if ($process.ExitCode -ne 0) { Get-Content "$report/receipt.json"; throw 'Packaged UI check failed' }
+          $receipt = Get-Content "$report/receipt.json" | ConvertFrom-Json
+          if (-not $receipt.ok) { throw 'Packaged UI receipt failed' }
+          ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/digifly-extracted"
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted payload integrity failed' }
+          ./.venv/Scripts/python.exe -m pip freeze > windows-build-dependencies.txt
+      - name: Preserve artifact and evidence before release mutation
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-Windows-20261015
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            windows-tests.xml
+            windows-ui-evidence/receipt.json
+            windows-ui-evidence/*.png
+            windows-build-dependencies.txt
+      - name: Replace Windows download with checksum-verified rollback
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.venv/Scripts/python.exe scripts/publish_windows_release.py "dist/Digifly-Workstation-$env:DIGIFLY_RELEASE_VERSION-Windows-x86_64.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Release replacement failed; inspect preserved state' }
+      - name: Preserve release receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-release-receipt-20261015
+          if-no-files-found: warn
+          path: |
+            dist/windows-publication-receipt.json
+            windows-tests.xml
+            windows-ui-evidence/receipt.json

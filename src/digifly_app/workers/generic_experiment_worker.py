@@ -1,25 +1,37 @@
 #!/usr/bin/env python3
-"""Standalone classic-HH worker for Experiment Builder.
+"""Standalone HH and source-bound membrane worker for Experiment Builder.
 
-This file is intentionally self-contained: it is executed by the user's
+This worker and its bundled sibling scheduler are executed by the user's
 selected Arbor or NEURON Python, which need not have Digifly installed.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
+import copy
 import csv
 from datetime import datetime, timezone
+from fractions import Fraction
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import re
 import sqlite3
+import shutil
+import struct
 import sys
+import subprocess
 import tempfile
 from typing import Any, Mapping, Sequence
+
+try:
+    from . import independent_trials as _trials
+except ImportError:
+    import independent_trials as _trials
 
 
 REQUEST_SCHEMA_VERSION = 1
@@ -27,15 +39,437 @@ RESULT_SCHEMA_VERSION = 1
 EDGE_MANIFEST_SCHEMA_VERSION = 2
 LEGACY_EDGE_MANIFEST_SCHEMA_VERSION = 1
 ARBOR_ROOT_STUB_MIN_UM = 0.001
-ARBOR_ROOT_STUB_RADIUS_FRACTION = 0.1
 NEURON_TARGET_SEGMENT_UM = 40.0
+ELECTRICAL_CONTACT_TARGET_SEGMENT_UM = 2.5
 NEURON_MAX_TOTAL_SEGMENTS = 2_000_000
+# Operational local limits, not scientific acceptance margins. Forecast before
+# generating exact native clocks/envelopes; never silently coarsen a waveform.
+ARBOR_MAX_NATIVE_EPOCHS = 100_000
+ARBOR_MAX_RAMP_KNOTS = 250_000
+ARBOR_MAX_NATIVE_REPORT_VALUES = 25_000_000
+ARBOR_MAX_NATIVE_DETECTOR_EVENTS = 1_000_000
 NEURON_GAP_SOURCE_HASHES = {
     "Gap": "e3ab9d0a37811314d3baa8461050e6d65fbb9b8e163ff6618a6d9f2f2549c1f2",
     "RectGap": "d9fa308ff0433ad0eb424017fff4384d5c06915ca9a2cbe25485ad176db3a8d6",
     "HeteroRectGap": "22b505af799076bb8079f204d222adfa72432f8609bd89fd050f7ffb325c9c2f",
 }
 _LOADED_NEURON_MECHANISM_LIBRARIES: set[str] = set()
+NATIVE_CHANNELS = {
+    "augustin_nat": ("nat", "609f7786edf939ae7ac44f2e06216a99fc3217fd2ee5fbb449982516da1ab925"),
+    "augustin_nap": ("nap", "582dfd3fad7505554de5742a2f59c01093124ee4fd183440a4a5e7cfa8e31126"),
+    "augustin_k": ("k", "73f5d0a0f1baaf575430c9744c6a5e060567831e6b94d1e1add2df6defd30da7"),
+    "para": ("na16a", "fa6bfeba0d840a8871097f9275a2bf14883a02833dce84d031e91455c5e922c5"),
+    "para_alt": ("na14a", "530eb3922de00528b8ff99073f9eb5c2785081ac4e0f19733d82c0f883c76d6a"),
+    "shaker": ("kv14sh", "c33e0476afbc638e32d38f02931ed4909d4787d05199340dbd3fc45d6e9e698a"),
+    "shal": ("kv42shal", "9100f7532effefa4c9b4d46842eabfff4d4c78d2839599784211c9fc7d0a14d0"),
+    "shab": ("kv21shab", "c70493b3611722548f6a29ff864fdb2562b016bffb180befaa82764d92628c2e"),
+    "shaw": ("kv31shaw", "7beacdda766d17fb05b69f3db89a2e68d1e2b4ee091b284e43290f7b160cf6e5"),
+    "cacophony": ("cav21cac", "3ba1367cb1ea0c83f1f086656352fe74c6e0c4d609919473c81aa5fa535baca5"),
+    "ca_alpha1t": ("cav31t", "24bae2629d65f3671ae8681acbd9245fcee5c664b75ce4882525b88f13013dd7"),
+}
+
+HH_CONDUCTANCE_SCALES = {
+    "hh_na": ("soma_gnabar_s_cm2", "branch_gnabar_s_cm2"),
+    "hh_k": ("soma_gkbar_s_cm2", "branch_gkbar_s_cm2"),
+    "hh_leak": ("soma_gl_s_cm2", "branch_gl_s_cm2"),
+    "pas": ("g_pas_s_cm2",),
+}
+
+
+def _validate_condition_manipulations(circuit: Mapping[str, Any], condition: Mapping[str, Any]) -> None:
+    ids = {str(value) for value in circuit.get("neuron_ids") or ()}
+    disabled = {str(value) for value in condition.get("disabled_neuron_ids") or ()}
+    if disabled - ids:
+        raise ValueError("Condition ablation targets a neuron outside the circuit")
+    allowed = set(NATIVE_CHANNELS) | set(HH_CONDUCTANCE_SCALES) | {"hh"}
+    for key, value in dict(condition.get("mechanism_scales") or {}).items():
+        if key not in allowed:
+            raise ValueError(f"Unknown conductance-scale mechanism {key!r}; use a locked channel key, hh, hh_na, hh_k, hh_leak or pas")
+        if not math.isfinite(float(value)) or float(value) < 0:
+            raise ValueError(f"Invalid conductance scale for {key!r}; require a finite nonnegative multiplier")
+
+
+def _scale_cell_biophysics(cell: Mapping[str, Any], scales: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply multipliers after defaults/neuron/edge precedence, without changing kinetics."""
+    result = copy.deepcopy(dict(cell))
+    def scaled_hh(payload: Mapping[str, Any]) -> dict[str, Any]:
+        hh = dict(payload)
+        for group, fields in HH_CONDUCTANCE_SCALES.items():
+            factor = float(scales.get(group, 1.0)) * (float(scales.get("hh", 1.0)) if group != "pas" else 1.0)
+            for field in fields:
+                if field in hh:
+                    hh[field] = float(hh[field]) * factor
+        return hh
+    def scaled_membrane(payload: Mapping[str, Any]) -> dict[str, Any]:
+        membrane = copy.deepcopy(dict(payload))
+        for key, assignment in dict(membrane.get("channels") or {}).items():
+            factor = float(scales.get(key, 1.0))
+            for field in ("soma_gbar_s_cm2", "branch_gbar_s_cm2"):
+                assignment[field] = float(assignment.get(field, 0.0)) * factor
+        return membrane
+    result["hh"] = scaled_hh(result.get("hh") or {})
+    result["membrane"] = scaled_membrane(result.get("membrane") or {})
+    result["compartment_overrides"] = {key: scaled_hh(value) for key, value in dict(result.get("compartment_overrides") or {}).items()}
+    result["compartment_mechanism_overrides"] = {key: scaled_membrane(value) for key, value in dict(result.get("compartment_mechanism_overrides") or {}).items()}
+    return result
+
+
+def _condition_cells(cells: Mapping[str, Mapping[str, Any]], condition: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    disabled = {str(value) for value in condition.get("disabled_neuron_ids") or ()}
+    result = {neuron_id: _scale_cell_biophysics(cell, dict(condition.get("mechanism_scales") or {}))
+              for neuron_id, cell in cells.items() if neuron_id not in disabled}
+    for cell in result.values():
+        if cell.get("regional"):
+            cell["regional_plan"] = _regional_plan(_swc_rows(Path(cell["swc_path"])), cell)
+    return result
+
+
+def _condition_edges(edge_manifest: Mapping[str, Any], active_ids: Sequence[str]) -> dict[str, Any]:
+    result = copy.deepcopy(dict(edge_manifest))
+    active = set(active_ids)
+    result["neuron_ids"] = list(active_ids)
+    result["chemical_edges"] = [edge for edge in result.get("chemical_edges") or ()
+                                if str(edge["pre_id"]) in active and str(edge["post_id"]) in active]
+    result["electrical_edges"] = [edge for edge in result.get("electrical_edges") or ()
+                                  if str(edge["neuron_a"]) in active and str(edge["neuron_b"]) in active]
+    return result
+
+
+def _validate_gap_contact_placement(contact: Mapping[str, Any], policy: Mapping[str, Any]) -> None:
+    placement = str(policy.get("placement_policy") or "imported_contact_sites")
+    if placement not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
+        raise ValueError("Unknown electrical contact placement policy")
+    for end in ("pre", "post"):
+        provenance = dict(contact.get("coordinate_sources") or {}).get(end)
+        if placement == "imported_contact_sites":
+            if provenance not in {f"{end}_xyz", f"{'post' if end=='pre' else 'pre'}_xyz_fallback"}:
+                raise ValueError("Electrical coordinate provenance is invalid")
+            if f"{end}_source_edge_fraction" in contact:
+                raise ValueError("Imported contacts cannot acquire a synthetic edge fraction")
+        elif provenance != f"synthetic_geometric_{placement}" or float(contact.get(f"{end}_source_edge_fraction", -1)) != .5:
+            raise ValueError("Synthetic electrical placement requires an explicit geometric edge midpoint")
+    if placement != "imported_contact_sites":
+        assumption = dict(contact.get("placement_assumption") or {})
+        rowids = list(contact.get("source_contact_rowids") or ())
+        if assumption.get("biological_contact") is not False or assumption.get("policy") != placement or not rowids or int(contact.get("source_contact_count", 0)) != len(rowids):
+            raise ValueError("Synthetic electrical placement must retain imported pair evidence and label its modelling assumption")
+
+
+def _geometric_pair_site(rows: Sequence[Any], cell: Mapping[str, Any], placement: str) -> dict[str, Any]:
+    """One declared soma or proximal type-2 AIS-proxy midpoint, never an anatomical contact."""
+    plan = _regional_plan(rows, cell)
+    region = "ais" if placement == "ais_pair" else "soma"
+    candidates = _regional_sites(plan, region, cell)
+    by_id = {row[0]:row for row in rows}
+    _, soma_point = _target_soma_node(rows, prefer_rostral=bool(cell.get("prefer_rostral_soma", False)))
+    spec = min(candidates, key=lambda s: (min(math.dist(by_id[s["node_id"]][2:5],soma_point),
+                    math.dist(by_id.get(by_id[s["node_id"]][6],by_id[s["node_id"]])[2:5],soma_point)),s["node_id"]))
+    row = by_id[spec["node_id"]]
+    parent = by_id.get(row[6], row)
+    return {"source_node_id":int(spec["source_node_id"]), "source_edge_fraction":.5,
+        "coordinate_um":[(float(parent[a])+float(row[a]))/2 for a in (2,3,4)],
+        "selection":"Nearest geometric type-2 AIS-proxy incoming edge" if region == "ais" else "Shared geometric soma-proxy incoming edge"}
+
+
+def _regional_contact_site(plan: Mapping[str, Any], run_node_id: int, fraction: float) -> tuple[int, float]:
+    if not math.isfinite(float(fraction)) or float(fraction) != .5:
+        raise ValueError("Synthetic contacts require the declared central CV")
+    spec = next((s for s in plan["sections"] if int(s["node_id"]) == run_node_id), None)
+    if spec is None:
+        raise ValueError("Synthetic contact has no mapped incoming SWC edge")
+    return int(spec["section_id"]), float(fraction)
+
+
+def _arbor_gap_contact_locset(plan: Mapping[str, Any] | None, node_locset: str, run_node_id: int,
+                              contact: Mapping[str, Any], endpoint: str) -> str:
+    if f"{endpoint}_source_edge_fraction" not in contact:
+        return node_locset
+    if not plan:
+        raise ValueError("Synthetic electrical placement requires the shared regional mesh")
+    _, fraction = _regional_contact_site(plan, run_node_id, float(contact[f"{endpoint}_source_edge_fraction"]))
+    return f'(on-components {fraction:.17g} (tag {1_000_000+run_node_id}))'
+
+
+def _native_payloads(circuit: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [dict(circuit.get("membrane") or {})] + [
+        dict(value or {}) for value in dict(circuit.get("neuron_mechanism_overrides") or {}).values()
+    ] + [
+        dict(value or {}) for neuron_map in dict(circuit.get("compartment_mechanism_overrides") or {}).values()
+        for value in dict(neuron_map or {}).values()
+    ]
+
+
+def _validated_native_assignment(key: str, channel: Mapping[str, Any]) -> None:
+    expected = NATIVE_CHANNELS.get(key)
+    if expected is None or (channel.get("suffix"), channel.get("source_sha256")) != expected:
+        raise ValueError(f"Unverified native channel identity: {key}")
+    for field in ("soma_gbar_s_cm2", "branch_gbar_s_cm2"):
+        value = float(channel.get(field, 0))
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"Invalid {key} density: {field}")
+    for name, value in dict(channel.get("parameters") or {}).items():
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) or not math.isfinite(float(value)):
+            raise ValueError(f"Invalid native channel parameter: {key}.{name}")
+        # Global solver/environment parameters must not be treated as per-channel knobs.
+        if name in {"gbar", "v", "celsius", "ena", "ek", "eca", "ina", "ik", "ica"}:
+            raise ValueError(f"Reserved native channel parameter: {key}.{name}")
+
+
+def _prepare_native_channels(request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+    """Compile exact sources with the selected interpreter's compiler, never a shared cwd library."""
+    sources = dict(request.get("native_channel_sources") or {})
+    required = {
+        key for membrane in _native_payloads(dict(request["circuit"]))
+        for key in _active_native_channels(membrane)
+    }
+    if set(sources) != required:
+        raise ValueError("Native channel source set does not match the selected circuit")
+    if not required:
+        return {}
+    for key, record in sources.items():
+        expected = NATIVE_CHANNELS.get(key)
+        if expected is None or (record.get("suffix"), record.get("sha256")) != expected:
+            raise ValueError(f"Unverified native channel source: {key}")
+        if _sha256(Path(record["path"])) != expected[1]:
+            raise ValueError(f"Native channel source hash mismatch: {key}")
+    builder_record = dict(request.get("native_builder") or {})
+    builder_path = Path(str(builder_record.get("path") or ""))
+    if not builder_path.is_file() or _sha256(builder_path) != builder_record.get("sha256"):
+        raise ValueError("Native channel compiler helper identity mismatch")
+    spec = importlib.util.spec_from_file_location("digifly_native_compiler", builder_path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    from neuron import h
+    import neuron
+    # Parse standard hoc morphology code before registering Augustin's SUFFIX
+    # k, which otherwise collides with Import3d's local variable spelling.
+    if not h.load_file("import3d.hoc"):
+        raise RuntimeError("NEURON morphology importer could not initialize")
+    python = Path(sys.executable).absolute()
+    runtime, environment = helper._probe_runtime(python)
+    if runtime["neuron_version"] != neuron.__version__ or Path(runtime["neuron_file"]).resolve() != Path(neuron.__file__).resolve():
+        raise RuntimeError("Selected NEURON import differs from its isolated compiler runtime; choose a compatible isolated interpreter")
+    compiler = helper._resolve_nrnivmodl(None, runtime=runtime, probe_environment=environment)
+    build = output_dir / "native_channels"
+    build.mkdir(exist_ok=False)
+    staged = build / "sources"
+    staged.mkdir()
+    for key, record in sources.items():
+        target = staged / f"{key}.mod"
+        target.write_bytes(Path(record["path"]).read_bytes())
+        if _sha256(target) != record["sha256"]:
+            raise ValueError(f"Staged native channel hash mismatch: {key}")
+    environment = helper._build_environment(python=python, nrnivmodl=compiler, runtime=runtime, output=build)
+    command = [str(compiler), "sources"]
+    completed = subprocess.run(command, cwd=build, env=environment, capture_output=True, text=True, timeout=300)
+    (build / "build.log").write_text(completed.stdout + completed.stderr)
+    if completed.returncode:
+        raise RuntimeError("Native channel compilation failed; see native_channels/build.log")
+    library = helper._find_library(build)
+    # Do not allow an ambient mechanism with the same name to replace our locked source.
+    for key in required:
+        probe = h.Section()
+        try:
+            probe.insert(NATIVE_CHANNELS[key][0])
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(f"Runtime already contains an unverified channel: {key}")
+        finally:
+            h.delete_section(sec=probe)
+    if not h.nrn_load_dll(str(library)):
+        raise RuntimeError("Native channel library could not load into the selected NEURON runtime")
+    for key in required:
+        probe = h.Section()
+        try:
+            probe.insert(NATIVE_CHANNELS[key][0])
+        finally:
+            h.delete_section(sec=probe)
+    evidence = {
+        "engine": "neuron", "python": str(python), "neuron_version": neuron.__version__,
+        "sources": sources, "builder": builder_record, "command": command,
+        "compiler_sha256": _sha256(compiler), "library": str(library), "library_sha256": _sha256(library),
+    }
+    _atomic_json(build / "manifest.json", evidence)
+    return evidence
+
+
+def _load_precompiled_native_channels(evidence: Mapping[str, Any]) -> None:
+    """Fresh trial interpreters load the parent's locked library, never compile."""
+    if not evidence:
+        return
+    import neuron
+    from neuron import h
+    library = Path(evidence["library"])
+    if neuron.__version__ != evidence["neuron_version"] or _sha256(library) != evidence["library_sha256"]:
+        raise ValueError("Independent trial native-channel library/runtime mismatch")
+    builder = evidence["builder"]
+    if _sha256(Path(builder["path"])) != builder["sha256"]:
+        raise ValueError("Independent trial native-channel builder changed")
+    for key, record in evidence["sources"].items():
+        if (record.get("suffix"), record.get("sha256")) != NATIVE_CHANNELS.get(key) or _sha256(Path(record["path"])) != record["sha256"]:
+            raise ValueError("Independent trial native-channel source changed")
+    if not h.load_file("import3d.hoc"):
+        raise RuntimeError("NEURON morphology importer could not initialize")
+    for key in evidence["sources"]:
+        probe = h.Section()
+        try:
+            probe.insert(NATIVE_CHANNELS[key][0])
+        except ValueError:
+            pass
+        else:
+            raise ValueError("Independent trial runtime contains an unverified channel collision")
+        finally:
+            h.delete_section(sec=probe)
+    if not h.nrn_load_dll(str(library)):
+        raise RuntimeError("Independent trial native-channel library could not load")
+
+
+def _decorate_neuron_section(section: Any, hh: Mapping[str, Any], membrane: Mapping[str, Any], *, soma: bool) -> None:
+    section.Ra = float(hh["ra_ohm_cm"])
+    section.cm = float(hh["cm_uF_cm2"])
+    section.insert("hh")
+    section.ena = float(hh["ena_mV"])
+    section.ek = float(hh["ek_mV"])
+    values = _region_hh(hh, soma=soma)
+    if membrane.get("replace_builtin_hh", False):
+        values = {**values, "gnabar": 0.0, "gkbar": 0.0}
+    for segment in section:
+        for key, value in values.items():
+            setattr(segment.hh, key, value)
+    active = set(_active_native_channels(membrane))
+    for key, raw in dict(membrane.get("channels") or {}).items():
+        if key not in active:
+            continue
+        channel = dict(raw)
+        _validated_native_assignment(key, channel)
+        suffix = channel["suffix"]
+        section.insert(suffix)
+        if key in {"cacophony", "ca_alpha1t"}:
+            from neuron import h
+            # Honor the editor's fixed reversal rather than temperature-dependent
+            # runtime default Nernst initialization overwriting it.
+            h.ion_style("ca_ion", 0, 1, 0, 0, 0, sec=section)
+            section.eca = float(hh["eca_mV"])
+        density = float(channel["soma_gbar_s_cm2" if soma else "branch_gbar_s_cm2"])
+        if hh.get("active_scope") == "soma" and not soma:
+            density = 0.0
+        for segment in section:
+            mechanism = getattr(segment, suffix)
+            mechanism.gbar = density
+            for name, value in dict(channel.get("parameters") or {}).items():
+                if not hasattr(mechanism, name):
+                    raise ValueError(f"Unknown native channel parameter: {key}.{name}")
+                setattr(mechanism, name, float(value))
+
+
+def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+    sources = dict(request.get("native_channel_sources") or {})
+    required = {key for membrane in _native_payloads(dict(request["circuit"]))
+                for key in _active_native_channels(membrane)}
+    if set(sources) != required:
+        raise ValueError("Native channel source set does not match the selected circuit")
+    if not required:
+        return {}
+    for key, record in sources.items():
+        if (record.get("suffix"), record.get("sha256")) != NATIVE_CHANNELS.get(key):
+            raise ValueError(f"Unverified native channel source: {key}")
+        if _sha256(Path(record["path"])) != record["sha256"]:
+            raise ValueError(f"Native channel source hash mismatch: {key}")
+    translator = dict(request.get("arbor_channel_translator") or {})
+    translator_path = Path(str(translator.get("path") or ""))
+    if not translator_path.is_file() or _sha256(translator_path) != translator.get("sha256"):
+        raise ValueError("Arbor channel translator identity mismatch")
+    import arbor
+    if arbor.__version__ != "0.12.2":
+        raise RuntimeError("Channel translations are tested against Arbor 0.12.2; select that runtime")
+    spec = importlib.util.spec_from_file_location("digifly_arbor_translation", translator_path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    build = output_dir / "arbor_channels"
+    build.mkdir(exist_ok=False)
+    staged = build / "sources"
+    staged.mkdir()
+    translations = {}
+    for key, record in sources.items():
+        data = Path(record["path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != record["sha256"]:
+            raise ValueError(f"Native channel source changed while staging: {key}")
+        target = staged / f"{record['suffix']}.mod"
+        target.write_text(helper.translate(key, data.decode("utf-8")), encoding="utf-8")
+        translations[key] = {"path": str(target), "sha256": _sha256(target)}
+    arbor_root = Path(arbor.__file__).resolve().parent
+    modcc = arbor_root / "bin" / "modcc"
+    compiler = shutil.which("c++")
+    if not modcc.is_file() or not compiler:
+        raise RuntimeError("Arbor catalogue compiler tools are missing")
+    environment = os.environ.copy()
+    generated = build / "generated"
+    generated.mkdir()
+    command = [str(modcc), "-t", "cpu", "-N", "arb", "-c", "digifly_channels", "-o", str(generated),
+               *map(str, sorted(staged.glob("*.mod")))]
+    compiled = subprocess.run(command, cwd=build, env=environment, capture_output=True, text=True, timeout=300)
+    (build / "build.log").write_text(compiled.stdout + compiled.stderr)
+    if compiled.returncode:
+        raise RuntimeError("Arbor channel source generation failed; see arbor_channels/build.log")
+    # modcc emits a self-contained C-ABI plugin; the generated CPU code uses
+    # header-only math and stdlib, not Arbor's static solver. Avoid linking a
+    # second solver (and incompatible wheel LTO) into a mechanism catalogue.
+    library = build / "digifly_channels-catalogue.so"
+    link_command = [compiler, "-std=c++17", "-O2", "-shared", "-fPIC", "-DSTANDALONE=1",
+                    "-I", str(arbor_root / "include"), *map(str, sorted(generated.glob("*.cpp"))),
+                    "-o", str(library)]
+    linked = subprocess.run(link_command, cwd=build, env=environment, capture_output=True, text=True, timeout=300)
+    with (build / "build.log").open("a") as log:
+        log.write(linked.stdout + linked.stderr)
+    if linked.returncode or not library.is_file():
+        raise RuntimeError("Arbor channel ABI plugin linking failed; see arbor_channels/build.log")
+    catalogue = arbor.load_catalogue(str(library))
+    for record in sources.values():
+        if record["suffix"] not in catalogue:
+            raise RuntimeError("Compiled Arbor catalogue is missing a selected channel")
+    evidence = {"engine": "arbor", "arbor_version": arbor.__version__, "sources": sources,
+                "translations": translations, "translator": translator, "command": command,
+                "link_command": link_command, "build_method": "modcc_generated_cpu_C_ABI_plugin_no_static_solver",
+                "modcc_sha256": _sha256(modcc),
+                "headers": {str(p.relative_to(arbor_root)): _sha256(p) for p in (arbor_root / "include" / "arbor").glob("*.h*")},
+                "compiler_path": compiler, "compiler_sha256": _sha256(Path(compiler)),
+                "library": str(library), "library_sha256": _sha256(library)}
+    _atomic_json(build / "manifest.json", evidence)
+    return evidence
+
+
+def _arbor_channel_properties(arbor: Any, catalogue_path: Path | None) -> Any:
+    properties = arbor.neuron_cable_properties()
+    if catalogue_path is not None:
+        manifest = json.loads((catalogue_path.parent / "manifest.json").read_text())
+        if manifest.get("arbor_version") != arbor.__version__ or manifest.get("library_sha256") != _sha256(catalogue_path):
+            raise ValueError("Arbor channel catalogue ABI/hash mismatch")
+        properties.catalogue.extend(arbor.load_catalogue(str(catalogue_path)), "digifly_channels_")
+    return properties
+
+
+def _decorate_arbor_channels(arbor: Any, decor: Any, hh: Mapping[str, Any], membrane: Mapping[str, Any], *, edge_region: str | None = None, edge_soma: bool = False) -> None:
+    for ion, key in (("na","ena_mV"),("k","ek_mV"),("ca","eca_mV")):
+        if edge_region is None:
+            decor.set_ion(ion, rev_pot=float(hh[key]) * arbor.units.mV)
+        else:
+            decor.paint(edge_region, ion=ion, rev_pot=float(hh[key]) * arbor.units.mV)
+    active = set(_active_native_channels(membrane))
+    for region, soma in (((edge_region, edge_soma),) if edge_region else (("soma", True), ("branches", False))):
+        region_expression = region if edge_region else f'"{region}"'
+        values = _region_hh(hh, soma=soma)
+        if membrane.get("replace_builtin_hh", False):
+            values = {**values, "gnabar": 0.0, "gkbar": 0.0}
+        decor.paint(region_expression, arbor.density("hh", values))
+        for key in active:
+            channel = dict(membrane["channels"][key])
+            _validated_native_assignment(key, channel)
+            density = float(channel["soma_gbar_s_cm2" if soma else "branch_gbar_s_cm2"])
+            if hh.get("active_scope") == "soma" and not soma:
+                density = 0.0
+            values = {"gbar": density, **dict(channel.get("parameters") or {})}
+            decor.paint(region_expression, arbor.density("digifly_channels_" + channel["suffix"], values))
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
@@ -48,13 +482,16 @@ def _required_sha256(value: Any, *, label: str) -> str:
     return digest.lower()
 
 
-def _neuron_nseg_for_length(length_um: float) -> int:
+def _neuron_nseg_for_length(length_um: float, *, target_spacing_um: float | None = None) -> int:
     """Apply Digifly's uncapped ~40-um odd-segment discretization rule."""
 
     length = float(length_um)
     if not math.isfinite(length) or length < 0.0:
         raise RuntimeError(f"NEURON section length is invalid: {length_um!r}")
-    target = max(1, int(math.ceil(length / NEURON_TARGET_SEGMENT_UM)))
+    spacing = NEURON_TARGET_SEGMENT_UM if target_spacing_um is None else float(target_spacing_um)
+    if not math.isfinite(spacing) or spacing <= 0:
+        raise ValueError("Invalid target segment spacing")
+    target = max(1, int(math.ceil(length / spacing)))
     return target if target % 2 else target + 1
 
 
@@ -169,6 +606,7 @@ def _normalize_swc(
     *,
     expected_source_sha256: str | None = None,
     source_label: str = "Source SWC",
+    coordinate_transform: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path, str]:
     """Write an isomorphic parent-before-child SWC plus an ID provenance map.
 
@@ -178,6 +616,25 @@ def _normalize_swc(
     potentially changed read of the source path.
     """
 
+    transform = dict(coordinate_transform or {})
+    if not transform and any(root.name == "export_swc"
+                             and root.parent.name == "male-cns_v0.9"
+                             for root in source.resolve().parents):
+        raise ValueError("Male CNS SWC requires an explicit coordinate transform; rebuild the request")
+    rule_scales = {
+        "identity_um": 1.0,
+        "male_cns_v09_phase1_legacy": 8.0,
+        "male_cns_v09_release_um": 1.0,
+        "male_cns_v09_neuprint_raw": 0.008,
+    }
+    scale = 1.0
+    if transform:
+        rule = transform.get("rule")
+        if (transform.get("schema_version") != 1 or rule not in rule_scales
+                or transform.get("scale_to_um") != rule_scales[rule]
+                or transform.get("output_units") != "um"):
+            raise ValueError("Unsupported SWC coordinate transform")
+        scale = rule_scales[rule]
     nodes: dict[int, tuple[int, float, float, float, float, int]] = {}
     source_digest = hashlib.sha256()
     with source.open("rb") as handle:
@@ -211,10 +668,10 @@ def _normalize_swc(
                 parent_id = int(parent_value)
                 values = (
                     int(type_value),
-                    float(fields[2]),
-                    float(fields[3]),
-                    float(fields[4]),
-                    float(fields[5]),
+                    float(fields[2]) * scale,
+                    float(fields[3]) * scale,
+                    float(fields[4]) * scale,
+                    float(fields[5]) * scale,
                     parent_id,
                 )
             except ValueError as exc:
@@ -232,6 +689,8 @@ def _normalize_swc(
                 )
             nodes[node_id] = values
     actual_source_sha256 = source_digest.hexdigest()
+    if transform and transform.get("source_sha256") != actual_source_sha256:
+        raise ValueError("SWC coordinate transform source checksum changed")
     if expected_source_sha256 is not None:
         expected_digest = _required_sha256(
             expected_source_sha256,
@@ -274,6 +733,8 @@ def _normalize_swc(
         handle.write(
             "# Digifly parent-before-child topology normalization\n"
             f"# source_sha256 {actual_source_sha256}\n"
+            f"# coordinate_scale_to_um {scale:.17g}\n"
+            f"# coordinate_rule {transform.get('rule', 'identity_um')}\n"
         )
         for old_id in ordered:
             swc_type, x, y, z, radius, old_parent = nodes[old_id]
@@ -339,8 +800,9 @@ def _target_soma_node(
 def _arbor_root_stub_length(
     rows: Sequence[tuple[int, int, float, float, float, float, int]],
 ) -> float:
-    root = next(row for row in rows if row[6] == -1)
-    return max(root[5] * ARBOR_ROOT_STUB_RADIUS_FRACTION, ARBOR_ROOT_STUB_MIN_UM)
+    # A topology adapter, not an extra biological soma cable. A radius-scaled
+    # stub added backend-specific membrane area and changed spike timing.
+    return ARBOR_ROOT_STUB_MIN_UM
 
 
 def _arbor_morphology_and_segments_from_swc(
@@ -512,7 +974,7 @@ def _arbor_network_morphology_from_swc(
         "all": "(all)",
         "soma": soma_region,
         "branches": f"(difference (all) {soma_region})",
-        "soma-center": f"(on-components 0.5 (tag {target_tag}))",
+        "soma-center": f"(distal (tag {target_tag}))",
     }
     return arbor.morphology(tree), contact_locset_by_node, labels
 
@@ -549,13 +1011,457 @@ def _region_hh(hh: Mapping[str, Any], *, soma: bool) -> dict[str, float]:
 def _pulse_windows(stimulus: Mapping[str, Any]) -> tuple[tuple[float, float], ...]:
     delay = float(stimulus["delay_ms"])
     duration = float(stimulus["pulse_width_ms"])
-    if str(stimulus.get("waveform")) == "step":
+    if str(stimulus.get("waveform")) in {"step", "ramp"}:
         return ((delay, duration),)
     period = 1000.0 / float(stimulus["frequency_hz"])
     return tuple(
         (delay + index * period, duration)
         for index in range(int(stimulus["pulse_count"]))
     )
+
+
+def _ramp_envelope(stimulus: Mapping[str, Any], amplitude: float) -> list[tuple[float, float]]:
+    """One linear 0-to-peak ramp with an instantaneous drop at its declared end."""
+    start = float(stimulus["delay_ms"])
+    stop = start + float(stimulus["pulse_width_ms"])
+    return [(start, 0.0), (stop, amplitude), (stop, 0.0)]
+
+
+def _physical_ramp_current(stimulus: Mapping[str, Any], amplitude: float, time_ms: float) -> float:
+    start = float(stimulus["delay_ms"])
+    width = float(stimulus["pulse_width_ms"])
+    if not all(math.isfinite(value) for value in (start, width, amplitude, time_ms)) or start < 0 or width <= 0:
+        raise ValueError("Ramp parameters must be finite, with nonnegative onset and positive width")
+    return amplitude*(time_ms-start)/width if start <= time_ms < start+width else 0.0
+
+
+def _arbor_ramp_epoch_interval(edges: Mapping[str, Any], chemical_enabled: bool) -> float | None:
+    # Arbor0.12.2 recipe.hpp stores connection delays as float32; simulation.cpp
+    # sets epoch length to half the minimum delay. No chemical connections means
+    # one finite run epoch (the native no-connection interval is effectively infinite).
+    delays = [struct.unpack("f", struct.pack("f", float(contact["delay_ms"])))[0]
+        for contact in edges.get("chemical_edges") or ()] if chemical_enabled else []
+    return min(delays)/2 if delays else None
+
+
+def _arbor_native_clock_forecast(duration_ms: float, dt_ms: float,
+                                  epoch_interval_ms: float | None = None) -> dict[str, Any]:
+    final, dt = float(duration_ms), float(dt_ms)
+    interval = final if epoch_interval_ms is None else float(epoch_interval_ms)
+    if not all(math.isfinite(v) and v > 0 for v in (final,dt,interval)) or (epoch_interval_ms is not None and dt-interval > 10*2**-23):
+        raise ValueError("Arbor native quadrature clock requires positive finite duration/dt and an epoch accommodating dt")
+    if not math.isfinite(final/interval) or not math.isfinite(final/dt):
+        raise ValueError("Arbor exact native clock forecast exceeds finite local bounds")
+    epochs = math.ceil(final/interval)+1  # conservative repeated-addition allowance
+    if epochs > ARBOR_MAX_NATIVE_EPOCHS:
+        raise ValueError(f"Arbor exact native clock requires up to {epochs:,} epochs; local limit {ARBOR_MAX_NATIVE_EPOCHS:,}. No clock or waveform was coarsened.")
+    steps = math.ceil(final/dt)+epochs  # at most one adjusted final step per epoch
+    return {"duration_ms":final,"integration_dt_ms":dt,"epoch_interval_ms":interval,
+            "epoch_count_upper_bound":epochs,"step_count_upper_bound":steps}
+
+
+def _arbor_native_steps(duration_ms: float, dt_ms: float, epoch_interval_ms: float | None = None,
+                         *, include_source_operands: bool = False):
+    """Exact pinned Arbor0.12.2 epoch/timestep_range arithmetic, without integration."""
+    forecast = _arbor_native_clock_forecast(duration_ms,dt_ms,epoch_interval_ms)
+    final,dt,interval = (forecast[k] for k in ("duration_ms","integration_dt_ms","epoch_interval_ms"))
+    start,epochs = 0.0,0
+    while start < final:
+        epochs += 1
+        if epochs > ARBOR_MAX_NATIVE_EPOCHS:
+            raise ValueError("Arbor exact native clock exceeded its declared epoch limit")
+        stop = min(start+interval,final)
+        if stop <= start:
+            raise ValueError("Arbor exact native clock cannot advance")
+        delta = stop-start
+        full = int(delta/dt)
+        count = full if full*dt+sys.float_info.epsilon*stop*full >= delta else full+1
+        for index in range(count):
+            left = start+index*dt
+            right = stop if index+1 >= count else start+(index+1)*dt
+            yield (left,right,start,index) if include_source_operands else (left,right)
+        start = stop
+
+
+def _arbor_probe_request(lefts: Sequence[float], rights: Sequence[float],
+                         previous: float | None = None) -> float:
+    """One representable query strictly inside both source arithmetic intervals."""
+    if len(lefts) != 2 or len(rights) != 2 or not all(math.isfinite(t) for t in (*lefts,*rights)):
+        raise ValueError("Arbor observation intervals must have two finite source candidates")
+    lower,upper = max(lefts),min(rights)
+    if min(lefts) < 0 or any(right <= left for left,right in zip(lefts,rights)) or lower >= upper:
+        raise ValueError("Arbor observation intervals have no common strict interior")
+    request = math.nextafter(lower,math.inf)
+    if not lower < request < upper or (previous is not None and (not math.isfinite(previous) or request <= previous)):
+        raise ValueError("Arbor observation request has no representable, strictly increasing common interior")
+    return request
+
+
+def _arbor_native_probe_clock(duration_ms: float, dt_ms: float,
+                              epoch_interval_ms: float | None = None) -> tuple[list[float],list[float]]:
+    """Source-derived API queries; returned report timestamps remain native lefts.
+
+    Querying a separately rounded left can land one ULP before a compiled FMA
+    left and make timestep_range::find observe the preceding state. Use one
+    strictly interior representable query in the intersection of the separate
+    and single-rounded source intervals. Require the pinned find algorithm to
+    select this ordinal in BOTH variants, or fail before dispatch. This changes
+    only observation requests, never integration, detector events or output time.
+    """
+    forecast = _arbor_native_clock_forecast(duration_ms,dt_ms,epoch_interval_ms)
+    final,dt,interval = (forecast[k] for k in ("duration_ms","integration_dt_ms","epoch_interval_ms"))
+    dt_fraction = Fraction(dt)
+    lefts,requests = [],[]
+    previous_start = None
+    for left,right,start,index in _arbor_native_steps(final,dt,epoch_interval_ms,include_source_operands=True):
+        if start != previous_start:
+            stop = min(start+interval,final)
+            full = int((stop-start)/dt)
+            count = full if full*dt+sys.float_info.epsilon*stop*full >= stop-start else full+1
+            start_fraction = Fraction(start)
+            previous_start = start
+        fused_left = float(start_fraction+index*dt_fraction)
+        fused_right = stop if index+1 >= count else float(start_fraction+(index+1)*dt_fraction)
+        request = _arbor_probe_request((left,fused_left),(right,fused_right),requests[-1] if requests else None)
+        guess = min(int((request-start)/dt),count-1)
+        for fused in (False,True):
+            candidate_left = float(start_fraction+guess*dt_fraction) if fused else start+guess*dt
+            candidate_right = stop if guess+1 >= count else (
+                float(start_fraction+(guess+1)*dt_fraction) if fused else start+(guess+1)*dt)
+            found = guess if candidate_left <= request < candidate_right else guess-1 if request < candidate_left else guess+1
+            if found != index:
+                raise ValueError("Arbor strict-interior observation request has ambiguous native find projection")
+        lefts.append(left)
+        requests.append(request)
+    return lefts,requests
+
+
+def _arbor_ramp_forecast(stimulus: Mapping[str, Any], dt_ms: float, duration_ms: float,
+                          epoch_interval_ms: float | None = None) -> dict[str, Any]:
+    _physical_ramp_current(stimulus,0.,0.)
+    start = float(stimulus["delay_ms"])
+    stop = start+float(stimulus["pulse_width_ms"])
+    horizon = min(float(duration_ms),stop+float(dt_ms))
+    forecast = _arbor_native_clock_forecast(horizon,dt_ms,epoch_interval_ms)
+    window = max(0.,min(float(duration_ms),stop)-max(0.,start-float(dt_ms)))
+    interval = forecast["epoch_interval_ms"]
+    knots = 2*(math.ceil(window/float(dt_ms))+6*(math.ceil(window/interval)+2)+2)
+    if knots > ARBOR_MAX_RAMP_KNOTS:
+        raise ValueError(f"Arbor ramp requires up to {knots:,} exact-grid envelope knots; local limit {ARBOR_MAX_RAMP_KNOTS:,}. No current, timing or dt was substituted.")
+    forecast["envelope_knot_count_upper_bound"] = knots
+    return forecast
+
+
+def _arbor_ramp_envelope(stimulus: Mapping[str, Any], amplitude: float, integration_dt_ms: float,
+                         duration_ms: float, epoch_interval_ms: float | None = None) -> list[tuple[float, float]]:
+    """API-only quadrature map: Arbor E(t_left) = physical I(t_midpoint).
+
+    Arbor0.12.2 samples i_clamp at its step's left endpoint; NEURON9.0.1
+    continuous Vector.play is evaluated at the midpoint before matrix setup.
+    Bind physical midpoint values to the exact native left-step times. A plain
+    -dt/2 envelope shift is insufficient at floating-point cutoff boundaries
+    (e.g. .035-.01/2 is greater than .03). No physical input or output timestamp
+    is shifted. Duplicate points retain the right-continuous numerical cutoff.
+    """
+    dt, final = float(integration_dt_ms), float(duration_ms)
+    if not math.isfinite(dt) or dt <= 0 or not math.isfinite(final) or final <= 0:
+        raise ValueError("Ramp quadrature requires a finite positive integration step and duration")
+    _physical_ramp_current(stimulus, amplitude, 0.0)
+    interval = final if epoch_interval_ms is None else float(epoch_interval_ms)
+    if not math.isfinite(interval) or interval <= 0 or (epoch_interval_ms is not None and dt-interval > 10*2**-23):
+        raise ValueError("Ramp quadrature epoch interval must accommodate the integration step")
+    _arbor_ramp_forecast(stimulus,dt,final,epoch_interval_ms)
+    samples = {}
+    epoch_start = 0.0
+    physical_start = float(stimulus["delay_ms"])
+    physical_stop = float(stimulus["delay_ms"])+float(stimulus["pulse_width_ms"])
+    while epoch_start < min(final, physical_stop+dt):
+        epoch_stop = min(epoch_start+interval, final)
+        if epoch_stop <= epoch_start:
+            raise ValueError("Ramp quadrature epoch time cannot advance")
+        delta = epoch_stop-epoch_start
+        full = int(delta/dt)
+        # Exact v0.12.2 timestep_range.hpp final-step roundoff convention.
+        count = full if full*dt+sys.float_info.epsilon*epoch_stop*full >= delta else full+1
+        if count:
+            # Only the source ramp window and surrounding zero-current steps
+            # require knots, not the entire potentially long recording window.
+            first = max(0, int(math.floor((physical_start-epoch_start)/dt))-2)
+            last = min(count, int(math.ceil((physical_stop-epoch_start)/dt))+2)
+            indices = range(first,last)
+            if epoch_start == 0.0:
+                indices = sorted(set(indices) | {0})
+            for index in indices:
+                left = epoch_start+index*dt
+                right = epoch_stop if index+1 >= count else epoch_start+(index+1)*dt
+                midpoint = left+.5*(right-left)  # native timestep::midpoint()
+                samples[left] = _physical_ramp_current(stimulus, amplitude, midpoint)
+        epoch_start = epoch_stop
+    samples[final] = 0.0
+    envelope = []
+    previous = 0.0
+    for left,value in sorted(samples.items()):
+        if previous != 0.0 and value == 0.0:
+            envelope.append((left, amplitude))
+        envelope.append((left,value))
+        previous = value
+    return envelope
+
+
+def _ramp_quadrature_record(engine: str, experiment: Mapping[str, Any], stimulus: Mapping[str, Any],
+                            condition: Mapping[str, Any], cells: Mapping[str, Any], edges: Mapping[str, Any]) -> dict[str, Any]:
+    dt = float(experiment["integration_dt_ms"])
+    interval = _arbor_ramp_epoch_interval(edges, bool(condition.get("chemical_synapses_enabled",True))) if engine == "arbor" else None
+    targets = set(stimulus.get("target_neuron_ids") or cells)
+    sites = []
+    for neuron_id,cell in cells.items():
+        if neuron_id not in targets:
+            continue
+        mapped = _regional_sites(cell["regional_plan"], stimulus["target_region"], cell) if cell.get("regional") else [None]
+        amplitude = float(stimulus["amplitude_nA"])*float(condition.get("stimulus_scale",1.0))/len(mapped)
+        for site in mapped:
+            sites.append({"neuron_id":neuron_id,"source_node_id":site["source_node_id"] if site else None,
+                "site":"source-edge midpoint" if site else "soma-center", "amplitude_nA":amplitude,
+                "physical_envelope_ms_nA":_ramp_envelope(stimulus,amplitude),
+                "api_envelope_ms_nA":_arbor_ramp_envelope(stimulus,amplitude,dt,float(experiment["duration_ms"]),interval)
+                    if engine == "arbor" else _ramp_envelope(stimulus,amplitude)})
+    return {"condition":str(condition["name"]),"engine":engine,"physical_stimulus":copy.deepcopy(dict(stimulus)),
+        "integration_dt_ms":dt,"arbor_epoch_interval_ms":interval,"quadrature":"physical midpoint current",
+        "api_time_offset_ms":0.0,"nominal_midpoint_offset_ms":dt/2,
+        "api_envelope_kind":"Arbor i_clamp envelope" if engine == "arbor" else "Equivalent continuous Vector.play plus IClamp duration cutoff",
+        "mapping":"Arbor E(t_left)=I(t_left+(t_right-t_left)/2) at exact native grid knots; NEURON continuous Vector.play evaluates I(t_midpoint)",
+        "floating_boundary_policy":"No epsilon or rounded cutoff; native midpoint arithmetic and right-continuous exact-grid zero knots",
+        "boundaries":"Physical current is zero before onset and at/after cutoff; duplicate-time cutoff is right-continuous",
+        "short_step_policy":"Actual final/epoch step midpoint; saved waveform, onset/end, dt, voltage and report timestamps unchanged",
+        "sites":sites}
+
+
+def _arbor_current_clamps(arbor: Any, stimulus: Mapping[str, Any], amplitude: float, *,
+                          integration_dt_ms: float | None = None, duration_ms: float | None = None,
+                          epoch_interval_ms: float | None = None) -> list[Any]:
+    units = arbor.units
+    if stimulus.get("waveform") == "ramp":
+        if integration_dt_ms is None or duration_ms is None:
+            raise ValueError("Arbor ramp requires explicit integration step and duration for midpoint quadrature")
+        return [arbor.i_clamp([(t*units.ms, a*units.nA) for t,a in
+            _arbor_ramp_envelope(stimulus, amplitude, integration_dt_ms, duration_ms, epoch_interval_ms)])]
+    return [arbor.i_clamp(delay*units.ms, duration*units.ms, amplitude*units.nA)
+            for delay,duration in _pulse_windows(stimulus)]
+
+
+def _neuron_current_clamps(h: Any, site: Any, stimulus: Mapping[str, Any], amplitude: float) -> list[Any]:
+    objects = []
+    for delay,duration in _pulse_windows(stimulus):
+        clamp = h.IClamp(site)
+        clamp.delay, clamp.dur, clamp.amp = delay, duration, amplitude
+        objects.append(clamp)
+        if stimulus.get("waveform") == "ramp":
+            # Clamp duration supplies the instantaneous end cutoff. Vector.play
+            # interpolates the physical current continuously between endpoints.
+            times = [0.0, delay, delay+duration] if delay > 0 else [0.0, duration]
+            values = [0.0, 0.0, amplitude] if delay > 0 else [0.0, amplitude]
+            time_vector, amp_vector = h.Vector(times), h.Vector(values)
+            amp_vector.play(clamp._ref_amp, time_vector, 1)
+            objects.extend((time_vector, amp_vector))
+    return objects
+
+
+def _arbor_sampling_plan(experiment: Mapping[str, Any], edges: Mapping[str, Any],
+                         condition: Mapping[str, Any], probe_count: int, *, detector_count: int = 0,
+                         allocate: bool = True) -> dict[str, Any]:
+    """Dense native observation clock; it does not change integration or events."""
+    final,dt = float(experiment["duration_ms"]),float(experiment["integration_dt_ms"])
+    sample_dt = float(experiment["recording"]["sample_dt_ms"])
+    if not math.isfinite(sample_dt) or sample_dt < dt or probe_count < 1 or detector_count < 0:
+        raise ValueError("Arbor native sampling requires positive probes and a sample interval at least dt")
+    interval = _arbor_ramp_epoch_interval(edges,bool(condition.get("chemical_synapses_enabled",True)))
+    forecast = _arbor_native_clock_forecast(final,dt,interval)
+    values = forecast["step_count_upper_bound"]*probe_count
+    events = forecast["step_count_upper_bound"]*detector_count
+    if values > ARBOR_MAX_NATIVE_REPORT_VALUES:
+        raise ValueError(f"Arbor dense native report requires up to {values:,} values; local limit {ARBOR_MAX_NATIVE_REPORT_VALUES:,}. No probes were dispatched.")
+    if events > ARBOR_MAX_NATIVE_DETECTOR_EVENTS:
+        raise ValueError(f"Arbor retained native detector observations require up to {events:,} events; local limit {ARBOR_MAX_NATIVE_DETECTOR_EVENTS:,}. No clock, recipe or detector recorder was dispatched.")
+    native_lefts,probe_requests = _arbor_native_probe_clock(final,dt,interval) if allocate else (None,None)
+    return {"schema":"digifly-arbor-native-sampling-v2", **forecast,
+        "source_epoch_interval_ms":interval,
+        "requested_sample_dt_ms":sample_dt,"probe_count":probe_count,
+        "native_value_count_upper_bound":values,
+        "native_detector_count":detector_count,"native_detector_event_count_upper_bound":events,
+        "native_step_left_ms":native_lefts,"probe_request_ms":probe_requests,
+        "probe_request_policy":"nextafter(max(exact separate/FMA lefts), +infinity), strictly below min(exact separate/FMA rights); pinned find must resolve the intended ordinal in both complete source variants",
+        "probe_request_note":"API query times identify native step-left observations; they are NOT report timestamps or a physical/event-clock shift",
+        "match_bound_ms_exclusive":dt/2,
+        "match_roundoff_guard":"32 ULPs of requested/native time and dt; reject boundary-near matches and near-ties, never enlarge dt/2",
+        "selection":"Nearest observed native state, strictly less than dt/2; ambiguous ties fail. No voltage interpolation or timestamp relabeling.",
+        "output_timestamp_adjustment_ms":0.0,
+        "physical_event_delay_threshold_policy":"Unchanged native Arbor detector interpolation and event delivery",
+        "native_clock_equality":"Entire observed clock must exactly equal either the complete separate-product-plus-sum or complete correctly single-rounded fused start+index*dt source sequence; mixed candidates fail; no isclose/ULP time tolerance",
+        "chemical_detector_threshold_mV":float(dict(edges.get("chemical_synapse_policy") or {}).get("spike_threshold_mV",0.0)),
+        "exported_spike_threshold_mV":float(experiment["recording"].get("spike_threshold_mV",-20.0)),
+        "native_clock_source":"https://github.com/arbor-sim/arbor/blob/v0.12.2/arbor/timestep_range.hpp",
+        "native_sampling_source":"https://github.com/arbor-sim/arbor/blob/v0.12.2/arbor/backends/multicore/shared_state.cpp#L253"}
+
+
+def _select_arbor_native_samples(data: Sequence[Any], plan: Mapping[str, Any]) -> tuple[list[float],list[float],list[dict[str, Any]]]:
+    times = [float(row[0]) for row in data]
+    values = [float(row[1]) for row in data]
+    expected = list(plan["native_step_left_ms"])
+    if len(times) != len(expected) or not all(math.isfinite(time) for time in times):
+        raise ValueError("Arbor actual native sample clock differs from the pinned exact-step sampling plan")
+    if not all(math.isfinite(value) for value in values) or any(b <= a for a,b in zip(times,times[1:])):
+        raise ValueError("Arbor native report is nonfinite or not strictly time ordered")
+    clock_arithmetic = "matches_complete_separately_rounded_source_sequence"
+    if times != expected:
+        # Native timestep_range::operator[] is t0_ + i*dt_. Its compiled C++
+        # expression may contract to FMA; Python separately rounds i*dt_ then
+        # adds t0_. Require the WHOLE clock to equal one complete exact source
+        # sequence, never an arbitrary per-row mixture or nearness tolerance.
+        # Exact rational conversion implements a single rounding without
+        # compiler/libm/platform dependencies; stream it, no second full clock.
+        final,dt = (float(plan[key]) for key in ("duration_ms","integration_dt_ms"))
+        interval = plan.get("source_epoch_interval_ms",plan["epoch_interval_ms"])
+        for ordinal,(_left,_right,start,index) in enumerate(_arbor_native_steps(final,dt,interval,include_source_operands=True)):
+            fused = float(Fraction(start)+index*Fraction(dt))
+            if times[ordinal] != fused:
+                raise ValueError(f"Arbor actual native sample clock differs at ordinal {ordinal}; whole clock equals neither complete exact source arithmetic sequence")
+        clock_arithmetic = "matches_complete_single_rounded_fused_source_sequence"
+    sample_dt = float(plan["requested_sample_dt_ms"])
+    final = float(plan["duration_ms"])
+    bound = float(plan["match_bound_ms_exclusive"])
+    selected = []
+    last_index = -1
+    for grid_index in range(math.ceil(final/sample_dt)):
+        desired = grid_index*sample_dt
+        if not times or desired < times[0] or desired > times[-1]:
+            raise ValueError("Arbor requested sample lies outside actual native observed support; no endpoint was invented")
+        insertion = bisect.bisect_left(times,desired)
+        candidates = [index for index in (insertion-1,insertion) if 0 <= index < len(times)]
+        ranked = sorted((abs(times[index]-desired),index) for index in candidates)
+        roundoff = 32*max(math.ulp(desired),math.ulp(float(plan["integration_dt_ms"])),
+            *(math.ulp(times[index]) for index in candidates))
+        if not ranked or ranked[0][0] >= bound-roundoff or (len(ranked)>1 and abs(ranked[0][0]-ranked[1][0]) <= roundoff):
+            raise ValueError(f"Arbor requested sample {desired:.17g}ms has no unambiguous native observation strictly within dt/2; no interpolation or extrapolation was performed")
+        distance,index = ranked[0]
+        if index <= last_index:
+            raise ValueError("Arbor requested sample grid reuses or reverses a native observation")
+        last_index = index
+        selected.append({"requested_time_ms":desired,"actual_time_ms":times[index],
+                         "offset_ms":times[index]-desired,"native_row_index":index,
+                         "native_clock_arithmetic":clock_arithmetic})
+    indices = [row["native_row_index"] for row in selected]
+    return [times[i] for i in indices],[values[i] for i in indices],selected
+
+
+def _persist_arbor_sampling_plan(report_path: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Pin the full prospective schedule before any native recipe/integration."""
+    plan_path = report_path.with_suffix(".plan.json")
+    plan_path.parent.mkdir(parents=True,exist_ok=True)
+    if plan_path.exists():
+        raise FileExistsError(f"Prospective Arbor sampling plan already exists: {plan_path}")
+    _atomic_json(plan_path,plan)
+    return dict(plan) | {"sampling_plan_path":plan_path.name,"sampling_plan_sha256":_sha256(plan_path)}
+
+
+def _arbor_native_report(path: Path, data_by_probe: Mapping[Any, Sequence[Any]],
+                          plan: Mapping[str, Any], *, native_detector_events: Sequence[Mapping[str, Any]] = ()) -> dict[Any, tuple[list[float],list[float]]]:
+    """Preserve every observation before any requested-grid selection."""
+    path.parent.mkdir(parents=True,exist_ok=True)
+    result,selections = {},[]
+    with path.open("x",encoding="utf-8",newline="") as handle:
+        writer = csv.DictWriter(handle,fieldnames=("neuron_id","compartment_id","native_row_index","time_ms","voltage_mV"))
+        writer.writeheader()
+        for probe,data in data_by_probe.items():
+            neuron_id,compartment_id = probe if isinstance(probe,tuple) else (probe,"")
+            writer.writerows({"neuron_id":neuron_id,"compartment_id":compartment_id,"native_row_index":i,
+                "time_ms":float(row[0]),"voltage_mV":float(row[1])} for i,row in enumerate(data))
+    observations = {key:value for key,value in plan.items() if key not in ("native_step_left_ms","probe_request_ms")} | {
+        "raw_report_path":path.name,"raw_report_sha256":_sha256(path),
+        "native_step_count":len(plan["native_step_left_ms"]),
+        "observed_rows_per_probe":[{"probe":list(probe) if isinstance(probe,tuple) else [probe],"rows":len(data)} for probe,data in data_by_probe.items()],
+        "native_chemical_detector_events":[dict(event) for event in native_detector_events],
+        "detector_event_note":"Actual native chemical-source crossings, NOT relabeled exported spike-threshold detections; no event or delay adjustment"}
+    # Observation-only bytes/events survive even a later clock/support guard
+    # rejection. Never write a canonical successful selection on failure.
+    observation_path = path.with_suffix(".observations.json")
+    _atomic_json(observation_path,observations | {"state":"unvalidated_native_observations","canonical_output_complete":False})
+    try:
+        if "sampling_plan_path" in plan:
+            plan_name = str(plan["sampling_plan_path"])
+            plan_path = path.parent/plan_name
+            if Path(plan_name).name != plan_name or _sha256(plan_path) != plan.get("sampling_plan_sha256"):
+                raise ValueError("Arbor prospective sampling plan identity changed after pinning")
+            pinned = json.loads(plan_path.read_text(encoding="utf-8"))
+            if pinned != {key:value for key,value in plan.items() if key not in ("sampling_plan_path","sampling_plan_sha256")}:
+                raise ValueError("Arbor in-memory sampling plan differs from the pinned prospective plan")
+        for probe,data in data_by_probe.items():
+            times,values,selected = _select_arbor_native_samples(data,plan)
+            result[probe] = times,values
+            neuron_id,compartment_id = probe if isinstance(probe,tuple) else (probe,"")
+            selections.append({"neuron_id":neuron_id,"compartment_id":compartment_id,"selected_rows":selected})
+        if any(not math.isfinite(float(event["time_ms"])) or not 0 <= float(event["time_ms"]) <= float(plan["duration_ms"])
+               for event in native_detector_events):
+            raise ValueError("Arbor native detector observations contain invalid event times")
+    except Exception as error:
+        _atomic_json(path.with_suffix(".rejection.json"),{
+            "schema":"digifly-arbor-native-sampling-rejection-v1","canonical_output_complete":False,
+            "error_type":type(error).__name__,"message":str(error),"raw_report_sha256":observations["raw_report_sha256"],
+            "observations_path":observation_path.name,"observations_sha256":_sha256(observation_path)})
+        raise
+    _atomic_json(path.with_suffix(".json"), observations | {"state":"validated_native_selection","selections":selections})
+    return result
+
+
+def _arbor_execution_resource_forecast(cells: Mapping[str, Any], experiment: Mapping[str, Any],
+                                        edges: Mapping[str, Any]) -> dict[str, Any]:
+    """Aggregate exact envelope/report cost BEFORE clocks, recipes or compilers."""
+    repetitions = int(experiment.get("repetitions",1))
+    native_values,detector_events,ramp_knots,records = 0,0,0,[]
+    recording = dict(experiment["recording"])
+    for condition in experiment.get("conditions") or ():
+        if not condition.get("enabled",True):
+            continue
+        active_cells = _condition_cells(cells,condition)
+        active_edges = _condition_edges(edges,tuple(active_cells))
+        targets = set(recording.get("target_neuron_ids") or active_cells)
+        probes = sum(len(_regional_sites(c["regional_plan"],recording["target_region"],c))
+            if c.get("regional") else 1 for n,c in active_cells.items() if n in targets)
+        interval = _arbor_ramp_epoch_interval(active_edges,bool(condition.get("chemical_synapses_enabled",True)))
+        item = {"condition":str(condition["name"]),"probe_count":probes,"repetitions":repetitions}
+        if interval is not None and probes:
+            # Recipe places one chemical-source detector on EVERY active cell,
+            # not just selected recording targets. At most one rising crossing
+            # per native step/detector (pinned threshold_watcher.hpp).
+            plan = _arbor_sampling_plan(experiment,active_edges,condition,probes,
+                                        detector_count=len(active_cells),allocate=False)
+            native_values += plan["native_value_count_upper_bound"]*repetitions
+            detector_events += plan["native_detector_event_count_upper_bound"]*repetitions
+            item["dense_native_report_value_upper_bound"] = plan["native_value_count_upper_bound"]*repetitions
+            item["native_detector_count"] = len(active_cells)
+            item["retained_native_detector_event_upper_bound"] = plan["native_detector_event_count_upper_bound"]*repetitions
+        for stimulus in experiment.get("stimuli") or ():
+            if not stimulus.get("enabled",True) or stimulus.get("waveform") != "ramp":
+                continue
+            stimulus_targets = set(stimulus.get("target_neuron_ids") or active_cells)
+            sites = sum(len(_regional_sites(c["regional_plan"],stimulus["target_region"],c))
+                if c.get("regional") else 1 for n,c in active_cells.items() if n in stimulus_targets)
+            if sites:
+                forecast = _arbor_ramp_forecast(stimulus,float(experiment["integration_dt_ms"]),float(experiment["duration_ms"]),interval)
+                ramp_knots += forecast["envelope_knot_count_upper_bound"]*sites*(repetitions+1)  # runtime plus preserved receipt
+                item["ramp_forecast"] = forecast | {"site_count":sites}
+        records.append(item)
+    if native_values > ARBOR_MAX_NATIVE_REPORT_VALUES:
+        raise ValueError(f"Arbor dense native probes across conditions/repetitions require up to {native_values:,} values; local limit {ARBOR_MAX_NATIVE_REPORT_VALUES:,}. No clock, recipe or compiler was dispatched.")
+    if detector_events > ARBOR_MAX_NATIVE_DETECTOR_EVENTS:
+        raise ValueError(f"Arbor retained native detectors across conditions/repetitions require up to {detector_events:,} events; local limit {ARBOR_MAX_NATIVE_DETECTOR_EVENTS:,}. No clock, recipe, compiler or detector recorder was dispatched.")
+    if ramp_knots > ARBOR_MAX_RAMP_KNOTS:
+        raise ValueError(f"Arbor exact ramp envelopes/receipts across sites/trials require up to {ramp_knots:,} knots; local limit {ARBOR_MAX_RAMP_KNOTS:,}. No waveform was substituted.")
+    return {"schema":"digifly-arbor-execution-resource-forecast-v1","conditions":records,
+        "native_report_value_upper_bound":native_values,"ramp_knot_upper_bound":ramp_knots,
+        "retained_native_detector_event_upper_bound":detector_events,
+        "retained_native_detector_event_limit":ARBOR_MAX_NATIVE_DETECTOR_EVENTS,
+        "native_report_value_limit":ARBOR_MAX_NATIVE_REPORT_VALUES,"ramp_knot_limit":ARBOR_MAX_RAMP_KNOTS,
+        "native_epoch_limit":ARBOR_MAX_NATIVE_EPOCHS,"policy":"Fail before clock allocation/recipe/compiler; no current, dt, sample interval or event-policy coarsening"}
 
 
 def _active_native_channels(membrane: Mapping[str, Any]) -> tuple[str, ...]:
@@ -661,13 +1567,7 @@ def _validate_request_capabilities(
                         raise ValueError(
                             f"Electrical contact {contact_id} has no finite {endpoint} coordinate"
                         )
-                    if coordinate_sources.get(endpoint) not in {
-                        f"{endpoint}_xyz",
-                        f"{'post' if endpoint == 'pre' else 'pre'}_xyz_fallback",
-                    }:
-                        raise ValueError(
-                            f"Electrical contact {contact_id} has invalid {endpoint} coordinate provenance"
-                        )
+                _validate_gap_contact_placement(contact, dict(manifest.get("gap_junction_policy") or {}))
         if manifest.get("electrical_edges"):
             gap_policy = dict(manifest.get("gap_junction_policy") or {})
             if gap_policy.get("mode") not in {
@@ -694,27 +1594,24 @@ def _validate_request_capabilities(
         for membrane in membrane_payloads
         for channel in _active_native_channels(membrane)
     }
-    if any(
+    if engine not in {"neuron", "arbor"} and (any(
         membrane.get("replace_builtin_hh", False) for membrane in membrane_payloads
-    ) or active_channels:
+    ) or active_channels):
         detail = ", ".join(sorted(active_channels)) or "replace_builtin_hh"
         raise ValueError(
             "Native membrane mechanisms are outside the classic-HH worker lane: "
             + detail
         )
-    if circuit.get("compartment_overrides") or circuit.get(
-        "compartment_mechanism_overrides"
-    ):
-        raise ValueError(
-            "Per-compartment biophysics requires an explicit simulator CV mapping"
-        )
-
+    if engine in {"neuron", "arbor"}:
+        for membrane in membrane_payloads:
+            for key in _active_native_channels(membrane):
+                _validated_native_assignment(key, dict(membrane["channels"][key]))
     hh_payloads = [dict(circuit.get("hh") or {})]
     hh_payloads.extend(
         {**hh_payloads[0], **dict(value or {})}
         for value in dict(circuit.get("neuron_overrides") or {}).values()
     )
-    if any(str(values.get("active_scope") or "all") not in {"all", "soma"} for values in hh_payloads):
+    if any(str(values.get("active_scope") or "all") not in {"all", "soma", "soma_ais"} for values in hh_payloads):
         raise ValueError("Only whole-neuron or soma-only classic HH is supported")
 
     stimuli = [
@@ -722,11 +1619,11 @@ def _validate_request_capabilities(
         for item in experiment.get("stimuli") or ()
         if item.get("enabled", True)
     ]
-    if len(stimuli) != 1 or stimuli[0].get("target_region") != "soma" or stimuli[0].get(
+    if len(stimuli) != 1 or stimuli[0].get("target_region") not in {"soma", "all", "ais", "selected_compartments"} or stimuli[0].get(
         "waveform"
-    ) not in {"pulse_train", "step"}:
+    ) not in {"pulse_train", "step", "ramp"}:
         raise ValueError(
-            "The classic-HH worker requires one soma pulse-train or step stimulus"
+            "The membrane worker requires one mapped pulse-train, step or ramp stimulus"
         )
     conditions = [
         dict(item)
@@ -735,20 +1632,15 @@ def _validate_request_capabilities(
     ]
     if not conditions:
         raise ValueError("At least one enabled condition is required")
-    if any(
-        condition.get("disabled_neuron_ids") or condition.get("mechanism_scales")
-        for condition in conditions
-    ):
-        raise ValueError(
-            "Neuron disabling and mechanism scaling are outside the classic-HH worker lane"
-        )
+    for condition in conditions:
+        _validate_condition_manipulations(circuit, condition)
     recording = dict(experiment.get("recording") or {})
-    if recording.get("target_region") != "soma" or not recording.get(
-        "record_voltage", False
+    if recording.get("target_region") not in {"soma", "all", "ais", "selected_compartments"} or not (
+        recording.get("record_voltage", False) or recording.get("detect_spikes", False)
     ):
-        raise ValueError("The classic-HH worker requires soma voltage recording")
-    if engine == "neuron" and int(experiment.get("workers", 1)) != 1:
-        raise ValueError("The first NEURON worker lane requires exactly one worker")
+        raise ValueError("The membrane worker requires voltage recording or spike detection in a mapped region")
+    if not 1 <= int(experiment.get("workers",1)) <= 256:
+        raise ValueError("Worker count must be between 1 and 256")
 
 
 def _load_edge_manifest(request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
@@ -883,6 +1775,8 @@ def _arbor_trace(
     condition: Mapping[str, Any],
     *,
     prefer_rostral_soma: bool,
+    membrane: Mapping[str, Any] | None = None,
+    channel_catalogue_path: Path | None = None,
 ) -> tuple[list[float], list[float], str]:
     import arbor
 
@@ -897,7 +1791,7 @@ def _arbor_trace(
             "all": "(all)",
             "soma": "(join (tag 1) (tag 1001))",
             "branches": "(difference (all) (join (tag 1) (tag 1001)))",
-            "soma-center": "(on-components 0.5 (tag 1001))",
+            "soma-center": "(distal (tag 1001))",
         }
     )
     decor = arbor.decor()
@@ -907,20 +1801,22 @@ def _arbor_trace(
         rL=float(hh["ra_ohm_cm"]) * units.Ohm * units.cm,
         cm=float(hh["cm_uF_cm2"]) * units.uF / units.cm2,
     )
-    decor.set_ion("na", rev_pot=float(hh["ena_mV"]) * units.mV)
-    decor.set_ion("k", rev_pot=float(hh["ek_mV"]) * units.mV)
-
-    decor.paint('"soma"', arbor.density("hh", _region_hh(hh, soma=True)))
-    decor.paint('"branches"', arbor.density("hh", _region_hh(hh, soma=False)))
+    _decorate_arbor_channels(arbor, decor, hh, membrane or {})
+    properties = _arbor_channel_properties(arbor, channel_catalogue_path)
     amplitude = float(stimulus["amplitude_nA"]) * float(
         condition.get("stimulus_scale", 1.0)
     )
-    for delay, duration in _pulse_windows(stimulus):
+    for clamp in _arbor_current_clamps(arbor, stimulus, amplitude,
+            integration_dt_ms=float(experiment["integration_dt_ms"]), duration_ms=float(experiment["duration_ms"])):
         decor.place(
             '"soma-center"',
-            arbor.i_clamp(delay * units.ms, duration * units.ms, amplitude * units.nA),
+            clamp,
         )
-    cell = arbor.cable_cell(morphology, decor, labels)
+    # Keep soma/branch density boundaries in the numerical mesh. Arbor's
+    # default single CV per branch can merge distinct membrane regions.
+    policy = (arbor.cv_policy_max_extent(NEURON_TARGET_SEGMENT_UM*units.um, '"soma"')
+              + arbor.cv_policy_max_extent(NEURON_TARGET_SEGMENT_UM*units.um, '"branches"'))
+    cell = arbor.cable_cell(morphology, decor, labels, policy)
 
     class Recipe(arbor.recipe):
         def __init__(self) -> None:
@@ -943,7 +1839,7 @@ def _arbor_trace(
             ]
 
         def global_properties(self, _kind: Any) -> Any:
-            return arbor.neuron_cable_properties()
+            return properties
 
     context = arbor.context(threads=int(experiment.get("workers", 1)))
     simulation = arbor.simulation(
@@ -1017,6 +1913,8 @@ def _arbor_network_traces(
     condition: Mapping[str, Any],
     edge_manifest: Mapping[str, Any],
     catalogue_path: Path | None,
+    channel_catalogue_path: Path | None = None,
+    *, native_report_path: Path | None = None,
 ) -> tuple[dict[str, tuple[list[float], list[float]]], str]:
     import arbor
 
@@ -1037,7 +1935,7 @@ def _arbor_network_traces(
     ]
     chemical_edges = [dict(item) for item in edge_manifest.get("chemical_edges") or ()]
     has_electrical = bool(electrical_edges)
-    properties = arbor.neuron_cable_properties()
+    properties = _arbor_channel_properties(arbor, channel_catalogue_path)
     if has_electrical:
         if catalogue_path is None:
             raise FileNotFoundError("The app-owned Arbor gap catalogue path is missing")
@@ -1063,6 +1961,7 @@ def _arbor_network_traces(
         )
 
     built_cells: list[Any] = []
+    regional_probes: dict[str, list[Any]] = {}
     contact_labels: list[dict[str, Any]] = []
     chemical_connections: list[dict[str, Any]] = []
     units = arbor.units
@@ -1084,6 +1983,9 @@ def _arbor_network_traces(
         cell_data = dict(cells[neuron_id])
         swc_path = Path(str(cell_data["swc_path"]))
         hh = dict(cell_data["hh"])
+        plan = cell_data.get("regional_plan")
+        if plan:
+            contact_nodes_by_id[neuron_id].update(r[0] for r in _swc_rows(swc_path))
         morphology, contact_locset_by_node, label_values = (
             _arbor_network_morphology_from_swc(
                 arbor,
@@ -1092,6 +1994,10 @@ def _arbor_network_traces(
                 contact_node_ids=contact_nodes_by_id[neuron_id],
             )
         )
+        if plan:
+            target = int(plan["target_node_id"])
+            label_values["soma-center"] = f"(on-components 0.5 (tag {1_000_000+target}))"
+            regional_probes[neuron_id] = _regional_sites(plan, recording["target_region"], cell_data) if neuron_id in record_ids else []
         labels = arbor.label_dict(label_values)
         decor = arbor.decor()
         decor.set_property(
@@ -1100,22 +2006,27 @@ def _arbor_network_traces(
             rL=float(hh["ra_ohm_cm"]) * units.Ohm * units.cm,
             cm=float(hh["cm_uF_cm2"]) * units.uF / units.cm2,
         )
-        decor.set_ion("na", rev_pot=float(hh["ena_mV"]) * units.mV)
-        decor.set_ion("k", rev_pot=float(hh["ek_mV"]) * units.mV)
-        decor.paint('"soma"', arbor.density("hh", _region_hh(hh, soma=True)))
-        decor.paint('"branches"', arbor.density("hh", _region_hh(hh, soma=False)))
+        if plan:
+            _require_neuron_segment_budget(0, plan["estimated_nseg"], segment_budget=NEURON_MAX_TOTAL_SEGMENTS)
+            for spec in plan["sections"]:
+                region = f'(tag {1_000_000+spec["node_id"]})'
+                props = spec["hh"]
+                decor.paint(region, rL=float(props["ra_ohm_cm"])*units.Ohm*units.cm, cm=float(props["cm_uF_cm2"])*units.uF/units.cm2)
+                _decorate_arbor_channels(arbor, decor, props, spec["membrane"], edge_region=region, edge_soma=spec["soma"])
+        else:
+            _decorate_arbor_channels(arbor, decor, hh, dict(cell_data.get("membrane") or {}))
         if neuron_id in target_ids:
             amplitude = float(stimulus["amplitude_nA"]) * float(
                 condition.get("stimulus_scale", 1.0)
             )
-            for delay, duration in _pulse_windows(stimulus):
+            sites = [f'(on-components 0.5 (tag {1_000_000+s["node_id"]}))' for s in _regional_sites(plan, stimulus["target_region"], cell_data)] if plan else ['"soma-center"']
+            for site in sites:
+              for clamp in _arbor_current_clamps(arbor, stimulus, amplitude/len(sites),
+                      integration_dt_ms=float(experiment["integration_dt_ms"]), duration_ms=float(experiment["duration_ms"]),
+                      epoch_interval_ms=_arbor_ramp_epoch_interval(edge_manifest,chemical_enabled)):
                 decor.place(
-                    '"soma-center"',
-                    arbor.i_clamp(
-                        delay * units.ms,
-                        duration * units.ms,
-                        amplitude * units.nA,
-                    ),
+                    site,
+                    clamp,
                 )
         if chemical_enabled and chemical_edges:
             chemical_policy = dict(
@@ -1165,9 +2076,11 @@ def _arbor_network_traces(
                     contact = dict(raw_contact)
                     if contact["pre_id"] == neuron_id:
                         source_node = int(contact["pre_run_node_id"])
+                        contact_end = "pre"
                         endpoint = "a" if edge["neuron_a"] == neuron_id else "b"
                     elif contact["post_id"] == neuron_id:
                         source_node = int(contact["post_run_node_id"])
+                        contact_end = "post"
                         endpoint = "a" if edge["neuron_a"] == neuron_id else "b"
                     else:
                         continue
@@ -1177,7 +2090,7 @@ def _arbor_network_traces(
                         )
                     label = f"{contact['contact_id']}-{endpoint}"
                     decor.place(
-                        contact_locset_by_node[source_node],
+                        _arbor_gap_contact_locset(plan, contact_locset_by_node[source_node], source_node, contact, contact_end),
                         _arbor_gap_junction(
                             arbor,
                             policy,
@@ -1186,7 +2099,16 @@ def _arbor_network_traces(
                         ),
                         label,
                     )
-        built_cells.append(arbor.cable_cell(morphology, decor, labels))
+        cv_policy = (arbor.cv_policy_max_extent(NEURON_TARGET_SEGMENT_UM*units.um, '"soma"')
+                     + arbor.cv_policy_max_extent(NEURON_TARGET_SEGMENT_UM*units.um, '"branches"'))
+        if plan:
+            bounds = []
+            for spec in plan["sections"]:
+                for i in range(spec["nseg"]+1):
+                    bounds.append(f'(on-components {i/spec["nseg"]:.17g} (tag {1_000_000+spec["node_id"]}))')
+            locs = _join_expressions(bounds)
+            cv_policy = arbor.cv_policy_explicit(locs)
+        built_cells.append(arbor.cable_cell(morphology, decor, labels, cv_policy))
 
     if gap_enabled:
         for edge in electrical_edges:
@@ -1254,6 +2176,8 @@ def _arbor_network_traces(
 
         def probes(self, gid: int) -> list[Any]:
             neuron_id = neuron_ids[int(gid)]
+            if neuron_id in regional_probes:
+                return [arbor.cable_probe_membrane_voltage(f'(on-components 0.5 (tag {1_000_000+s["node_id"]}))', f'swc_{s["source_node_id"]}') for s in regional_probes[neuron_id]]
             return (
                 [arbor.cable_probe_membrane_voltage('"soma-center"', "soma_voltage")]
                 if neuron_id in record_ids
@@ -1263,25 +2187,44 @@ def _arbor_network_traces(
         def global_properties(self, _kind: Any) -> Any:
             return properties
 
+    probe_count = sum(len(specs) for specs in regional_probes.values()) + sum(
+        neuron_id in record_ids and neuron_id not in regional_probes for neuron_id in neuron_ids)
+    # Sparse regular requests can land just BEFORE a float32 connection-delay
+    # epoch boundary and return the preceding full-step state. Observe every
+    # actual native step instead; do not change equations, events or delays.
+    sampling_plan = _arbor_sampling_plan(experiment,edge_manifest,condition,probe_count,
+        detector_count=len(neuron_ids)) if chemical_enabled and chemical_edges and probe_count else None
+    if sampling_plan and native_report_path is None:
+        raise ValueError("Dense Arbor chemical sampling requires a preserved native report path")
+    if sampling_plan:
+        sampling_plan = _persist_arbor_sampling_plan(native_report_path,sampling_plan)
+    sample_schedule = arbor.explicit_schedule([t*units.ms for t in sampling_plan["probe_request_ms"]]) if sampling_plan else arbor.regular_schedule(float(recording["sample_dt_ms"])*units.ms)
     context = arbor.context(threads=int(experiment.get("workers", 1)))
     simulation = arbor.simulation(
         Recipe(),
         context=context,
         seed=int(experiment.get("random_seed", 1)),
     )
+    if sampling_plan:
+        simulation.record(arbor.spike_recording.local)
     handles = {
         neuron_id: simulation.sample(
             (gid_by_id[neuron_id], "soma_voltage"),
-            arbor.regular_schedule(float(recording["sample_dt_ms"]) * units.ms),
+            sample_schedule,
         )
         for neuron_id in neuron_ids
-        if neuron_id in record_ids
+        if neuron_id in record_ids and neuron_id not in regional_probes
     }
+    for neuron_id, specs in regional_probes.items():
+        handles.pop(neuron_id, None)
+        for spec in specs:
+            handles[(neuron_id, spec["source_node_id"])] = simulation.sample((gid_by_id[neuron_id], f'swc_{spec["source_node_id"]}'), sample_schedule)
     simulation.run(
         tfinal=float(experiment["duration_ms"]) * units.ms,
         dt=float(experiment["integration_dt_ms"]) * units.ms,
     )
     traces: dict[str, tuple[list[float], list[float]]] = {}
+    native_data = {}
     for neuron_id, handle in handles.items():
         samples = simulation.samples(handle)
         if len(samples) != 1:
@@ -1289,10 +2232,18 @@ def _arbor_network_traces(
                 f"The soma label for neuron {neuron_id} resolved to {len(samples)} probes"
             )
         data, _metadata = samples[0]
+        if sampling_plan:
+            native_data[neuron_id] = data
+            continue
         traces[neuron_id] = (
             [float(value) for value in data[:, 0]],
             [float(value) for value in data[:, 1]],
         )
+    if sampling_plan:
+        detector_events = [{"neuron_id":neuron_ids[int(event["source"]["gid"])],
+                            "source_lid":int(event["source"]["index"]),"time_ms":float(event["time"])}
+                           for event in simulation.spikes()]
+        traces = _arbor_native_report(native_report_path,native_data,sampling_plan,native_detector_events=detector_events)
     return traces, str(getattr(arbor, "__version__", "unknown"))
 
 
@@ -1304,6 +2255,7 @@ def _neuron_trace(
     condition: Mapping[str, Any],
     *,
     prefer_rostral_soma: bool,
+    membrane: Mapping[str, Any] | None = None,
 ) -> tuple[list[float], list[float], str]:
     os.environ.pop("DISPLAY", None)
     from neuron import h
@@ -1374,28 +2326,12 @@ def _neuron_trace(
         segment_budget=NEURON_MAX_TOTAL_SEGMENTS,
     )
     for section in sections:
-        section.Ra = float(hh["ra_ohm_cm"])
-        section.cm = float(hh["cm_uF_cm2"])
-        section.insert("hh")
-        section.ena = float(hh["ena_mV"])
-        section.ek = float(hh["ek_mV"])
-        values = _region_hh(hh, soma=section.name() in soma_names)
-        for segment in section:
-            segment.hh.gnabar = values["gnabar"]
-            segment.hh.gkbar = values["gkbar"]
-            segment.hh.gl = values["gl"]
-            segment.hh.el = values["el"]
+        _decorate_neuron_section(section, hh, membrane or {}, soma=section.name() in soma_names)
 
     amplitude = float(stimulus["amplitude_nA"]) * float(
         condition.get("stimulus_scale", 1.0)
     )
-    clamps = []
-    for delay, duration in _pulse_windows(stimulus):
-        clamp = h.IClamp(target_section(target_position))
-        clamp.delay = delay
-        clamp.dur = duration
-        clamp.amp = amplitude
-        clamps.append(clamp)
+    clamps = _neuron_current_clamps(h, target_section(target_position), stimulus, amplitude)
 
     sample_dt = float(experiment["recording"]["sample_dt_ms"])
     time_vector = h.Vector()
@@ -1514,6 +2450,209 @@ def _load_neuron_gap_mechanisms(
     return manifest, library_path
 
 
+def _regional_execution(circuit: Mapping[str, Any], experiment: Mapping[str, Any]) -> bool:
+    scopes = [dict(circuit.get("hh") or {}), *[dict(x) for x in dict(circuit.get("neuron_overrides") or {}).values()]]
+    # Native-channel models must use the same edge-midpoint electrodes and odd
+    # CV grid in every backend, even for a soma-only recording. The historical
+    # branch-end electrode required an extra BioNet soma proxy and produced a
+    # measurable geometry-dependent error during spikes.
+    membranes = [dict(circuit.get("membrane") or {}),
+                 *[dict(x) for x in dict(circuit.get("neuron_mechanism_overrides") or {}).values()]]
+    return bool(circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
+                or (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
+                    and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair"})
+                or any(_active_native_channels(x) for x in membranes)
+                or any(x.get("active_scope") == "soma_ais" for x in scopes)
+                or dict(experiment.get("recording") or {}).get("target_region", "soma") != "soma"
+                or any(x.get("target_region", "soma") != "soma" for x in experiment.get("stimuli") or ()))
+
+
+def _join_expressions(terms: Sequence[str]) -> str:
+    """Balanced Arbor label expression: no per-SWC-edge recursion chain."""
+    terms = list(terms)
+    if not terms:
+        raise ValueError("No mapped region terms")
+    while len(terms) > 1:
+        terms = [f"(join {terms[i]} {terms[i+1]})" if i+1 < len(terms) else terms[i] for i in range(0,len(terms),2)]
+    return terms[0]
+
+
+def _regional_cell_data(circuit: Mapping[str, Any], neuron_id: str, node_map: Mapping[int, int]) -> dict[str, Any]:
+    result = {"neuron_id": neuron_id, "hh": _merged_hh(circuit, neuron_id),
+              "membrane": dict(dict(circuit.get("neuron_mechanism_overrides") or {}).get(neuron_id, circuit.get("membrane") or {})),
+              "source_by_run": {str(v): int(k) for k, v in node_map.items()}}
+    for key in ("compartment_overrides", "compartment_mechanism_overrides"):
+        maps = dict(circuit.get(key) or {})
+        if set(maps) - set(str(x) for x in circuit["neuron_ids"]):
+            raise ValueError("A compartment override targets a neuron outside the circuit")
+        result[key] = {}
+        for source_id, values in dict(maps.get(neuron_id) or {}).items():
+            if int(source_id) not in node_map:
+                raise ValueError(f"Unmapped source SWC compartment {source_id} on neuron {neuron_id}")
+            result[key][str(node_map[int(source_id)])] = dict(values)
+    return result
+
+
+def _electrical_contact_run_nodes(edge_manifest: Mapping[str, Any], neuron_id: str,
+                                  node_map: Mapping[int, int]) -> list[int]:
+    """Map hash-validated source contacts, never infer nodes from coordinates."""
+    nodes = set()
+    for edge in edge_manifest.get("electrical_edges") or ():
+        for contact in edge.get("contacts") or ():
+            for end in ("pre", "post"):
+                if str(contact[f"{end}_id"]) != neuron_id:
+                    continue
+                source_node = int(contact[f"{end}_source_node_id"])
+                if source_node not in node_map:
+                    raise ValueError(f"Electrical contact targets missing source SWC node {source_node}")
+                nodes.add(int(node_map[source_node]))
+    return sorted(nodes)
+
+
+def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, Any]:
+    """An SWC compartment is its incoming edge, never an entire branch run.
+
+    Default -> per-neuron -> per-edge settings. Mid-edge recording/injection
+    sites coincide with the central CV on the shared odd-segment grid. AIS is
+    the existing geometric preview proxy, explicitly NOT an anatomical claim.
+    """
+    target, soma_point = _target_soma_node(rows, prefer_rostral=bool(cell.get("prefer_rostral_soma", False)))
+    by_id = {r[0]: r for r in rows}
+    edges = [r for r in rows if r[6] != -1]
+    if not edges:
+        edges = list(rows)
+    edge_ids = {r[0] for r in edges}
+    contact_nodes = {int(n) for n in cell.get("electrical_contact_run_node_ids") or ()}
+    if contact_nodes - {r[0] for r in rows if r[6] != -1}:
+        raise ValueError("Regional electrical contact requires a mapped non-root incoming SWC edge")
+    # A junction at an internal SWC node uses a massless native endpoint but
+    # Arbor's adjacent nonempty CV. Refine BOTH incident sides without moving
+    # the physical attachment; all immediate children matter at a branch.
+    contact_edges = {r[0] for r in edges if r[0] in contact_nodes or r[6] in contact_nodes}
+    overrides = set(cell.get("compartment_overrides") or {}) | set(cell.get("compartment_mechanism_overrides") or {})
+    if {int(n) for n in overrides} - edge_ids:
+        raise ValueError("A compartment override has no incoming SWC edge (root or absent node)")
+    if target not in edge_ids:
+        target = edges[0][0]
+    axon = [r for r in edges if r[1] == 2]
+    axon.sort(key=lambda r: (min(math.dist(r[2:5], soma_point), math.dist(by_id.get(r[6], r)[2:5], soma_point)), r[0]))
+    ais = {r[0] for r in axon[:max(1, min(16, (len(axon)+19)//20))]}
+    base_hh = dict(cell["hh"])
+    if base_hh.get("active_scope") == "soma_ais" and not ais:
+        raise ValueError("AIS proxy requires type-2 axonal SWC edges; none are available")
+    # BioNet requires soma[0]; construct all sections before connecting them.
+    edges.sort(key=lambda r: (r[0] != target, r[0]))
+    sections = []
+    index = {r[0]: i for i, r in enumerate(edges)}
+    sites = {}
+    source_by_run = dict(cell.get("source_by_run") or {})
+    for row in edges:
+        node_id, kind, _, _, _, _, parent_id = row
+        parent = by_id.get(parent_id, row)
+        length = math.dist(parent[2:5], row[2:5])
+        hh = {**base_hh, **dict(dict(cell.get("compartment_overrides") or {}).get(str(node_id)) or {})}
+        if set(hh) - set(base_hh):
+            raise ValueError("Unknown per-compartment HH parameter")
+        if any(not math.isfinite(float(v)) for k,v in hh.items() if k != "active_scope") or float(hh["cm_uF_cm2"]) <= 0 or float(hh["ra_ohm_cm"]) <= 0:
+            raise ValueError("Invalid per-compartment biophysics")
+        membrane = dict(dict(cell.get("compartment_mechanism_overrides") or {}).get(str(node_id), cell.get("membrane") or {}))
+        soma = kind == 1 or node_id == target
+        scope = hh.get("active_scope", "all")
+        if scope not in {"all", "soma", "soma_ais"}:
+            raise ValueError("Unknown regional active scope")
+        if scope == "soma_ais" and not ais:
+            raise ValueError("AIS proxy requires type-2 axonal SWC edges")
+        if scope in {"soma", "soma_ais"}:
+            # Decorators already implement soma-only suppression. An AIS edge
+            # keeps branch densities, without being mislabeled a soma.
+            hh["active_scope"] = "all" if soma or (scope == "soma_ais" and node_id in ais) else "soma"
+        section_id = index[node_id]
+        sites[node_id] = {"section_id": section_id, "section_pos": 1.0}
+        sections.append({"section_id": section_id, "section_name": f"digifly_edge_{node_id}",
+                         "section_group": "soma" if soma else "axon" if kind == 2 else "dend" if kind != 4 else "apic",
+                         "path": [parent_id, node_id] if parent_id in by_id else [node_id],
+                         "node_id": node_id, "source_node_id": int(source_by_run.get(str(node_id), node_id)),
+                         "length_um": max(length, .001), "nseg": _neuron_nseg_for_length(max(length, .001), target_spacing_um=ELECTRICAL_CONTACT_TARGET_SEGMENT_UM if node_id in contact_edges else None),
+                         "parent_section_id": index.get(parent_id), "parent_section_pos": 1.0,
+                         "uses_degenerate_stub": length == 0, "is_target_soma": node_id == target,
+                         "soma": soma, "ais_proxy": node_id in ais, "hh": hh, "membrane": membrane})
+    for row in rows:
+        if row[0] not in sites:
+            child = next((r[0] for r in edges if r[6] == row[0]), target)
+            sites[row[0]] = {"section_id": index[child], "section_pos": 0.0}
+    plan = {"neuron_id": str(cell.get("neuron_id") or ""), "target_node_id": target, "sections": sections, "node_sites": sites,
+            "estimated_nseg": sum(s["nseg"] for s in sections),
+            "degenerate_stub_count": sum(s["uses_degenerate_stub"] for s in sections),
+            "ais_policy": "Geometric preview proxy: nearest ceil(5%) type-2 edges, bounded 1..16; not anatomical AIS",
+            "site_policy": "Midpoint of each incoming source SWC edge; shared odd CV grid",
+            "precedence": "default -> per-neuron -> per-SWC-edge"}
+    if contact_nodes:
+        plan["electrical_mesh_policy"] = {"schema_version":1, "target_spacing_um":ELECTRICAL_CONTACT_TARGET_SEGMENT_UM,
+            "baseline_spacing_um":NEURON_TARGET_SEGMENT_UM, "contact_run_node_ids":sorted(contact_nodes),
+            "contact_source_node_ids":[int(source_by_run.get(str(n),n)) for n in sorted(contact_nodes)],
+            "refined_run_node_ids":sorted(contact_edges), "adjacency":"incoming edge plus ALL immediate outgoing edges",
+            "attachment":"Unchanged physical SWC node. Native endpoint/BioNet source pointer; Arbor adjacent nonempty junction CV. Not identical discrete attachment states."}
+    return plan
+
+
+def _regional_sites(plan: Mapping[str, Any], region: str, cell: Mapping[str, Any]) -> list[dict[str, Any]]:
+    sections = list(plan["sections"])
+    selected = set(cell.get("compartment_overrides") or {}) | set(cell.get("compartment_mechanism_overrides") or {})
+    sites = [s for s in sections if region == "all" or (region == "soma" and s["is_target_soma"])
+             or (region == "ais" and s["ais_proxy"]) or (region == "selected_compartments" and str(s["node_id"]) in selected)]
+    if not sites:
+        raise ValueError(f"Target region {region} has no mapped SWC edges")
+    return sites
+
+
+def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, Any]) -> int:
+    """Conservative bound includes BioNet's full native all-CV report.
+
+    This is an operational memory/output limit, not a scientific criterion.
+    All engines share the bound so changing engines cannot hide a large report.
+    """
+    _require_neuron_segment_budget(0, sum(int(p["estimated_nseg"]) for p in plans.values()), segment_budget=NEURON_MAX_TOTAL_SEGMENTS)
+    recording = dict(experiment.get("recording") or {})
+    targets = recording.get("target_neuron_ids") or tuple(plans)
+    columns = sum(int(plans[n]["estimated_nseg"]) for n in targets)
+    samples = math.ceil(float(experiment["duration_ms"])/float(experiment["integration_dt_ms"]))+1
+    trials = int(experiment.get("repetitions", 1))*sum(bool(c.get("enabled", True)) for c in experiment.get("conditions") or ({},))
+    values = columns*samples*trials
+    if values > 25_000_000:
+        raise ValueError(f"Regional native recording would require {values:,} values; the local safety limit is 25,000,000. Reduce the circuit, duration or recording targets.")
+    return values
+
+
+def _neuron_regional_cell(h: Any, swc_path: Path, neuron_id: str, cell: Mapping[str, Any], segment_budget: int) -> dict[str, Any]:
+    rows = _swc_rows(swc_path)
+    plan = _regional_plan(rows, cell)
+    _require_neuron_segment_budget(0, plan["estimated_nseg"], segment_budget=segment_budget)
+    by_id = {r[0]: r for r in rows}
+    counts = {group: 0 for group in ("soma", "axon", "dend", "apic")}
+    sections = []
+    for spec in plan["sections"]:
+        group = spec["section_group"]
+        sections.append(h.Section(name=f"{group}[{counts[group]}]"))
+        counts[group] += 1
+    for section, spec in zip(sections, plan["sections"]):
+        h.pt3dclear(sec=section)
+        for n in spec["path"]:
+            r = by_id[n]
+            h.pt3dadd(*map(float, r[2:5]), 2*float(r[5]), sec=section)
+        if spec["uses_degenerate_stub"]:
+            r = by_id[spec["node_id"]]
+            h.pt3dadd(float(r[2])+.001, float(r[3]), float(r[4]), 2*float(r[5]), sec=section)
+        section.nseg = spec["nseg"]
+        _decorate_neuron_section(section, spec["hh"], spec["membrane"], soma=spec["soma"])
+    for section, spec in zip(sections, plan["sections"]):
+        if spec["parent_section_id"] is not None:
+            section.connect(sections[spec["parent_section_id"]](1), 0)
+    node_sites = {n:(sections[s["section_id"]],s["section_pos"]) for n,s in plan["node_sites"].items()}
+    target = next(s for s in plan["sections"] if s["is_target_soma"])
+    return {"sections": tuple(sections), "node_sites": node_sites,
+            "soma_site": (sections[target["section_id"]], .5), "nseg": plan["estimated_nseg"], "regional_plan": plan}
+
+
 def _neuron_branch_cell(
     h: Any,
     swc_path: Path,
@@ -1522,6 +2661,7 @@ def _neuron_branch_cell(
     *,
     prefer_rostral_soma: bool,
     segment_budget: int,
+    membrane: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build maximal branch-run sections and an O(1) SWC-node site map."""
 
@@ -1691,17 +2831,7 @@ def _neuron_branch_cell(
     soma_site = node_sites[target_node_id]
     soma_names.add(soma_site[0].name())
     for section in sections:
-        section.Ra = float(hh["ra_ohm_cm"])
-        section.cm = float(hh["cm_uF_cm2"])
-        section.insert("hh")
-        section.ena = float(hh["ena_mV"])
-        section.ek = float(hh["ek_mV"])
-        values = _region_hh(hh, soma=section.name() in soma_names)
-        for segment in section:
-            segment.hh.gnabar = values["gnabar"]
-            segment.hh.gkbar = values["gkbar"]
-            segment.hh.gl = values["gl"]
-            segment.hh.el = values["el"]
+        _decorate_neuron_section(section, hh, membrane or {}, soma=section.name() in soma_names)
     return {
         "sections": tuple(sections),
         "node_sites": node_sites,
@@ -1758,13 +2888,17 @@ def _neuron_network_traces(
     total_segments = 0
     for neuron_id in neuron_ids:
         cell = dict(cells[neuron_id])
-        built[neuron_id] = _neuron_branch_cell(
+        if cell.get("regional"):
+            built[neuron_id] = _neuron_regional_cell(h, Path(cell["swc_path"]), neuron_id, cell, NEURON_MAX_TOTAL_SEGMENTS-total_segments)
+        else:
+            built[neuron_id] = _neuron_branch_cell(
             h,
             Path(str(cell["swc_path"])),
             neuron_id,
             dict(cell["hh"]),
             prefer_rostral_soma=bool(cell["prefer_rostral_soma"]),
             segment_budget=NEURON_MAX_TOTAL_SEGMENTS - total_segments,
+            membrane=dict(cell.get("membrane") or {}),
         )
         total_segments += int(built[neuron_id]["nseg"])
     h.define_shape()
@@ -1783,13 +2917,13 @@ def _neuron_network_traces(
     for neuron_id in neuron_ids:
         if neuron_id not in target_ids:
             continue
-        soma_section, soma_x = built[neuron_id]["soma_site"]
-        for delay, duration in _pulse_windows(stimulus):
-            clamp = h.IClamp(soma_section(float(soma_x)))
-            clamp.delay = float(delay)
-            clamp.dur = float(duration)
-            clamp.amp = amplitude
-            clamps.append(clamp)
+        if cells[neuron_id].get("regional"):
+            specs = _regional_sites(built[neuron_id]["regional_plan"], stimulus["target_region"], cells[neuron_id])
+            sites = [(built[neuron_id]["sections"][s["section_id"]], .5) for s in specs]
+        else:
+            sites = [built[neuron_id]["soma_site"]]
+        for section, x in sites:
+            clamps.extend(_neuron_current_clamps(h, section(float(x)), stimulus, amplitude/len(sites)))
 
     synapses: list[Any] = []
     netcons: list[Any] = []
@@ -1839,13 +2973,22 @@ def _neuron_network_traces(
                 def site_for(neuron_id: str) -> tuple[Any, float]:
                     if str(contact["pre_id"]) == neuron_id:
                         node_id = int(contact["pre_run_node_id"])
+                        contact_end = "pre"
                     elif str(contact["post_id"]) == neuron_id:
                         node_id = int(contact["post_run_node_id"])
+                        contact_end = "post"
                     else:
                         raise ValueError(
                             f"Gap contact {contact['contact_id']} is outside pair {neuron_a}, {neuron_b}"
                         )
-                    site = built[neuron_id]["node_sites"].get(node_id)
+                    if f"{contact_end}_source_edge_fraction" in contact:
+                        plan = built[neuron_id].get("regional_plan")
+                        if not plan:
+                            raise ValueError("Synthetic electrical placement requires the shared regional mesh")
+                        section_id,x = _regional_contact_site(plan,node_id,float(contact[f"{contact_end}_source_edge_fraction"]))
+                        site = (built[neuron_id]["sections"][section_id],x)
+                    else:
+                        site = built[neuron_id]["node_sites"].get(node_id)
                     if site is None:
                         raise ValueError(
                             f"Gap contact {contact['contact_id']} maps to missing run node {node_id}"
@@ -1908,10 +3051,16 @@ def _neuron_network_traces(
     for neuron_id in neuron_ids:
         if neuron_id not in record_ids:
             continue
-        soma_section, soma_x = built[neuron_id]["soma_site"]
-        vector = h.Vector()
-        vector.record(soma_section(float(soma_x))._ref_v, sample_dt)
-        voltage_vectors[neuron_id] = vector
+        if cells[neuron_id].get("regional"):
+            specs = _regional_sites(built[neuron_id]["regional_plan"], recording["target_region"], cells[neuron_id])
+            sites = [((neuron_id, s["source_node_id"]), built[neuron_id]["sections"][s["section_id"]], .5) for s in specs]
+        else:
+            sec, x = built[neuron_id]["soma_site"]
+            sites = [(neuron_id, sec, x)]
+        for key, section, x in sites:
+            vector = h.Vector()
+            vector.record(section(float(x))._ref_v, sample_dt)
+            voltage_vectors[key] = vector
     h.dt = float(experiment["integration_dt_ms"])
     h.steps_per_ms = 1.0 / h.dt
     h.celsius = float(experiment["temperature_C"])
@@ -1925,8 +3074,7 @@ def _neuron_network_traces(
     times = [float(value) for value in time_vector]
     traces = {
         neuron_id: (times, [float(value) for value in voltage_vectors[neuron_id]])
-        for neuron_id in neuron_ids
-        if neuron_id in voltage_vectors
+        for neuron_id in voltage_vectors
     }
     # Keep all hoc objects and sections alive through continuerun.
     _ = (built, clamps, synapses, netcons, gap_processes)
@@ -1943,19 +3091,20 @@ def _write_plot(
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
 
-    grouped: dict[tuple[str, int, str], tuple[list[float], list[float]]] = {}
+    grouped: dict[Any, tuple[list[float], list[float]]] = {}
     for row in rows:
         key = (
             str(row["condition"]),
             int(row["repetition"]),
             str(row["neuron_id"]),
+            str(row.get("compartment_id", "")),
         )
         times, voltages = grouped.setdefault(key, ([], []))
         times.append(float(row["time_ms"]))
         voltages.append(float(row["voltage_mV"]))
     figure, axis = plt.subplots(figsize=(11.0, 5.9), constrained_layout=True)
-    for (condition, repetition, neuron_id), (times, voltages) in grouped.items():
-        label = f"{condition} · {neuron_id}"
+    for (condition, repetition, neuron_id, compartment_id), (times, voltages) in grouped.items():
+        label = f"{condition} · {neuron_id}" + (f" · SWC {compartment_id}" if compartment_id else "")
         if int(experiment.get("repetitions", 1)) != 1:
             label += f" · rep {repetition}"
         axis.plot(times, voltages, linewidth=1.9, label=label)
@@ -1964,7 +3113,7 @@ def _write_plot(
         fontsize=16,
     )
     axis.set_xlabel("Time (ms)", fontsize=13)
-    axis.set_ylabel("Soma membrane voltage (mV)", fontsize=13)
+    axis.set_ylabel("Membrane voltage (mV)", fontsize=13)
     axis.tick_params(axis="both", labelsize=11)
     axis.grid(True, alpha=0.25)
     axis.legend(loc="best", fontsize=11)
@@ -1972,6 +3121,160 @@ def _write_plot(
     # displays while keeping the portable PNG comfortably below dataset scale.
     figure.savefig(path, dpi=260)
     plt.close(figure)
+
+
+def _write_spike_plot(path: Path, rows: Sequence[Mapping[str, Any]], experiment: Mapping[str, Any]) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+    grouped = {}
+    for row in rows:
+        key = (str(row["condition"]), int(row["repetition"]), str(row["neuron_id"]), str(row.get("compartment_id", "")))
+        grouped.setdefault(key, []).append(float(row["spike_time_ms"]))
+    figure, axis = plt.subplots(figsize=(11.0, 5.9), constrained_layout=True)
+    for index, (key, times) in enumerate(grouped.items()):
+        label = f"{key[0]} · {key[2]}" + (f" · SWC {key[3]}" if key[3] else "")
+        axis.scatter(times, [index]*len(times), marker="|", label=label)
+    axis.set(xlabel="Time (ms)", ylabel="Recorded source", title=str(experiment["name"]), xlim=(0,float(experiment["duration_ms"])))
+    axis.set_yticks([])
+    if grouped:
+        axis.legend(loc="best", fontsize=10)
+    else:
+        axis.text(.5,.5,"No threshold crossings",ha="center",va="center",transform=axis.transAxes)
+    figure.savefig(path,dpi=260)
+    plt.close(figure)
+
+
+def _trial_input_pins(paths: Sequence[Path]) -> list[dict[str,str]]:
+    return [{"path":str(path.resolve()),"sha256":_sha256(path)} for path in sorted(set(paths))]
+
+
+def _verify_trial_pins(pins: Sequence[Mapping[str,Any]]) -> None:
+    for pin in pins:
+        if _sha256(Path(pin["path"])) != pin["sha256"]:
+            raise ValueError(f"Independent trial source/input changed: {pin['path']}")
+
+
+def _contact_manifest_sha256(manifest: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _validate_independent_contact_manifest(
+    source_record: Mapping[str, Any], materialized: Mapping[str, Any],
+    active_ids: Sequence[str], expected_materialized_sha256: str,
+) -> None:
+    """Bind unchanged source contacts and their condition-scoped execution mapping.
+
+    The selected-contact identity belongs to the original source document, not
+    to a document augmented with run/section IDs or filtered after ablation.
+    Only the enumerated execution fields may differ from source contacts.
+    The entire mapped document is separately pinned by the child request hash.
+    """
+    source_path = Path(str(source_record.get("path") or "")).expanduser().resolve()
+    source = _load_edge_manifest({"edge_manifest_path": str(source_path),
+        "edge_manifest_sha256": source_record.get("sha256")}, source_path.parent)
+    _validate_edge_source_identity(source)
+    if len(expected_materialized_sha256) != 64 or _contact_manifest_sha256(materialized) != expected_materialized_sha256:
+        raise ValueError("Independent trial mapped contact manifest changed")
+    active = [str(value) for value in active_ids]
+    if len(active) != len(set(active)) or any(value not in source.get("neuron_ids", ()) for value in active):
+        raise ValueError("Independent trial active neuron identities are invalid")
+    expected = _condition_edges(source, active)
+    projected = json.loads(json.dumps(materialized))
+    chemical_fields = {"post_run_node_id", "bionet_section_id", "bionet_section_pos"}
+    electrical_fields = {f"{end}_{suffix}" for end in ("pre", "post")
+        for suffix in ("run_node_id", "bionet_node_id", "bionet_section_id", "bionet_section_pos")}
+    for manifest, remove in ((expected, False), (projected, True)):
+        groups = [(manifest.get("chemical_edges") or (), chemical_fields),
+            ([contact for edge in manifest.get("electrical_edges") or () for contact in edge.get("contacts") or ()], electrical_fields)]
+        for contacts, fields in groups:
+            for contact in contacts:
+                if not remove and fields.intersection(contact):
+                    raise ValueError("Independent trial source contacts contain execution mapping fields")
+                if remove:
+                    for field in fields:
+                        contact.pop(field, None)
+    if projected != expected:
+        raise ValueError("Independent trial mapped contacts do not preserve the selected source contacts")
+
+
+def _trial_environment() -> dict[str,str]:
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if key in {"PYTHONHOME","PYTHONPATH","PYTHONEXECUTABLE","PYTHONSTARTUP","PYTHONINSPECT","PYTHONUSERBASE","PYTHONPLATLIBDIR","__PYVENV_LAUNCHER__","VIRTUAL_ENV","LD_LIBRARY_PATH","LD_PRELOAD","DISPLAY"} or key.startswith(("CONDA_","DYLD_","QT_","QML_","NEURON","NRN","CORENRN","NMODL")):
+            environment.pop(key,None)
+    environment.update(NEURON_MODULE_OPTIONS="-nogui",PYTHONNOUSERSITE="1",PYTHONDONTWRITEBYTECODE="1",MPLBACKEND="Agg",OMP_NUM_THREADS="1",OPENBLAS_NUM_THREADS="1",MKL_NUM_THREADS="1")
+    environment["PATH"] = os.pathsep.join(dict.fromkeys([str(Path(sys.executable).absolute().parent),*environment.get("PATH","").split(os.pathsep)]))
+    return environment
+
+
+def _execute_neuron_trial(path: Path, expected_sha256: str) -> None:
+    if _sha256(path) != expected_sha256:
+        raise ValueError("Independent trial request changed before child execution")
+    trial = json.loads(path.read_text(encoding="utf-8"))
+    if trial.get("schema") != "digifly-independent-neuron-trial-v1":
+        raise ValueError("Unknown independent trial request")
+    _verify_trial_pins(trial["pins"])
+    _validate_independent_contact_manifest(trial["source_edge_manifest"], trial["edge_manifest"],
+        trial["active_neuron_ids"], trial["mapped_contact_manifest_sha256"])
+    if set(trial["cells"]) != set(trial["active_neuron_ids"]):
+        raise ValueError("Independent trial cells do not match its active neuron identities")
+    _load_precompiled_native_channels(trial["native_channel_execution"])
+    mechanism_text = trial.get("neuron_gap_mechanisms") or ""
+    traces,version = _neuron_network_traces(trial["cells"],trial["experiment"],trial["stimulus"],trial["condition"],trial["edge_manifest"],
+        Path(mechanism_text) if mechanism_text else None,trial["neuron_gap_manifest_sha256"])
+    _verify_trial_pins(trial["pins"])
+    _atomic_json(path.parent/"trial_result.json",{"schema_version":1,"trial_sha256":expected_sha256,"runtime_version":version,
+        "traces":[{"neuron_id":key[0] if isinstance(key,tuple) else key,"compartment_id":key[1] if isinstance(key,tuple) else "",
+                   "times":list(map(float,times)),"voltages":list(map(float,voltages))} for key,(times,voltages) in traces.items()]})
+
+
+def _prepare_neuron_trials(request_path: Path, request: Mapping[str,Any], cells: Mapping[str,Any], edges: Mapping[str,Any],
+                           native: Mapping[str,Any], conditions: Sequence[Mapping[str,Any]], stimulus: Mapping[str,Any]) -> tuple[dict[tuple[int,int],Path],dict[str,Any]]:
+    experiment = request["experiment"]
+    output_dir = request_path.parent
+    source_edges = _load_edge_manifest(request, output_dir)
+    _validate_edge_source_identity(source_edges)
+    source_record = {"path": request["edge_manifest_path"], "sha256": request["edge_manifest_sha256"]}
+    runnable = sum(bool(_condition_cells(cells,c)) for c in conditions)*int(experiment["repetitions"])
+    samples = max(2,int(math.ceil(float(experiment["duration_ms"])/float(experiment["recording"]["sample_dt_ms"]))))
+    segments = sum(sum(s["nseg"] for s in cell.get("regional_plan",{}).get("sections",())) or len(_swc_rows(Path(cell["swc_path"]))) for cell in cells.values())
+    forecast = _trials.resource_forecast(int(experiment.get("workers",1)),runnable,engine="neuron",segments=segments,report_values=samples*max(1,segments))
+    _atomic_json(output_dir/"worker_resource_forecast.json",forecast)
+    paths = [request_path,Path(source_record["path"]),Path(__file__),Path(_trials.__file__),*map(lambda c:Path(c["swc_path"]),cells.values()),
+             *[Path(record["path"]) for record in request.get("morphologies",{}).values()]]
+    if native:
+        paths.extend([Path(native["library"]),Path(native["builder"]["path"]),*[Path(record["path"]) for record in native["sources"].values()]])
+    pins = _trial_input_pins(paths)
+    tasks=[]
+    results={}
+    root=output_dir/"independent_trials"
+    root.mkdir()
+    for index,condition in enumerate(conditions):
+        condition_cells=_condition_cells(cells,condition)
+        if not condition_cells:
+            continue
+        condition_edges=_condition_edges(edges,tuple(condition_cells))
+        mapped_digest = _contact_manifest_sha256(condition_edges)
+        _validate_independent_contact_manifest(source_record, condition_edges, tuple(condition_cells), mapped_digest)
+        for repetition in range(1,int(experiment["repetitions"])+1):
+            trial_dir=root/f"condition-{index+1:03d}-repetition-{repetition:03d}"
+            trial_dir.mkdir()
+            path=trial_dir/"trial_request.json"
+            seed=int(experiment.get("random_seed",1))+repetition-1
+            _atomic_json(path,{"schema":"digifly-independent-neuron-trial-v1","pins":pins,"cells":condition_cells,
+                "experiment":{**experiment,"workers":1,"random_seed":seed},"stimulus":stimulus,"condition":condition,"edge_manifest":condition_edges,
+                "source_edge_manifest": source_record, "active_neuron_ids": list(condition_cells),
+                "mapped_contact_manifest_sha256": mapped_digest,
+                "native_channel_execution":native,"neuron_gap_mechanisms":request.get("neuron_gap_mechanisms") or "",
+                "neuron_gap_manifest_sha256":request.get("neuron_gap_manifest_sha256") or ""})
+            digest=_sha256(path)
+            tasks.append({"label":f"{condition['name']} repetition {repetition}","seed":seed,"cwd":str(trial_dir),
+                "log_path":str(trial_dir/"worker_subprocess.log"),"pins":[*pins,{"path":str(path),"sha256":digest}],
+                "command":[str(Path(sys.executable).absolute()),"-B",str(Path(__file__).resolve()),"--execute-trial",str(path),"--trial-sha256",digest]})
+            results[index,repetition]=path
+    _trials.execute(tasks,forecast["effective_workers"],environment=_trial_environment(),receipt_path=output_dir/"independent_trial_execution.json",cancel_marker=output_dir/"cancel.requested")
+    return results,forecast
 
 
 def run(request_path: Path) -> Path:
@@ -1992,9 +3295,11 @@ def run(request_path: Path) -> Path:
         "parent_before_child_reindex_segment_tree_root_stub_v1"
         if engine == "arbor"
         else "parent_before_child_reindex_neuron_branch_runs_v1"
-        if len(tuple(circuit.get("neuron_ids") or ())) > 1
+        if engine == "neuron"
         else "parent_before_child_reindex_v1"
     )
+    if _regional_execution(circuit, experiment):
+        morphology_transform = "parent_before_child_reindex_source_swc_edge_odd_cv_v1"
     morphology_records: dict[str, dict[str, Any]] = {}
     simulation_cells: dict[str, dict[str, Any]] = {}
     morphology_artifacts: list[dict[str, str]] = []
@@ -2034,6 +3339,7 @@ def run(request_path: Path) -> Path:
             cell_dir,
             expected_source_sha256=expected_digest,
             source_label=source_label,
+            coordinate_transform=morphology_record.get("coordinate_transform"),
         )
         actual_digest = expected_digest
         node_map = _source_to_run_node_map(node_map_path)
@@ -2071,18 +3377,29 @@ def run(request_path: Path) -> Path:
         simulation_cells[neuron_id] = {
             "swc_path": str(normalized_swc_path),
             "hh": _merged_hh(circuit, neuron_id),
+            "membrane": dict(dict(circuit.get("neuron_mechanism_overrides") or {}).get(neuron_id, circuit.get("membrane") or {})),
             "prefer_rostral_soma": prefer_rostral_soma,
         }
+        if _regional_execution(circuit, experiment):
+            simulation_cells[neuron_id].update(_regional_cell_data(circuit, neuron_id, node_map))
+            simulation_cells[neuron_id]["electrical_contact_run_node_ids"] = _electrical_contact_run_nodes(edge_manifest, neuron_id, node_map)
+            simulation_cells[neuron_id]["regional"] = True
+            regional_plan = _regional_plan(_swc_rows(normalized_swc_path), simulation_cells[neuron_id])
+            simulation_cells[neuron_id]["regional_plan"] = regional_plan
+            _atomic_json(cell_dir / "regional_map.json", regional_plan)
         morphology_metadata[neuron_id] = {
             "run_path_component": path_component,
             "neuron_type": str(morphology_record.get("neuron_type") or "Unknown"),
             "source_swc_sha256": actual_digest,
             "simulation_swc_sha256": normalized_digest,
+            "coordinate_transform": morphology_record.get("coordinate_transform"),
             "source_soma_target_node_id": source_target_node_id,
             "soma_target_policy": target_policy,
             "arbor_root_stub_length_um": root_stub,
         }
         relative_dir = Path("morphologies") / path_component
+        if simulation_cells[neuron_id].get("regional"):
+            morphology_artifacts.append({"kind": "document", "path": str(relative_dir / "regional_map.json"), "label": f"SWC edge/CV biophysics and recording map · {neuron_id}"})
         morphology_label = (
             "Normalized morphology"
             if len(neuron_ids) == 1
@@ -2107,14 +3424,25 @@ def run(request_path: Path) -> Path:
                 },
             )
         )
+    if _regional_execution(circuit, experiment):
+        _regional_report_budget({n:c["regional_plan"] for n,c in simulation_cells.items()}, experiment)
     resolved_edge_path = output_dir / "resolved_edge_manifest.json"
     _atomic_json(resolved_edge_path, resolved_edge_manifest)
+    if engine == "arbor":
+        _atomic_json(output_dir/"arbor_execution_resource_forecast.json",
+                     _arbor_execution_resource_forecast(simulation_cells,experiment,resolved_edge_manifest))
+
+    native_evidence = _prepare_native_channels(request, output_dir) if engine == "neuron" else {}
+    if engine == "arbor":
+        native_evidence = _prepare_arbor_channels(request, output_dir)
+    channel_catalogue_path = Path(native_evidence["library"]) if engine == "arbor" and native_evidence else None
 
     manifest_path = output_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update(
         {
             "state": "running",
+            "native_channel_execution": native_evidence,
             "started_at": _now(),
             "morphology_transform": morphology_transform,
             "morphologies": morphology_metadata,
@@ -2125,7 +3453,7 @@ def run(request_path: Path) -> Path:
     _atomic_json(manifest_path, manifest)
     _emit(
         "start",
-        f"Starting {engine.upper()} classic-HH experiment",
+        f"Starting {engine.upper()} source-bound membrane experiment",
         neuron_ids=list(neuron_ids),
         chemical_contacts=len(chemical_contacts),
         electrical_contacts=len(electrical_contacts),
@@ -2136,21 +3464,52 @@ def run(request_path: Path) -> Path:
         item for item in experiment.get("conditions") or () if item.get("enabled", True)
     ]
     stimulus = dict(stimuli[0])
+    independent_results = {}
+    if engine == "neuron" and int(experiment.get("workers",1)) > 1:
+        independent_results,forecast = _prepare_neuron_trials(request_path,request,simulation_cells,resolved_edge_manifest,native_evidence,conditions,stimulus)
+        manifest["worker_execution"] = forecast
+        _atomic_json(manifest_path,manifest)
     trace_rows: list[dict[str, Any]] = []
     spike_rows: list[dict[str, Any]] = []
     runtime_version = "unknown"
     total = len(conditions) * int(experiment["repetitions"])
     completed = 0
-    for condition in conditions:
+    condition_receipts = []
+    ramp_receipts = []
+    arbor_native_artifacts = []
+    for condition_index, condition in enumerate(conditions):
+        condition_cells = _condition_cells(simulation_cells, condition)
+        condition_edges = _condition_edges(resolved_edge_manifest, tuple(condition_cells))
+        if stimulus.get("waveform") == "ramp":
+            ramp_receipts.append(_ramp_quadrature_record(engine,experiment,stimulus,condition,condition_cells,condition_edges))
+        condition_receipts.append({"condition":str(condition["name"]),
+            "active_neuron_ids":list(condition_cells), "disabled_neuron_ids":list(condition.get("disabled_neuron_ids") or ()),
+            "mechanism_scales":dict(condition.get("mechanism_scales") or {}),
+            "ablation_policy":"Remove cells, all incident chemical/electrical contacts, clamps and recordings; no fabricated voltage",
+            "scale_policy":"Multiply conductances after default/neuron/source-edge precedence; kinetics/reversals/source hashes unchanged",
+            "cells": {n:{"hh":c["hh"], "membrane":c["membrane"], "regional_plan":c.get("regional_plan")} for n,c in condition_cells.items()},
+            "edge_manifest":condition_edges})
         for repetition in range(1, int(experiment["repetitions"]) + 1):
+            if engine=="neuron" and int(experiment.get("workers",1))>1 and (output_dir/"cancel.requested").is_file():
+                raise _trials.TrialCancelled("Independent trial result aggregation cancelled by app request")
             _emit(
                 "simulate",
                 f"Running {condition['name']} repetition {repetition}",
                 completed=completed,
                 total=total,
             )
-            if engine == "arbor" and (
-                len(neuron_ids) > 1 or chemical_contacts or electrical_contacts
+            if not condition_cells:
+                traces = {}
+            elif independent_results:
+                trial_path = independent_results[condition_index,repetition]
+                result = json.loads((trial_path.parent/"trial_result.json").read_text(encoding="utf-8"))
+                if result.get("trial_sha256") != _sha256(trial_path):
+                    raise ValueError("Independent trial result does not bind its exact request")
+                runtime_version = result["runtime_version"]
+                traces = {(row["neuron_id"],row["compartment_id"]) if row["compartment_id"] else row["neuron_id"]:
+                          (row["times"],row["voltages"]) for row in result["traces"]}
+            elif engine == "arbor" and (
+                len(neuron_ids) > 1 or chemical_contacts or electrical_contacts or _regional_execution(circuit, experiment)
             ):
                 catalogue_text = str(request.get("arbor_gap_catalogue") or "").strip()
                 catalogue_path = Path(catalogue_text) if catalogue_text else None
@@ -2161,16 +3520,25 @@ def run(request_path: Path) -> Path:
                         f"The app-owned Arbor gap catalogue is missing: {catalogue_path}"
                     )
                 traces, runtime_version = _arbor_network_traces(
-                    simulation_cells,
+                    condition_cells,
                     experiment,
                     stimulus,
                     condition,
-                    resolved_edge_manifest,
+                    condition_edges,
                     catalogue_path,
+                    channel_catalogue_path,
+                    native_report_path=output_dir/"arbor_native_reports"/f"condition-{condition_index+1}-repetition-{repetition}.csv",
                 )
-            elif engine == "neuron" and (
-                len(neuron_ids) > 1 or chemical_contacts or electrical_contacts
-            ):
+                native_path = Path("arbor_native_reports")/f"condition-{condition_index+1}-repetition-{repetition}.csv"
+                if (output_dir/native_path).is_file():
+                    arbor_native_artifacts.extend(({"kind":"table","path":str(native_path),"label":"Unmodified dense native Arbor observations"},
+                        {"kind":"document","path":str(native_path.with_suffix('.plan.json')),"label":"Prospective exact-source strict-interior observation plan"},
+                        {"kind":"document","path":str(native_path.with_suffix('.observations.json')),"label":"Native observations and detector events preserved before validation"},
+                        {"kind":"document","path":str(native_path.with_suffix('.json')),"label":"Native-clock requested-grid selection receipt"}))
+            # Cell count must not select a different morphology constructor.
+            # Import3d rewrites soma geometry in the old single-cell path;
+            # branch-run construction is shared with networks and BioNet.
+            elif engine == "neuron":
                 mechanism_text = str(
                     request.get("neuron_gap_mechanisms") or ""
                 ).strip()
@@ -2182,17 +3550,17 @@ def run(request_path: Path) -> Path:
                         f"The app-owned NEURON gap mechanism cache is missing: {mechanism_dir}"
                     )
                 traces, runtime_version = _neuron_network_traces(
-                    simulation_cells,
+                    condition_cells,
                     experiment,
                     stimulus,
                     condition,
-                    resolved_edge_manifest,
+                    condition_edges,
                     mechanism_dir,
                     str(request.get("neuron_gap_manifest_sha256") or ""),
                 )
             else:
-                neuron_id = neuron_ids[0]
-                cell = simulation_cells[neuron_id]
+                neuron_id = next(iter(condition_cells))
+                cell = condition_cells[neuron_id]
                 simulate = _arbor_trace if engine == "arbor" else _neuron_trace
                 times, voltages, runtime_version = simulate(
                     Path(str(cell["swc_path"])),
@@ -2201,9 +3569,14 @@ def run(request_path: Path) -> Path:
                     stimulus,
                     condition,
                     prefer_rostral_soma=bool(cell["prefer_rostral_soma"]),
+                    membrane=dict(cell.get("membrane") or {}),
+                    **({"channel_catalogue_path": channel_catalogue_path} if engine == "arbor" else {}),
                 )
                 traces = {neuron_id: (times, voltages)}
             for neuron_id, (times, voltages) in traces.items():
+                compartment_id = ""
+                if isinstance(neuron_id, tuple):
+                    neuron_id, compartment_id = neuron_id
                 if len(times) < 2 or len(times) != len(voltages):
                     raise RuntimeError(
                         f"Simulator returned an incomplete soma-voltage trace for {neuron_id}"
@@ -2221,6 +3594,7 @@ def run(request_path: Path) -> Path:
                             "condition": str(condition["name"]),
                             "repetition": repetition,
                             "neuron_id": neuron_id,
+                            "compartment_id": compartment_id,
                             "time_ms": time_ms,
                             "voltage_mV": voltage_mV,
                         }
@@ -2236,10 +3610,22 @@ def run(request_path: Path) -> Path:
                                 "condition": str(condition["name"]),
                                 "repetition": repetition,
                                 "neuron_id": neuron_id,
+                                "compartment_id": compartment_id,
                                 "spike_time_ms": spike_ms,
                             }
                         )
             completed += 1
+
+    conditions_path = output_dir / "condition_execution.json"
+    _atomic_json(conditions_path, {"schema_version":1, "conditions":condition_receipts})
+    if ramp_receipts:
+        _atomic_json(output_dir/"stimulus_quadrature.json", {"schema":"digifly-ramp-quadrature-v1",
+            "source_stimulus_unchanged":True,"output_timestamp_adjustment_ms":0.0,"conditions":ramp_receipts,
+            "references":{
+                "arbor_left_evaluation":"https://github.com/arbor-sim/arbor/blob/v0.12.2/arbor/backends/shared_state_base.hpp#L128",
+                "arbor_step_boundaries":"https://github.com/arbor-sim/arbor/blob/v0.12.2/arbor/timestep_range.hpp#L12",
+                "arbor_epochs":"https://github.com/arbor-sim/arbor/blob/v0.12.2/arbor/simulation.cpp#L275",
+                "neuron_midpoint_evaluation":"https://github.com/neuronsimulator/nrn/blob/9.0.1/src/nrnoc/fadvance.cpp#L470"}})
 
     trace_path = output_dir / "voltage_traces.csv"
     with trace_path.open("w", encoding="utf-8", newline="") as handle:
@@ -2249,23 +3635,25 @@ def run(request_path: Path) -> Path:
                 "condition",
                 "repetition",
                 "neuron_id",
+                "compartment_id",
                 "time_ms",
                 "voltage_mV",
             ),
         )
         writer.writeheader()
-        writer.writerows(trace_rows)
+        if experiment["recording"].get("record_voltage", True):
+            writer.writerows(trace_rows)
     spike_path = output_dir / "spikes.csv"
     with spike_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=("condition", "repetition", "neuron_id", "spike_time_ms"),
+            fieldnames=("condition", "repetition", "neuron_id", "compartment_id", "spike_time_ms"),
         )
         writer.writeheader()
         writer.writerows(spike_rows)
 
     artifacts = [
-        {"kind": "table", "path": trace_path.name, "label": "Soma voltage traces"},
+        {"kind": "table", "path": trace_path.name, "label": "Mapped membrane voltage traces"},
         {"kind": "table", "path": spike_path.name, "label": "Threshold-crossing spikes"},
         {"kind": "document", "path": "experiment.json", "label": "Experiment document"},
         {"kind": "document", "path": "circuit.json", "label": "Circuit document"},
@@ -2274,11 +3662,23 @@ def run(request_path: Path) -> Path:
         {"kind": "document", "path": request_path.name, "label": "Resolved worker request"},
     ]
     artifacts.extend(morphology_artifacts)
+    if engine == "arbor":
+        artifacts.extend(arbor_native_artifacts)
+        artifacts.append({"kind":"document","path":"arbor_execution_resource_forecast.json","label":"Exact-envelope and native-report resource forecast"})
+    if engine=="neuron" and int(experiment.get("workers",1))>1:
+        artifacts.extend({"kind":"document","path":name,"label":label} for name,label in
+            (("worker_resource_forecast.json","Requested/effective independent trial resources"),("independent_trial_execution.json","Independent child execution and cleanup receipt")))
+    artifacts.append({"kind":"document", "path":conditions_path.name, "label":"Condition ablation and materialized conductances"})
+    if ramp_receipts:
+        artifacts.append({"kind":"document","path":"stimulus_quadrature.json","label":"Physical ramp and explicit solver midpoint quadrature"})
+    voltage_enabled = bool(experiment["recording"].get("record_voltage", True))
+    if not voltage_enabled:
+        artifacts = [a for a in artifacts if a["path"] != trace_path.name]
     if experiment["recording"].get("make_plots", True):
-        plot_path = output_dir / "voltage_comparison.png"
-        _write_plot(plot_path, trace_rows, experiment)
+        plot_path = output_dir / ("voltage_comparison.png" if voltage_enabled else "spike_raster.png")
+        (_write_plot if voltage_enabled else _write_spike_plot)(plot_path, trace_rows if voltage_enabled else spike_rows, experiment)
         artifacts.append(
-            {"kind": "image", "path": plot_path.name, "label": "Voltage comparison"}
+            {"kind": "image", "path": plot_path.name, "label": "Voltage comparison" if voltage_enabled else "Spike raster"}
         )
     completed_at = _now()
     neuron_types = {
@@ -2295,7 +3695,8 @@ def run(request_path: Path) -> Path:
         "Repetitions": int(experiment["repetitions"]),
         "Duration (ms)": float(experiment["duration_ms"]),
         "Integration step (ms)": float(experiment["integration_dt_ms"]),
-        "Recorded samples": len(trace_rows),
+        "Recorded samples": len(trace_rows) if voltage_enabled else 0,
+        "Samples used for spike detection": len(trace_rows),
         "Detected spikes": len(spike_rows),
         "Morphology transform": morphology_transform,
         "Chemical contacts": len(chemical_contacts),
@@ -2303,6 +3704,8 @@ def run(request_path: Path) -> Path:
         "Edge manifest SHA-256": str(request["edge_manifest_sha256"]),
     }
     if engine == "neuron":
+        metadata["Requested independent trial workers"]=int(experiment.get("workers",1))
+        metadata["Effective independent trial workers"]=manifest.get("worker_execution",{}).get("effective_workers",1)
         metadata.update(
             {
                 "NEURON target segment length (um)": NEURON_TARGET_SEGMENT_UM,
@@ -2329,7 +3732,7 @@ def run(request_path: Path) -> Path:
             mechanism_dir = Path(str(request["neuron_gap_mechanisms"])).resolve()
             mechanism_manifest, library_path = _validated_neuron_gap_manifest(
                 mechanism_dir,
-                neuron_version=runtime_version,
+                neuron_version=runtime_version if runtime_version != "unknown" else None,
                 expected_manifest_sha256=str(
                     request.get("neuron_gap_manifest_sha256") or ""
                 ),
@@ -2370,6 +3773,8 @@ def run(request_path: Path) -> Path:
         "artifacts": artifacts,
     }
     summary_path = output_dir / "summary.json"
+    if engine=="neuron" and int(experiment.get("workers",1))>1 and (output_dir/"cancel.requested").is_file():
+        raise _trials.TrialCancelled("Independent trial result publication cancelled by app request")
     _atomic_json(summary_path, summary)
     manifest.update(
         {
@@ -2385,21 +3790,28 @@ def run(request_path: Path) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--request", required=True)
+    entry = parser.add_mutually_exclusive_group(required=True)
+    entry.add_argument("--request")
+    entry.add_argument("--execute-trial")
+    parser.add_argument("--trial-sha256",default="")
     args = parser.parse_args(argv)
     try:
-        run(Path(args.request).expanduser().resolve())
+        if args.execute_trial:
+            _execute_neuron_trial(Path(args.execute_trial).resolve(),args.trial_sha256)
+        else:
+            run(Path(args.request).expanduser().resolve())
     except Exception as exc:
-        request_path = Path(args.request).expanduser().resolve()
+        request_path = Path(args.request or args.execute_trial).expanduser().resolve()
         manifest_path = request_path.parent / "run_manifest.json"
         if manifest_path.is_file():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                manifest.update({"state": "failed", "failed_at": _now(), "error": str(exc)})
+                cancelled=isinstance(exc,_trials.TrialCancelled)
+                manifest.update({"state": "cancelled" if cancelled else "failed", "cancelled_at" if cancelled else "failed_at": _now(), "error": str(exc)})
                 _atomic_json(manifest_path, manifest)
             except Exception:
                 pass
-        _emit("failed", str(exc), error_type=type(exc).__name__)
+        _emit("cancelled" if isinstance(exc,_trials.TrialCancelled) else "failed", str(exc), error_type=type(exc).__name__)
         return 1
     return 0
 

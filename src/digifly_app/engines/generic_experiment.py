@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 import csv
 import hashlib
@@ -17,7 +18,7 @@ from typing import Any, Iterable, Mapping
 from digifly_app.core.circuit import CircuitSpec, HodgkinHuxleySpec
 from digifly_app.core.connectomes import ConnectomeEdgeCatalog
 from digifly_app.core.experiment import EXPERIMENT_BUILDER_WORKFLOW, ExperimentSpec
-from digifly_app.core.mechanisms import MembraneMechanismSpec
+from digifly_app.core.mechanisms import MembraneMechanismSpec, MEMBRANE_MECHANISM_BY_KEY
 from digifly_app.core.models import (
     Artifact,
     CheckState,
@@ -42,7 +43,8 @@ SUPPORTED_ENGINES = {"arbor", "neuron", "bmtk"}
 _SAFE_COMPONENT = re.compile(r"[^a-z0-9]+")
 _ARBOR_GAP_CATALOGUE_NAME = "digifly_gap"
 _ARBOR_GAP_CATALOGUE_FILE = "digifly_gap-catalogue.so"
-_ARBOR_GAP_CACHE_VERSION = "v1"
+# New CPU C-ABI builder: leave prior successful/failed static-link caches intact.
+_ARBOR_GAP_CACHE_VERSION = "v2"
 _SUPPORTED_ARBOR_GAP_VERSION = "0.12.2"
 _NEURON_GAP_CACHE_VERSION = "v1"
 _NEURON_GAP_MANIFEST_FILE = "mechanism_manifest.json"
@@ -400,13 +402,13 @@ class GenericExperimentAdapter:
         )
         return runtime / cache_key / _ARBOR_GAP_CATALOGUE_FILE
 
-    def neuron_gap_mechanism_path(self, output_root: str | Path) -> Path:
+    def neuron_gap_mechanism_path(self, output_root: str | Path, *, engine: str = "neuron") -> Path:
         """Return an interpreter-specific cache directory for compiled NMODL."""
 
         override = os.environ.get("DIGIFLY_NEURON_GAP_MECHANISMS", "").strip()
         if override:
             return Path(override).expanduser().resolve()
-        runtime = self.runtime_paths.get("neuron")
+        runtime = self.runtime_paths.get(engine)
         runtime_identity = "unconfigured"
         if runtime is not None and runtime.is_file():
             stat = runtime.stat()
@@ -517,10 +519,27 @@ class GenericExperimentAdapter:
 
     def needs_gap_catalogue(self, circuit: CircuitSpec, experiment: ExperimentSpec) -> bool:
         return bool(
-            experiment.engine in {"arbor", "neuron"}
+            experiment.engine in {"arbor", "neuron", "bmtk"}
             and len(circuit.neuron_ids) > 1
             and circuit.gap_junction_policy.mode != "none"
         )
+
+    def native_channel_sources(self, circuit: CircuitSpec) -> dict[str, dict[str, str]]:
+        sources = {}
+        for membrane in _effective_membrane_specs(circuit):
+            for channel in membrane.active_channels:
+                definition = MEMBRANE_MECHANISM_BY_KEY[channel.mechanism_key]
+                source = (
+                    resource_path(*Path(definition.source_relpath).parts)
+                    if definition.source_relpath.startswith("mechanisms/")
+                    else (self.digifly_public_root or Path("/__missing_workspace__")) / definition.source_relpath
+                )
+                if not source.is_file() or _file_sha256(source) != definition.source_sha256:
+                    raise ValueError(f"Missing or changed locked channel source: {source}")
+                sources[channel.mechanism_key] = {
+                    "path": str(source), "suffix": definition.suffix, "sha256": definition.source_sha256,
+                }
+        return sources
 
     def ensure_gap_catalogue(
         self,
@@ -542,15 +561,15 @@ class GenericExperimentAdapter:
             builder_label = "Arbor catalogue"
             build_dir = destination.parent
         else:
-            destination = self.neuron_gap_mechanism_path(output_root)
+            destination = self.neuron_gap_mechanism_path(output_root, engine=engine)
             manifest = destination / _NEURON_GAP_MANIFEST_FILE
-            runtime_key = "neuron"
+            runtime_key = engine
             builder = self.neuron_gap_builder_path
             builder_label = "NEURON mechanism"
             build_dir = destination
         if destination.is_file() and manifest.is_file():
             return destination
-        if engine == "neuron" and destination.is_dir() and manifest.is_file():
+        if engine in {"neuron", "bmtk"} and destination.is_dir() and manifest.is_file():
             return destination
         runtime = self.runtime_paths.get(runtime_key)
         if runtime is None or not runtime.is_file():
@@ -755,18 +774,15 @@ class GenericExperimentAdapter:
                 if candidate_manifest is not None
                 else 0
             )
-            bmtk_connectivity_ok = (
-                circuit.gap_junction_policy.mode == "none"
-                and electrical_count == 0
-            )
+            bmtk_connectivity_ok = circuit.gap_junction_policy.mode in {"none", "ohmic", "rectifying", "heterotypic_rectifying"}
             checks.append(
                 _check(
                     "bmtk_connectivity",
                     "BMTK BioNet connectivity subset",
                     CheckState.PASS if bmtk_connectivity_ok else CheckState.FAIL,
-                    "The first BioNet lane preserves morphology-backed cells and chemical contacts in run-owned SONATA files."
+                    "BioNet preserves chemical SONATA edges and exact imported electrical sites through a run-owned Digifly serial extension; no electrical contacts are omitted."
                     if bmtk_connectivity_ok
-                    else "BMTK BioNet currently executes chemical contacts only. Choose no gap-junction mechanism; electrical contacts are never silently dropped or approximated.",
+                    else "This electrical policy is unsupported. Choose none, ohmic, rectifying or heterotypic rectifying; contacts are never silently dropped or approximated.",
                     blocking=True,
                 )
             )
@@ -784,7 +800,7 @@ class GenericExperimentAdapter:
                     else "The Digifly gap catalogue is not built for this Arbor runtime yet. Run will build it once in the app-owned runtime cache."
                 )
             else:
-                catalogue = self.neuron_gap_mechanism_path(output)
+                catalogue = self.neuron_gap_mechanism_path(output, engine=engine)
                 manifest = catalogue / _NEURON_GAP_MANIFEST_FILE
                 catalogue_ok = catalogue.is_dir() and manifest.is_file()
                 key = "neuron_gap_mechanisms"
@@ -885,16 +901,39 @@ class GenericExperimentAdapter:
         replaces_hh = any(
             membrane.replace_builtin_hh for membrane in _effective_membrane_specs(circuit)
         )
-        mechanism_ok = not active_native and not replaces_hh
+        native_sources = {}
+        native_errors = []
+        if engine in SUPPORTED_ENGINES:
+            for key in sorted(active_native):
+                definition = MEMBRANE_MECHANISM_BY_KEY.get(key)
+                if definition is None:
+                    native_errors.append(f"Unknown native mechanism: {key}")
+                    continue
+                source = (
+                    resource_path(*Path(definition.source_relpath).parts)
+                    if definition.source_relpath.startswith("mechanisms/")
+                    else (self.digifly_public_root or Path("/__missing_workspace__")) / definition.source_relpath
+                )
+                if not source.is_file() or _file_sha256(source) != definition.source_sha256:
+                    native_errors.append(f"Missing or changed locked channel source: {source}")
+                else:
+                    native_sources[key] = {
+                        "path": str(source), "suffix": definition.suffix,
+                        "sha256": definition.source_sha256,
+                    }
+        mechanism_ok = not native_errors
         checks.append(
             _check(
                 "mechanisms",
                 "Membrane mechanism translation",
                 CheckState.PASS if mechanism_ok else CheckState.FAIL,
-                "Built-in classic HH and its regional conductances are supported on the selected engine."
+                ("Hash-locked native channel sources and regional densities will be compiled in the run folder; Arbor uses separately tested equation translations."
+                 if active_native or replaces_hh
+                 else "Built-in classic HH and its regional conductances are supported on the selected engine.")
                 if mechanism_ok
-                else "This first lane does not silently substitute native mechanisms: "
-                + ", ".join(sorted(active_native or {"replace_builtin_hh"})),
+                else ("; ".join(native_errors) if native_errors else
+                      "These native channels require the NEURON engine for general experiments; select NEURON in Experiment Builder. No channel substitution is performed: "
+                      + ", ".join(sorted(active_native or {"replace_builtin_hh"}))),
                 blocking=True,
             )
         )
@@ -908,15 +947,42 @@ class GenericExperimentAdapter:
             _effective_hh(circuit, neuron_id).active_scope
             for neuron_id in circuit.neuron_ids
         }
-        regional_ok = not compartment_count and hh_scopes <= {"all", "soma"}
+        regional_ok = hh_scopes <= {"all", "soma", "soma_ais"}
+        regional_errors = []
+        from digifly_app.workers import generic_experiment_worker as regional_worker
+        if regional_worker._regional_execution(circuit.to_dict(), experiment.to_dict()):
+            regional_plans = {}
+            for morphology in morphologies:
+                neuron_id = morphology.record.neuron_id
+                try:
+                    nodes = morphology.nodes
+                    rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes]
+                    data = regional_worker._regional_cell_data(circuit.to_dict(), neuron_id, {n.node_id:n.node_id for n in nodes})
+                    data["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
+                    plan = regional_worker._regional_plan(rows, data)
+                    regional_plans[neuron_id] = plan
+                    regions = []
+                    if neuron_id in (experiment.recording.target_neuron_ids or circuit.neuron_ids):
+                        regions.append(experiment.recording.target_region)
+                    regions.extend(s.target_region for s in experiment.stimuli if s.enabled and neuron_id in (s.target_neuron_ids or circuit.neuron_ids))
+                    for region in regions:
+                        regional_worker._regional_sites(plan, region, data)
+                except (ValueError, KeyError, TypeError) as exc:
+                    regional_errors.append(str(exc))
+            if not regional_errors:
+                try:
+                    regional_worker._regional_report_budget(regional_plans, experiment.to_dict())
+                except ValueError as exc:
+                    regional_errors.append(str(exc))
+            regional_ok = regional_ok and not regional_errors
         checks.append(
             _check(
                 "regional_biophysics",
                 "Regional biophysics mapping",
                 CheckState.PASS if regional_ok else CheckState.FAIL,
-                "Whole-neuron and soma/branch classic-HH values can be translated exactly."
+                "Default, per-neuron and per-SWC-edge settings use explicit mappings; AIS is a geometric type-2 proxy, not an anatomical claim."
                 if regional_ok
-                else "Per-SWC-compartment overrides and soma+AIS-only scope need an explicit CV mapping before execution.",
+                else "; ".join(regional_errors) or "Invalid regional mapping.",
                 blocking=True,
             )
         )
@@ -925,8 +991,8 @@ class GenericExperimentAdapter:
             stimulus for stimulus in experiment.stimuli if stimulus.enabled
         )
         stimuli_ok = len(enabled_stimuli) == 1 and all(
-            stimulus.target_region == "soma"
-            and stimulus.waveform in {"pulse_train", "step"}
+            stimulus.target_region in {"soma", "all", "ais", "selected_compartments"}
+            and stimulus.waveform in {"pulse_train", "step", "ramp"}
             for stimulus in enabled_stimuli
         )
         checks.append(
@@ -934,42 +1000,70 @@ class GenericExperimentAdapter:
                 "stimuli",
                 "Stimulus translation",
                 CheckState.PASS if stimuli_ok else CheckState.FAIL,
-                "Soma square-step and pulse-train current clamps are supported."
+                "Step, pulse-train and continuous linear-ramp clamps use the mapped region; total current is divided equally over its target edges."
                 if stimuli_ok
-                else "Choose Soma with Pulse train or Single step for the first executable lane.",
+                else "Choose a mapped region with Pulse train, Single step or Ramp.",
                 blocking=True,
             )
         )
 
-        conditions_ok = all(
-            not condition.disabled_neuron_ids and not condition.mechanism_scales
-            for condition in experiment.conditions
-            if condition.enabled
-        )
+        condition_errors = []
+        for condition in experiment.conditions:
+            if condition.enabled:
+                try:
+                    regional_worker._validate_condition_manipulations(circuit.to_dict(), asdict(condition))
+                except (ValueError, TypeError) as exc:
+                    condition_errors.append(str(exc))
+        conditions_ok = not condition_errors
         checks.append(
             _check(
                 "conditions",
                 "Runtime conditions",
                 CheckState.PASS if conditions_ok else CheckState.FAIL,
-                "Enabled conditions and stimulus multipliers can be executed independently."
+                "Conditions independently materialize cell ablation, incident-edge removal, stimulus multipliers and locked-channel/HH conductance multipliers."
                 if conditions_ok
-                else "Neuron disabling and mechanism-scale maps need an additional execution translation.",
+                else "; ".join(condition_errors),
                 blocking=True,
             )
         )
 
         recording_ok = (
-            experiment.recording.target_region == "soma"
-            and experiment.recording.record_voltage
+            experiment.recording.target_region in {"soma", "all", "ais", "selected_compartments"}
+            and (experiment.recording.record_voltage or experiment.recording.detect_spikes)
         )
         checks.append(
             _check(
                 "recording",
                 "Recording translation",
                 CheckState.PASS if recording_ok else CheckState.FAIL,
-                "Soma voltage traces and threshold-crossing spike times will be recorded."
+                "Mapped edge-midpoint voltages and threshold crossings retain source compartment IDs; no soma trace is copied to other regions."
                 if recording_ok
-                else "Choose Soma and enable membrane-voltage recording; all-compartment recording is intentionally not approximated.",
+                else "Choose a mapped region and enable voltage recording or spike detection.",
+                blocking=True,
+            )
+        )
+
+        sample_ratio = experiment.duration_ms / experiment.recording.sample_dt_ms
+        nearest_sample = round(sample_ratio)
+        if math.isclose(sample_ratio, nearest_sample, rel_tol=0.0, abs_tol=1e-12):
+            sample_ratio = float(nearest_sample)
+        # NEURON's Vector reports t=0 and an aligned terminal sample; Arbor's
+        # regular schedule starts at zero and excludes tfinal. BioNet exports
+        # only real post-fadvance measurements on the requested grid, not a
+        # synthesized t=0 value or a rounded/interpolated terminal sample.
+        expected_samples = (
+            math.floor(sample_ratio) if engine == "bmtk"
+            else math.ceil(sample_ratio) if engine == "arbor"
+            else math.floor(sample_ratio) + 1
+        )
+        checks.append(
+            _check(
+                "recording_samples",
+                "Recording window sample count",
+                CheckState.PASS if expected_samples >= 2 else CheckState.FAIL,
+                f"The requested {engine.upper()} recording window supplies {expected_samples} samples per mapped site."
+                if expected_samples >= 2
+                else "At least two actual recording samples per mapped site are required; increase duration or reduce the recording interval. No initial or terminal sample will be invented.",
                 blocking=True,
             )
         )
@@ -978,10 +1072,8 @@ class GenericExperimentAdapter:
             sampling_ratio = (
                 experiment.recording.sample_dt_ms / experiment.integration_dt_ms
             )
-            duration_ratio = (
-                experiment.duration_ms / experiment.recording.sample_dt_ms
-            )
-            integration_grid_ok = math.isclose(
+            duration_ratio = experiment.duration_ms / experiment.integration_dt_ms
+            integration_grid_ok = sampling_ratio >= 1.0 and math.isclose(
                 sampling_ratio,
                 round(sampling_ratio),
                 rel_tol=1e-9,
@@ -999,14 +1091,14 @@ class GenericExperimentAdapter:
                     "bmtk_sampling",
                     "BMTK BioNet sampling interval",
                     CheckState.PASS if bmtk_sampling_ok else CheckState.FAIL,
-                    "The recording interval is an integer multiple of the fixed integration step and divides the duration into a whole number of samples."
+                    "The recording interval and experiment duration lie on the fixed integration grid; the recording window may end between samples."
                     if bmtk_sampling_ok
-                    else "For BioNet, choose a recording interval that is both an integer multiple of the integration step and an exact divisor of the experiment duration.",
+                    else "For BioNet, the recording interval must be an integer multiple of the integration step, and duration must lie on the integration grid.",
                     blocking=True,
                 )
             )
 
-        parallel_ok = engine == "arbor" or experiment.workers == 1
+        parallel_ok = 1 <= experiment.workers <= 256 and (engine=="arbor" or experiment.workers==1 or os.name=="posix")
         checks.append(
             _check(
                 "parallelism",
@@ -1014,9 +1106,9 @@ class GenericExperimentAdapter:
                 CheckState.PASS if parallel_ok else CheckState.FAIL,
                 f"{experiment.workers} Arbor CPU thread(s) requested."
                 if engine == "arbor"
-                else f"The first {engine.upper()} lane runs one isolated process."
+                else f"Up to {experiment.workers} isolated {engine.upper()} condition/repetition process(es); effective count is capped by runnable trials, logical CPUs and an explicit memory forecast. Native mechanisms compile once before dispatch."
                 if parallel_ok
-                else f"Set Workers / threads to 1 for the first {engine.upper()} lane.",
+                else "Use Workers 1 on Windows; independent trial descendant cancellation is not verified there. Choose 1–256 workers on POSIX hosts.",
                 blocking=True,
             )
         )
@@ -1153,6 +1245,7 @@ class GenericExperimentAdapter:
                 raise ValueError(str(exc)) from exc
 
         chemical_policy = circuit.chemical_synapse_policy
+        global_kinetics = chemical_policy.kinetics_policy == "global_override"
         chemical_edges: list[dict[str, Any]] = []
         for row in chemical_rows:
             pre_id, post_id = str(row["pre_id"]), str(row["post_id"])
@@ -1204,13 +1297,13 @@ class GenericExperimentAdapter:
                     ),
                     "delay_ms": float(effective_delay),
                     "tau1_ms": float(
-                        source_tau1 if source_tau1 is not None else chemical_policy.tau1_ms
+                        chemical_policy.tau1_ms if global_kinetics else source_tau1 if source_tau1 is not None else chemical_policy.tau1_ms
                     ),
                     "tau2_ms": float(
-                        source_tau2 if source_tau2 is not None else chemical_policy.tau2_ms
+                        chemical_policy.tau2_ms if global_kinetics else source_tau2 if source_tau2 is not None else chemical_policy.tau2_ms
                     ),
                     "reversal_mV": float(
-                        source_reversal
+                        chemical_policy.reversal_mV if global_kinetics else source_reversal
                         if source_reversal is not None
                         else chemical_policy.reversal_mV
                     ),
@@ -1223,9 +1316,9 @@ class GenericExperimentAdapter:
                             if source_delay is not None
                             else "circuit_policy"
                         ),
-                        "tau1": "connectome_row" if source_tau1 is not None else "circuit_policy",
-                        "tau2": "connectome_row" if source_tau2 is not None else "circuit_policy",
-                        "reversal": "connectome_row" if source_reversal is not None else "circuit_policy",
+                        "tau1": "circuit_policy_global_override" if global_kinetics else "connectome_row" if source_tau1 is not None else "circuit_policy",
+                        "tau2": "circuit_policy_global_override" if global_kinetics else "connectome_row" if source_tau2 is not None else "circuit_policy",
+                        "reversal": "circuit_policy_global_override" if global_kinetics else "connectome_row" if source_reversal is not None else "circuit_policy",
                     },
                     "source_annotations": {
                         "confidence": row.get("confidence"),
@@ -1243,10 +1336,6 @@ class GenericExperimentAdapter:
         electrical_rows: tuple[dict[str, str], ...] = ()
         gap_policy = circuit.gap_junction_policy
         if len(neuron_ids) > 1 and gap_policy.mode != "none":
-            if gap_policy.placement_policy != "imported_contact_sites":
-                raise ValueError(
-                    "General electrical execution requires imported contact-site placement."
-                )
             try:
                 electrical_rows = edge_catalog.selected_gap_contacts(neuron_ids)
                 sources.append(edge_catalog.gap_source_record())
@@ -1272,6 +1361,7 @@ class GenericExperimentAdapter:
 
         electrical_edges: list[dict[str, Any]] = []
         contact_serial = 0
+        geometric_sites = {}
         for (neuron_a, neuron_b), rows in sorted(rows_by_pair.items()):
             per_contact_g = (
                 gap_policy.g_uS
@@ -1279,6 +1369,33 @@ class GenericExperimentAdapter:
                 else gap_policy.g_uS / len(rows)
             )
             contacts: list[dict[str, Any]] = []
+            if gap_policy.placement_policy in {"soma_pair", "ais_pair"}:
+                from digifly_app.workers import generic_experiment_worker as shared_mapping
+                for neuron_id in (neuron_a, neuron_b):
+                    if neuron_id not in geometric_sites:
+                        morphology = morphology_by_id[neuron_id]
+                        swc_rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes]
+                        cell = shared_mapping._regional_cell_data(circuit.to_dict(),neuron_id,{n.node_id:n.node_id for n in morphology.nodes})
+                        cell["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
+                        geometric_sites[neuron_id] = shared_mapping._geometric_pair_site(swc_rows,cell,gap_policy.placement_policy)
+                first,second = geometric_sites[neuron_a],geometric_sites[neuron_b]
+                contact_serial += 1
+                contacts.append({"contact_id":f"gap-{contact_serial:07d}", "source_edge_rowid":"",
+                    "source_contact_rowids":[str(row.get("source_edge_rowid") or "") for row in rows], "source_contact_count":len(rows),
+                    "pre_id":neuron_a,"post_id":neuron_b,
+                    "pre_source_node_id":first["source_node_id"], "post_source_node_id":second["source_node_id"],
+                    "pre_source_edge_fraction":.5, "post_source_edge_fraction":.5,
+                    "pre_coordinate_um":first["coordinate_um"], "post_coordinate_um":second["coordinate_um"],
+                    "coordinate_sources":{"pre":f"synthetic_geometric_{gap_policy.placement_policy}", "post":f"synthetic_geometric_{gap_policy.placement_policy}"},
+                    "source_g_uS":sum(float(row.get("g_uS") or 0) for row in rows),"effective_g_uS":float(per_contact_g * len(rows)),
+                    "placement_assumption":{"policy":gap_policy.placement_policy,"biological_contact":False,
+                        "pair_adjacency":"Imported electrical pair retained; source contacts replaced by one explicitly synthetic site",
+                        "conductance_aggregation":"Sum the declared per-contact conductance at one synthetic midpoint; preserve the imported pair's total conductance",
+                        "source_contact_effective_g_uS":float(per_contact_g),
+                        "conductance_basis":gap_policy.conductance_basis,
+                        "pre_selection":first["selection"],"post_selection":second["selection"],
+                        "ais":"Geometric type-2 proxy, not anatomical AIS identification"}})
+                rows = []
             for row in rows:
                 contact_serial += 1
                 (
@@ -1341,6 +1458,8 @@ class GenericExperimentAdapter:
             "mapping_policy": {
                 "chemical": "Map each imported post_xyz coordinate to the nearest source SWC node.",
                 "electrical": (
+                    f"One explicitly synthetic geometric {gap_policy.placement_policy} midpoint per imported connected pair; no anatomical contact claim."
+                    if gap_policy.placement_policy != "imported_contact_sites" else
                     "Map imported pre_xyz to the presynaptic source SWC and imported post_xyz "
                     "to the postsynaptic source SWC; only a missing endpoint falls back to its peer."
                 ),
@@ -1371,7 +1490,7 @@ class GenericExperimentAdapter:
             )
         edge_manifest = self._edge_manifest(circuit, morphology_by_id.values())
         neuron_gap_manifest = (
-            self.neuron_gap_mechanism_path(output_root) / _NEURON_GAP_MANIFEST_FILE
+            self.neuron_gap_mechanism_path(output_root, engine=experiment.engine) / _NEURON_GAP_MANIFEST_FILE
         )
         return {
             "schema_version": GENERIC_EXPERIMENT_SCHEMA_VERSION,
@@ -1380,6 +1499,15 @@ class GenericExperimentAdapter:
             "output_dir": str(run_dir),
             "circuit": circuit.to_dict(),
             "experiment": experiment.to_dict(),
+            "native_channel_sources": self.native_channel_sources(circuit),
+            "arbor_channel_translator": {
+                "path": str(worker_path("arbor_channel_translation.py")),
+                "sha256": _file_sha256(worker_path("arbor_channel_translation.py")),
+            } if experiment.engine == "arbor" and any(m.active_channels for m in _effective_membrane_specs(circuit)) else {},
+            "native_builder": {
+                "path": str(self.neuron_gap_builder_path),
+                "sha256": _file_sha256(self.neuron_gap_builder_path),
+            } if experiment.engine in {"neuron", "bmtk"} and any(m.active_channels for m in _effective_membrane_specs(circuit)) else {},
             "edge_manifest": edge_manifest,
             "arbor_gap_catalogue": (
                 str(self.gap_catalogue_path(output_root))
@@ -1388,14 +1516,14 @@ class GenericExperimentAdapter:
                 else ""
             ),
             "neuron_gap_mechanisms": (
-                str(self.neuron_gap_mechanism_path(output_root))
-                if experiment.engine == "neuron"
+                str(self.neuron_gap_mechanism_path(output_root, engine=experiment.engine))
+                if experiment.engine in {"neuron", "bmtk"}
                 and self.needs_gap_catalogue(circuit, experiment)
                 else ""
             ),
             "neuron_gap_manifest_sha256": (
                 _file_sha256(neuron_gap_manifest)
-                if experiment.engine == "neuron"
+                if experiment.engine in {"neuron", "bmtk"}
                 and self.needs_gap_catalogue(circuit, experiment)
                 and neuron_gap_manifest.is_file()
                 else ""
@@ -1406,6 +1534,7 @@ class GenericExperimentAdapter:
                     "sha256": circuit.morphology_sha256.get(neuron_id, ""),
                     "neuron_type": morphology_by_id[neuron_id].record.neuron_type,
                     "family": morphology_by_id[neuron_id].record.family,
+                    "coordinate_transform": morphology_by_id[neuron_id].coordinate_transform,
                 }
                 for neuron_id in circuit.neuron_ids
                 if neuron_id in morphology_by_id

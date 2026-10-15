@@ -14,6 +14,12 @@ from pathlib import Path
 import sys
 
 
+def _native_coordinate_um(value: float) -> float:
+    # The supported malecns_09_synapses schema stores native v0.9 voxel
+    # coordinates (8 nm), not nanometers. See README_RELEASE_BUCKET.md.
+    return float(value) * 0.008
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
@@ -70,9 +76,10 @@ def main() -> int:
                     "pre_x": None,
                     "pre_y": None,
                     "pre_z": None,
-                    "post_x": float(row["x"]) * 0.001,
-                    "post_y": float(row["y"]) * 0.001,
-                    "post_z": float(row["z"]) * 0.001,
+                    "post_x": _native_coordinate_um(row["x"]),
+                    "post_y": _native_coordinate_um(row["y"]),
+                    "post_z": _native_coordinate_um(row["z"]),
+                    "coordinate_convention": "male-cns-v0.9-native-8nm-to-um",
                     "confidence": row["confidence"],
                     "neurotransmitter": row["syn_top_nt"],
                     "neurotransmitter_confidence": row["syn_top_p"],

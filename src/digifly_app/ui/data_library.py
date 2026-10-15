@@ -30,6 +30,7 @@ from digifly_app.core.data_library import (
     safe_component,
 )
 from digifly_app.core.resource_profile import (
+    ResourceKind,
     ResourceProfile,
     load_or_create_default_profile,
 )
@@ -48,6 +49,7 @@ from digifly_app.core.resource_management import (
 from .widgets import Card
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
+from .pair_graph_import import PairGraphImportDialog
 from .resource_management import ManifestDialog, TrashDialog
 
 
@@ -182,6 +184,16 @@ class DataLibraryPage(QWidget):
         row.addWidget(self.modeldb_button)
         row.addStretch(1)
         action_layout.addLayout(row)
+        graph_row = QHBoxLayout()
+        self.pair_graph_button = QPushButton("Use connectivity Parquet…")
+        self.pair_graph_button.setObjectName("LibraryConnectivityParquetButton")
+        self.pair_graph_button.clicked.connect(self.use_pair_graph)
+        graph_row.addWidget(self.pair_graph_button)
+        self.pair_graph_label = QLabel("Connectivity and SWC bundles are separate; no morphology is required to register a pair graph.")
+        self.pair_graph_label.setObjectName("LibraryPairGraphStatus")
+        self.pair_graph_label.setWordWrap(True)
+        graph_row.addWidget(self.pair_graph_label, 1)
+        action_layout.addLayout(graph_row)
         progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
@@ -265,6 +277,23 @@ class DataLibraryPage(QWidget):
     def _profile(self) -> tuple[ResourceProfile, Path]:
         return load_or_create_default_profile()
 
+    def use_pair_graph(self) -> None:
+        if self._thread is not None:
+            return
+        try:
+            profile, _ = self._profile()
+            bindings = [binding for binding in profile.bindings(ResourceKind.DATA_SOURCE)
+                        if binding.metadata.get("format") == "digifly-weighted-pair-graph-v1"]
+            reader = str(bindings[-1].metadata.get("reader_python", "")) if bindings else ""
+            dialog = PairGraphImportDialog(None, reader, self)
+            dialog.exec()
+            if dialog.registered_source:
+                self.refresh()
+                self.sources_changed.emit()
+                self.status_message.emit("MANC pair Parquet registered read-only; SWC bundle is separate and no simulation started")
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Cannot register connectivity file", str(exc))
+
     @Slot()
     def refresh(self) -> None:
         self.table.setRowCount(0)
@@ -277,6 +306,18 @@ class DataLibraryPage(QWidget):
             self._resource_selection_changed()
             return
         self._resources = resources
+        pair_graphs = [binding for binding in profile.bindings(ResourceKind.DATA_SOURCE)
+                       if binding.metadata.get("format") == "digifly-weighted-pair-graph-v1"]
+        if pair_graphs:
+            graph_text = []
+            for binding in pair_graphs:
+                try:
+                    import json
+                    manifest = json.loads((Path(str(binding.metadata["index"])).parent / "manifest.json").read_text(encoding="utf-8"))
+                    graph_text.append(f"{Path(binding.path).name}: {manifest['rows']:,} pairs / {manifest['represented_neurons']:,} IDs; SWCs separate; read-only")
+                except (OSError, ValueError, KeyError):
+                    graph_text.append(f"{Path(binding.path).name}: selected index unavailable; no fallback")
+            self.pair_graph_label.setText("\n".join(graph_text))
         root_state = "" if profile.managed_data_root.is_dir() else " — missing; relink if moved"
         self.root_label.setText(f"{profile.managed_data_root}{root_state}")
         for resource in resources:

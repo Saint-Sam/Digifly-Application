@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 from typing import Any
 
 from PySide6.QtCore import QItemSelectionModel, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -55,7 +57,8 @@ from digifly_app.core.morphology import (
 )
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.providers import profile_connectome_sources
-from digifly_app.core.resource_profile import default_profile_path, load_default_profile
+from digifly_app.core.pair_graph import attach_registered_pair_graph
+from digifly_app.core.resource_profile import ResourceKind, default_profile_path, load_default_profile
 from digifly_app.core.swc_quality import (
     heal_swc,
     record_review_decision,
@@ -77,15 +80,17 @@ from .circuit_viewport import (
     CircuitViewport,
 )
 from .neuprint_import import NeuPrintImportDialog
+from .pair_graph_import import PairGraphImportDialog
 from .widgets import Card, CollapsibleSection, make_label_copyable
 
 
 CIRCUIT_BUILDER_WORKFLOW = "circuit_builder_v1"
 
-_NEUPRINT_DATASETS = ("manc:v1.2.1", "male-cns:v0.9")
+_NEUPRINT_DATASETS = ("manc:v1.2.1", "male-cns:v1.0", "male-cns:v0.9")
 _NEUPRINT_DATASET_ALIASES = {
     "manc_v1.2.1": "manc:v1.2.1",
     "male-cns_v0.9": "male-cns:v0.9",
+    "male-cns_v1.0": "male-cns:v1.0",
 }
 
 
@@ -93,17 +98,17 @@ ENGINE_PROFILES = (
     (
         "arbor",
         "Arbor",
-        "Default design target; general classic-HH execution plus curated Phase 2 workflows.",
+        "Morphology-backed HH and equation-translated native-channel execution.",
     ),
     (
         "neuron",
         "NEURON",
-        "Morphology-backed classic-HH target with chemical and app-owned electrical mechanisms.",
+        "Morphology-backed HH/native-channel target with chemical and electrical mechanisms.",
     ),
     (
         "bmtk",
         "BMTK / SONATA",
-        "Bounded morphology-backed BioNet/SONATA target for classic HH and chemical contacts.",
+        "Bounded serial BioNet target for HH, native channels, chemical SONATA contacts and exact electrical contacts through a Digifly extension.",
     ),
 )
 
@@ -160,12 +165,14 @@ def _neuprint_selection(expression: str, limit: int) -> NeuPrintSelection | None
 def _primary_circuit_sources(
     sources: tuple[ConnectomeRef, ...],
 ) -> tuple[ConnectomeRef, ...]:
-    """Keep the main selector focused when both complete local datasets exist.
+    """Expose the primary datasets, preserving the older app's local Male CNS.
 
     Curated subsets, managed download bundles, custom morphologies, and scratch
     exports remain registered in the Data Library.  They are useful provenance
     and fallback resources, but should not masquerade as peer connectomes next
-    to the authoritative full MANC and Male CNS morphology trees.
+    to MANC and Male CNS. Prefer the exact locally discovered v0.9 source used
+    by the older app over managed selections or v1.0. Never relabel one version
+    as another; v1.0 remains a fallback only when that local v0.9 is absent.
     """
 
     full_manc = next(
@@ -176,8 +183,27 @@ def _primary_circuit_sources(
         (source for source in sources if source.key == "male-cns:v0.9"),
         None,
     )
+    if male_cns is None:
+        male_cns = next(
+            (source for source in sources if source.key == "male-cns:v1.0"),
+            None,
+        )
+    if male_cns is None:
+        male_cns = next(
+            (source for source in sources if _neuprint_dataset(source) == "male-cns:v1.0"),
+            None,
+        )
     if full_manc is not None and male_cns is not None:
-        return full_manc, male_cns
+        return full_manc, ConnectomeRef(
+            key=male_cns.key,
+            label=(
+                "Male CNS v0.9"
+                if male_cns.key == "male-cns:v0.9"
+                else "Male CNS v1.0"
+            ),
+            root=male_cns.root,
+            dataset=male_cns.dataset,
+        )
     return sources
 
 
@@ -216,6 +242,7 @@ class CircuitBuilderPage(QWidget):
     status_message = Signal(str)
     circuit_changed = Signal(object)
     managed_data_changed = Signal()
+    experiment_globals_applied = Signal(float, float)
 
     def __init__(self, overview: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -258,6 +285,10 @@ class CircuitBuilderPage(QWidget):
         top.addWidget(self.engine_combo)
 
         self.connectome_combo = QComboBox()
+        self.connectome_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.connectome_combo.setToolTip("Select the exact local source. Alt+S focuses this selector.")
+        self.source_focus_shortcut = QShortcut(QKeySequence("Alt+S"), self)
+        self.source_focus_shortcut.activated.connect(self.connectome_combo.setFocus)
         self.connectome_combo.setMinimumWidth(230)
         top.addWidget(QLabel("SWC source"))
         top.addWidget(self.connectome_combo, 1)
@@ -271,6 +302,17 @@ class CircuitBuilderPage(QWidget):
         quality_check.clicked.connect(self.review_recent_imports)
         top.addWidget(quality_check)
         controls_layout.addLayout(top)
+
+        graph_row = QHBoxLayout()
+        self.pair_graph_button = QPushButton("Use connectivity Parquet…")
+        self.pair_graph_button.setObjectName("UseConnectivityParquetButton")
+        self.pair_graph_button.clicked.connect(self.open_pair_graph_import)
+        graph_row.addWidget(self.pair_graph_button)
+        self.pair_graph_note = QLabel("Connectivity: native contact source; no aggregate pair file selected")
+        self.pair_graph_note.setObjectName("PairGraphSourceStatus")
+        self.pair_graph_note.setWordWrap(True)
+        graph_row.addWidget(self.pair_graph_note, 1)
+        controls_layout.addLayout(graph_row)
 
         query_row = QHBoxLayout()
         query_row.setSpacing(10)
@@ -509,8 +551,8 @@ class CircuitBuilderPage(QWidget):
         scope_form = QFormLayout()
         self.active_scope_combo = QComboBox()
         self.active_scope_combo.addItem("All morphology regions", "all")
-        self.active_scope_combo.addItem("Soma + AIS draft", "soma_ais")
-        self.active_scope_combo.addItem("Soma-only draft", "soma")
+        self.active_scope_combo.addItem("Soma + geometric AIS proxy", "soma_ais")
+        self.active_scope_combo.addItem("Soma only", "soma")
         self.active_scope_combo.currentIndexChanged.connect(self._hh_controls_edited)
         scope_form.addRow("Active-channel distribution", self.active_scope_combo)
         profile_layout.addLayout(scope_form)
@@ -579,8 +621,18 @@ class CircuitBuilderPage(QWidget):
         )
         for group_key, title, definitions in groups:
             group_layout = add_hh_section(group_key, title)
+            if group_key == "passive_properties":
+                note = QLabel(
+                    "Initial voltage and temperature are experiment-global. "
+                    "Apply cell-set defaults or Mass apply to send them to Experiment Builder; "
+                    "applying a neuron or SWC-segment design does not change them. "
+                    "Saved legacy regional values are not private simulator settings."
+                )
+                note.setObjectName("ExperimentGlobalSettingsHelp")
+                note.setWordWrap(True)
+                group_layout.addWidget(note)
             if group_key in {"soma_hh", "branch_hh"}:
-                note = QLabel("Disabled when the membrane profile replaces built-in HH Na/K.")
+                note = QLabel("HH Na/K densities are ignored when Replace built-in HH is checked. Leak values remain active.")
                 note.setObjectName("Muted")
                 note.setWordWrap(True)
                 group_layout.addWidget(note)
@@ -595,7 +647,11 @@ class CircuitBuilderPage(QWidget):
                 editor.setSuffix(f" {definition.unit}")
                 editor.valueChanged.connect(self._hh_controls_edited)
                 self.hh_editors[definition.key] = editor
-                form.addRow(definition.label, editor)
+                global_labels = {
+                    "v_init_mV": "Experiment-global initial voltage",
+                    "celsius_C": "Experiment-global temperature",
+                }
+                form.addRow(global_labels.get(definition.key, definition.label), editor)
             group_layout.addLayout(form)
 
         chemical_layout = add_hh_section(
@@ -623,6 +679,12 @@ class CircuitBuilderPage(QWidget):
         self.chemical_delay = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
         self.chemical_delay.setObjectName("ChemicalDefaultDelay")
         chemical_form.addRow("Fallback delay", self.chemical_delay)
+        self.chemical_kinetics_policy = QComboBox()
+        self.chemical_kinetics_policy.setObjectName("ChemicalKineticsPolicy")
+        self.chemical_kinetics_policy.addItem("Source values; use these only when absent", "source_or_default")
+        self.chemical_kinetics_policy.addItem("Override every contact with these values", "global_override")
+        self.chemical_kinetics_policy.setToolTip("Choose explicit precedence for rise/decay tau and reversal; imported source values are preserved unless Override is selected.")
+        chemical_form.addRow("Kinetics and reversal", self.chemical_kinetics_policy)
         self.chemical_tau1 = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
         self.chemical_tau1.setObjectName("ChemicalTau1")
         chemical_form.addRow("Rise tau", self.chemical_tau1)
@@ -657,6 +719,7 @@ class CircuitBuilderPage(QWidget):
         ):
             editor.valueChanged.connect(self._chemical_controls_changed)
         self.chemical_geom_delay.toggled.connect(self._chemical_controls_changed)
+        self.chemical_kinetics_policy.currentIndexChanged.connect(self._chemical_controls_changed)
         chemical_layout.addLayout(chemical_form)
         save_chemical_policy = QPushButton(
             "Set policy for all imported chemical contacts"
@@ -791,6 +854,8 @@ class CircuitBuilderPage(QWidget):
         self.query_edit.textEdited.connect(self._selection_controls_changed)
         self.limit_spin.valueChanged.connect(self._selection_controls_changed)
         self.connectome_combo.currentIndexChanged.connect(self._selection_controls_changed)
+        for combo in self.findChildren(QComboBox):
+            combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
         self._update_viewport_guidance()
@@ -839,9 +904,9 @@ class CircuitBuilderPage(QWidget):
             profile for profile in ENGINE_PROFILES if profile[0] == key
         )
         parity = {
-            "arbor": "General selected-cell classic-HH chemical/electrical execution is available, and the dedicated Escape-SIZ adapter uses app-owned Gap, RectGap, and HeteroRectGap equation ports. Other Drosophila MOD channels remain capability-gated.",
-            "neuron": "General multi-cell classic-HH execution supports chemical contacts and exact app-owned Gap, RectGap, and HeteroRectGap mechanisms. Other native Drosophila channels remain capability-gated.",
-            "bmtk": "The bounded BioNet lane runs morphology-backed classic-HH cells, selected chemical contacts, soma clamps, voltage, and spikes. Electrical edges, native mechanisms, non-soma/per-compartment mapping, MPI, PointNet, and DPointNet remain fail-closed.",
+            "arbor": "HH and the 11 locked native-channel equation ports support default, per-neuron and per-SWC-edge settings. Original rate-TABLE interpolation is preserved. Mapped soma/all/selected-edge and geometric AIS stimulation/recording are supported; chemical/electrical adapters retain separate gates.",
+            "neuron": "Selected-cell execution supports locked native channels, HH replacement and default/per-neuron/per-SWC-edge settings, including mapped region stimulation/recording and a geometric AIS proxy. Chemical contacts and app-owned Gap/RectGap/HeteroRectGap mechanisms retain their separate gates.",
+            "bmtk": "The bounded BioNet lane materializes HH/native channels and explicit SWC-edge settings through SONATA, with mapped soma/all/selected-edge and geometric AIS stimulation/recording. Chemical contacts use SONATA; exact imported Gap/RectGap/HeteroRectGap sites use a pinned Digifly serial extension on BioNetwork cells (not standard SONATA electrical portability). MPI, PointNet and DPointNet remain fail-closed.",
         }[key]
         self.engine_note.setText(
             f"{profile_summary}  {parity}  Local pair connectivity is inspected read-only and "
@@ -858,20 +923,20 @@ class CircuitBuilderPage(QWidget):
             profile = load_default_profile()
         except (OSError, ValueError):
             profile = None
-        discovered = _primary_circuit_sources(
-            discover_connectomes(
+        all_sources = discover_connectomes(
                 self.overview.workspace_edit.text(),
                 morphology_library_root=morphology_library_root(),
                 external_sources=profile_connectome_sources(profile),
             )
-        )
+        discovered = _primary_circuit_sources(all_sources)
         if (
             previous_source is not None
+            and _source_identity(previous_source) not in {_source_identity(source) for source in all_sources}
             and _source_identity(previous_source) not in {_source_identity(source) for source in discovered}
             and Path(previous_source.root).expanduser().is_dir()
         ):
             discovered = (*discovered, previous_source)
-        self._sources = discovered
+        self._sources = tuple(attach_registered_pair_graph(source, profile) for source in discovered)
         prior_guard = self._restoring_controls
         self._restoring_controls = True
         try:
@@ -937,6 +1002,7 @@ class CircuitBuilderPage(QWidget):
         else:
             self.status_message.emit("No local SWC morphology source was found under the configured workspace")
         current_source = self._selected_source()
+        self._update_pair_graph_note()
         if (
             previous_source is not None
             and (current_source is None or _source_identity(current_source) != _source_identity(previous_source))
@@ -1043,6 +1109,7 @@ class CircuitBuilderPage(QWidget):
         if self._restoring_controls:
             return
         self._clear_missing_neuprint_request()
+        self._update_pair_graph_note()
         if self.spec.neuron_ids or self.loaded_morphologies:
             self._clear_loaded_assets("Cell-set controls changed · click Load cell set")
             self.status_message.emit("Cell-set controls changed; reload morphologies before saving")
@@ -1073,6 +1140,44 @@ class CircuitBuilderPage(QWidget):
     def _selected_source(self) -> ConnectomeRef | None:
         index = self.connectome_combo.currentIndex()
         return self._sources[index] if 0 <= index < len(self._sources) else None
+
+    def _update_pair_graph_note(self) -> None:
+        source = self._selected_source()
+        if source is None or not source.pair_graph_path:
+            self.pair_graph_note.setText("Connectivity: native contact source; no aggregate pair file selected")
+            return
+        try:
+            manifest = json.loads((Path(source.pair_graph_index).parent / "manifest.json").read_text(encoding="utf-8"))
+            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; release unconfirmed")
+        except (OSError, ValueError, KeyError):
+            self.pair_graph_note.setText("Selected pair graph is unavailable; reselect its exact Parquet. No fallback source is used.")
+
+    def open_pair_graph_import(self) -> None:
+        source = self._selected_source()
+        if source is None or not (source.key.startswith("manc:") or source.dataset.startswith("manc")):
+            QMessageBox.information(self, "Select MANC first", "Choose the existing MANC SWC source before attaching this MANC pair file. The morphologies will not be replaced.")
+            return
+        reader = self.overview.python_edit.text() if hasattr(self.overview, "python_edit") else ""
+        try:
+            profile = load_default_profile()
+            if profile:
+                for binding in profile.bindings(ResourceKind.DATA_SOURCE):
+                    if binding.metadata.get("morphology_key") == source.key and binding.metadata.get("reader_python"):
+                        reader = str(binding.metadata["reader_python"])
+        except (OSError, ValueError):
+            pass
+        dialog = PairGraphImportDialog(source, reader, self)
+        dialog.exec()
+        if dialog.registered_source is None:
+            return
+        selected = dialog.registered_source
+        self._sources = tuple(selected if _source_identity(item) == _source_identity(source) else item for item in self._sources)
+        self.spec.connectome = selected
+        self._edge_catalog = ConnectomeEdgeCatalog(selected, DigiflyWorkspace(self.overview.workspace_edit.text()))
+        self._update_pair_graph_note()
+        self._refresh_pair_panel()
+        self.circuit_changed.emit(self.spec)
+        self.status_message.emit("Using the selected MANC Parquet for aggregate pair lookup; no experiment was started")
 
     def _catalog_for(self, source: ConnectomeRef) -> ConnectomeCatalog:
         cache_key = (source.key, source.root)
@@ -1178,7 +1283,7 @@ class CircuitBuilderPage(QWidget):
             failures: list[str] = []
             for record in result.records:
                 try:
-                    morphologies.append(load_swc(record))
+                    morphologies.append(load_swc(record, allow_forest_preview=True, allow_point_preview=True))
                 except Exception as exc:
                     failures.append(f"{record.neuron_id}: {exc}")
             if not morphologies:
@@ -1307,6 +1412,18 @@ class CircuitBuilderPage(QWidget):
                 suffixes.append(f"unmatched: {', '.join(result.unmatched)}")
             if failures:
                 suffixes.append(f"{len(failures)} failed SWC(s)")
+            forests = sum(sum(node.parent_id == -1 for node in item.nodes) > 1 for item in morphologies)
+            if forests:
+                suffixes.append(f"{forests} disconnected skeleton(s): preview only; not simulation-ready")
+            points = sum(not item.segments for item in morphologies)
+            if points:
+                suffixes.append(f"{points} point-only skeleton(s): no released branches; not simulation-ready")
+            conversions = sum(
+                (item.coordinate_transform or {}).get("scale_to_um", 1.0) != 1.0
+                for item in morphologies
+            )
+            if conversions:
+                suffixes.append(f"shared micrometer frame: {conversions} source-unit conversion(s)")
             suffix = f" · {' · '.join(suffixes)}" if suffixes else ""
             self.viewport_summary.setText(
                 f"{len(morphologies)} neuron(s) · {self.viewport.segment_count:,} "
@@ -1322,14 +1439,26 @@ class CircuitBuilderPage(QWidget):
             self.assemble_button.setEnabled(bool(self._sources))
 
     def _populate_table(self, morphologies: list[Morphology]) -> None:
-        self.neuron_table.setRowCount(len(morphologies))
-        for row, morphology in enumerate(morphologies):
-            record = morphology.record
-            values = (record.neuron_id, record.family, record.neuron_type, f"{len(morphology.segments):,}")
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setData(Qt.ItemDataRole.UserRole, record.neuron_id)
-                self.neuron_table.setItem(row, column, item)
+        # Keep existing cell objects alive on a same-size refresh. Replacing
+        # selected QTableWidgetItems both re-enters selection handlers midway
+        # through population and invalidates macOS accessibility references.
+        previous = self.neuron_table.blockSignals(True)
+        try:
+            self.neuron_table.clearSelection()
+            self.neuron_table.setRowCount(len(morphologies))
+            for row, morphology in enumerate(morphologies):
+                record = morphology.record
+                values = (record.neuron_id, record.family, record.neuron_type, f"{len(morphology.segments):,}")
+                for column, value in enumerate(values):
+                    item = self.neuron_table.item(row, column)
+                    if item is None:
+                        item = QTableWidgetItem(value)
+                        self.neuron_table.setItem(row, column, item)
+                    else:
+                        item.setText(value)
+                    item.setData(Qt.ItemDataRole.UserRole, record.neuron_id)
+        finally:
+            self.neuron_table.blockSignals(previous)
         self.neuron_table.resizeColumnsToContents()
 
     def _table_clicked(self, row: int, _column: int) -> None:
@@ -1457,6 +1586,10 @@ class CircuitBuilderPage(QWidget):
             Path(summary.source_path).name if summary.source_path else "loaded edge source"
         )
         scope = f" {summary.scope_note}" if summary.scope_note else ""
+        if summary.connection_kind == "weighted pair":
+            return (f"Aggregate connectivity: {neuron_a} → {neuron_b}: total_weight {summary.a_to_b_weight}; "
+                    f"{neuron_b} → {neuron_a}: total_weight {summary.b_to_a_weight}. "
+                    f"{summary.total_count} supplied directed-pair row(s), not located synapses. {source}.{scope}")
         if summary.total_count == 0:
             return (
                 f"{label}: no connections found between these neurons in {source}. "
@@ -1877,6 +2010,7 @@ class CircuitBuilderPage(QWidget):
             tau2_ms=self.chemical_tau2.value(),
             reversal_mV=self.chemical_reversal.value(),
             spike_threshold_mV=self.chemical_threshold.value(),
+            kinetics_policy=str(self.chemical_kinetics_policy.currentData()),
         )
 
     def _set_chemical_policy(self, policy: ChemicalSynapsePolicy) -> None:
@@ -1893,6 +2027,7 @@ class CircuitBuilderPage(QWidget):
             self.chemical_tau2.setValue(policy.tau2_ms)
             self.chemical_reversal.setValue(policy.reversal_mV)
             self.chemical_threshold.setValue(policy.spike_threshold_mV)
+            self.chemical_kinetics_policy.setCurrentIndex(self.chemical_kinetics_policy.findData(policy.kinetics_policy))
         finally:
             self._setting_mechanism_controls = prior_guard
         self._update_chemical_control_state()
@@ -2072,6 +2207,9 @@ class CircuitBuilderPage(QWidget):
             self._sources = (*self._sources, spec.connectome)
             self.connectome_combo.addItem(spec.connectome.label, spec.connectome.key)
             index = self.connectome_combo.count() - 1
+        else:
+            # A saved project selects its exact connectivity binding, not the latest profile graph.
+            self._sources = tuple(spec.connectome if candidate == index else source for candidate, source in enumerate(self._sources))
         self._restoring_controls = True
         try:
             self.spec = spec
@@ -2089,13 +2227,23 @@ class CircuitBuilderPage(QWidget):
         self.loaded_records.clear()
         self.loaded_morphologies.clear()
         self.viewport.clear()
-        self.neuron_table.setRowCount(0)
+        # The saved assets loader immediately fills these rows. Retain cells
+        # for same-size project reloads rather than destroy/recreate AX objects.
+        if not spec.neuron_ids or self.neuron_table.rowCount() != len(spec.neuron_ids):
+            self.neuron_table.setRowCount(0)
+        else:
+            previous = self.neuron_table.blockSignals(True)
+            try:
+                self.neuron_table.clearSelection()
+            finally:
+                self.neuron_table.blockSignals(previous)
         self.viewport_summary.setText("Saved cell set not loaded yet")
         self.selection_label.setText("No neuron selected")
         self.pair_panel.setVisible(False)
         self._update_viewport_guidance()
         self._update_override_summary()
         self._update_mechanism_capability()
+        self._update_pair_graph_note()
 
     def load_saved_assets(self) -> None:
         """Reload the exact saved neuron IDs without re-evaluating the original query."""
@@ -2108,7 +2256,7 @@ class CircuitBuilderPage(QWidget):
         missing = [neuron_id for neuron_id in self.spec.neuron_ids if neuron_id not in catalog.by_id]
         if missing:
             raise ValueError(f"Saved neuron IDs are unavailable in {source.label}: {', '.join(missing)}")
-        morphologies = [load_swc(catalog.by_id[neuron_id]) for neuron_id in self.spec.neuron_ids]
+        morphologies = [load_swc(catalog.by_id[neuron_id], allow_forest_preview=True, allow_point_preview=True) for neuron_id in self.spec.neuron_ids]
         for morphology in morphologies:
             neuron_id = morphology.record.neuron_id
             actual_hash = sha256_file(morphology.record.swc_path)
@@ -2125,9 +2273,17 @@ class CircuitBuilderPage(QWidget):
         self.viewport.set_morphologies(morphologies)
         self._set_mixed_selection_design(False)
         self._populate_table(morphologies)
+        warnings = []
+        forests = sum(sum(node.parent_id == -1 for node in item.nodes) > 1 for item in morphologies)
+        points = sum(not item.segments for item in morphologies)
+        if forests:
+            warnings.append(f"{forests} disconnected skeleton(s): preview only; not simulation-ready")
+        if points:
+            warnings.append(f"{points} point-only skeleton(s): no released branches; not simulation-ready")
+        suffix = " · " + " · ".join(warnings) if warnings else ""
         self.viewport_summary.setText(
             f"{len(morphologies)} saved neuron(s) · {self.viewport.segment_count:,} "
-            "editable compartment(s) (SWC segments)"
+            f"editable compartment(s) (SWC segments){suffix}"
         )
         self._update_viewport_guidance()
         self.status_message.emit(f"Restored exact saved cell set from {source.label}")
@@ -2155,11 +2311,14 @@ class CircuitBuilderPage(QWidget):
                 "Select a neuron before creating a neuron-level HH/channel override"
             )
             return
-        self.spec.apply_neuron_override(neuron_id, self._read_hh().to_dict())
+        self.spec.apply_neuron_override(neuron_id, self._read_regional_hh())
         self.spec.apply_neuron_mechanism_override(neuron_id, self._read_membrane())
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
-        self.status_message.emit(f"Stored HH + membrane-channel draft for neuron {neuron_id}")
+        self.status_message.emit(
+            f"Stored HH + membrane-channel draft for neuron {neuron_id}; "
+            "experiment-global voltage and temperature are unchanged"
+        )
 
     def apply_compartment_overrides(self) -> None:
         neuron_id = self.viewport.selected_neuron_id
@@ -2167,23 +2326,37 @@ class CircuitBuilderPage(QWidget):
         if neuron_id is None or not node_ids:
             self.status_message.emit("Select one or more SWC segments on an isolated neuron first")
             return
-        self.spec.apply_compartment_override(neuron_id, node_ids, self._read_hh().to_dict())
+        self.spec.apply_compartment_override(neuron_id, node_ids, self._read_regional_hh())
         self.spec.apply_compartment_mechanism_override(
             neuron_id, node_ids, self._read_membrane()
         )
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
         self.status_message.emit(
-            f"Applied HH + membrane channels to {len(node_ids)} SWC segment(s) on {neuron_id}"
+            f"Applied HH + membrane channels to {len(node_ids)} SWC segment(s) on {neuron_id}; "
+            "experiment-global voltage and temperature are unchanged"
         )
+
+    def _read_regional_hh(self) -> dict[str, Any]:
+        """Global integration settings are never advertised as regional overrides."""
+        values = self._read_hh().to_dict()
+        values.pop("v_init_mV", None)
+        values.pop("celsius_C", None)
+        return values
+
+    def _apply_experiment_globals(self) -> None:
+        hh = self._read_hh()
+        self.experiment_globals_applied.emit(hh.v_init_mV, hh.celsius_C)
 
     def apply_cell_set_defaults(self) -> None:
         self.spec.hh = self._read_hh()
         self.spec.membrane = self._read_membrane()
         self.circuit_changed.emit(self.spec)
+        self._apply_experiment_globals()
         self._update_override_summary()
         self.status_message.emit(
-            "Stored HH + membrane channels as defaults for the cell set and future loaded neurons"
+            "Stored HH + membrane channels as cell-set defaults; "
+            "sent global voltage and temperature to Experiment Builder"
         )
 
     def mass_apply_to_loaded_neurons(self) -> None:
@@ -2195,10 +2368,15 @@ class CircuitBuilderPage(QWidget):
             self._read_hh(),
             self._read_membrane(),
         )
+        for neuron_id in self.loaded_records:
+            self.spec.neuron_overrides[neuron_id].pop("v_init_mV", None)
+            self.spec.neuron_overrides[neuron_id].pop("celsius_C", None)
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
+        self._apply_experiment_globals()
         self.status_message.emit(
-            f"Mass applied HH + membrane channels to {count} loaded neuron(s)"
+            f"Mass applied HH + membrane channels to {count} loaded neuron(s); "
+            "sent global voltage and temperature to Experiment Builder"
         )
 
     def apply_chemical_policy(self) -> None:

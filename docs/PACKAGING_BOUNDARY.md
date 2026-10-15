@@ -10,7 +10,7 @@ legally separable from local connectome and morphology collections.
 | --- | --- |
 | Application code | UI, project model, validators, adapters, worker overlays |
 | Small application-owned resources | JSON schemas, mechanism source needed by an adapter, icons, documentation |
-| Package metadata | Version, commands, dependency declarations, private project license, build configuration |
+| Package metadata | Version, commands, dependency declarations, MIT project license, third-party notices, build configuration |
 | Tests in source distributions | Unit and integration tests with generated or deliberately tiny fixtures |
 
 Application-owned mechanism source may be included when it is small, has clear
@@ -99,7 +99,10 @@ published, an automated artifact audit must reject:
 - undeclared executable binaries or dynamic libraries.
 
 Canonical Digifly releases must also contain a byte-identical copy of the
-repository's private project license. A license bundled by a dependency, a
+repository's MIT project license. A license bundled by a dependency, a
 title-only stub, or a modified copy does not satisfy this requirement.
+The licensing scope notice must accompany it; third-party distribution notices
+require a separate component-specific review. Original-code MIT licensing does
+not relicense dependencies or make older application bundles release-ready.
 
 That audit is a required packaging milestone, not an optional cleanup step.

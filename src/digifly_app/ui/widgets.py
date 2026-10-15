@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
+    QAbstractSpinBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QDialog,
+    QDialogButtonBox,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QToolButton,
@@ -17,6 +23,137 @@ from PySide6.QtWidgets import (
 
 from digifly_app.core.models import CheckState, EngineProbe, PreflightCheck
 from .style import STATE_COLORS
+
+
+class _AccessibleChoice(QObject):
+    """Explicit actionable arrow for non-editable native combo accessibility.
+
+    The original combo remains the authoritative value/model and keyboard
+    control. The chooser changes its existing index, so ordinary validation,
+    change signals and project serialization are not bypassed.
+    """
+
+    def __init__(self, combo: QComboBox, holder: QWidget):
+        super().__init__(combo)
+        self.combo = combo
+        self.dialog: QDialog | None = None
+        self.options: QListWidget | None = None
+        # A sibling is essential: QAccessibleComboBox hides additional children
+        # inside the combo itself on macOS, even though they are painted.
+        self.button = QPushButton(holder)
+        self.button.setObjectName("AccessibleChoiceButton")
+        self.button.setText("Choose…")
+        self.button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.button.setMinimumWidth(74)
+        self.button.clicked.connect(self.open_menu)
+        combo.currentTextChanged.connect(self._label)
+        combo.installEventFilter(self)
+        self._label(combo.currentText())
+        self.button.setEnabled(combo.isEnabled())
+        self.button.show()
+
+    def _label(self, text: str):
+        label = f"Choose {text} options"
+        self.button.setAccessibleName(label)
+        self.button.setToolTip(label)
+
+    def eventFilter(self, watched, event):
+        if watched is self.combo and event.type() == QEvent.Type.EnabledChange:
+            self.button.setEnabled(self.combo.isEnabled())
+            if not self.combo.isEnabled() and self.dialog is not None:
+                self.dialog.reject()
+        return False
+
+    def open_menu(self):
+        if not self.combo.isEnabled():
+            return
+        if self.dialog is not None:
+            self.dialog.close()
+            self.dialog.deleteLater()
+        # A normal dialog remains visible to macOS accessibility; a transient
+        # QMenu popup can disappear before an assistive click is dispatched.
+        dialog = QDialog(self.combo.window())
+        dialog.setObjectName("AccessibleChoiceDialog")
+        dialog.setWindowTitle(f"Choose {self.combo.currentText()}")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        options = QListWidget(dialog)
+        options.setObjectName("AccessibleChoiceOptions")
+        options.setAccessibleName("Available choices")
+        for index in range(self.combo.count()):
+            item = QListWidgetItem(self.combo.itemText(index), options)
+            flags = self.combo.model().flags(self.combo.model().index(index, self.combo.modelColumn()))
+            if not flags & Qt.ItemFlag.ItemIsEnabled:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+        options.setCurrentRow(self.combo.currentIndex())
+        layout.addWidget(options)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.accepted.connect(self.apply_choice)
+        buttons.rejected.connect(dialog.reject)
+        options.itemActivated.connect(lambda item: self.apply_choice())
+        layout.addWidget(buttons)
+        dialog.resize(max(360, self.combo.width()), 280)
+        self.dialog, self.options = dialog, options
+        dialog.open()
+        options.setFocus()
+
+    def apply_choice(self):
+        if not self.combo.isEnabled() or self.options is None or self.dialog is None:
+            return
+        index = self.options.currentRow()
+        if not 0 <= index < self.combo.count():
+            return
+        flags = self.combo.model().flags(self.combo.model().index(index, self.combo.modelColumn()))
+        if not flags & Qt.ItemFlag.ItemIsEnabled:
+            return
+        self.combo.setCurrentIndex(index)
+        self.dialog.accept()
+
+
+class _ScrollSafeEditor(QObject):
+    """Scrolling a settings page must not silently change a model parameter."""
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Wheel:
+            # Ignore at the editor so Qt can route the wheel to the containing
+            # scroll area. Explicit typing, arrow keys and step buttons remain.
+            event.ignore()
+            return True
+        return False
+
+
+def add_accessible_choice_buttons(root: QWidget) -> None:
+    for editor in root.findChildren(QAbstractSpinBox) + root.findChildren(QComboBox):
+        if editor.property("digiflyScrollSafeInstalled"):
+            continue
+        guard = _ScrollSafeEditor(editor)
+        editor.installEventFilter(guard)
+        editor.setProperty("digiflyScrollSafeInstalled", True)
+        editor._digifly_scroll_safe = guard
+    for combo in root.findChildren(QComboBox):
+        if combo.isEditable() or combo.property("digiflyAccessibleChoiceInstalled"):
+            continue
+        parent = combo.parentWidget()
+        if parent is None or parent.layout() is None:
+            continue
+        holder = QWidget(parent)
+        holder.setObjectName("AccessibleChoiceField")
+        holder.setSizePolicy(combo.sizePolicy())
+        item = parent.layout().replaceWidget(combo, holder)
+        if item is None:
+            holder.deleteLater()
+            continue
+        del item  # Release only the obsolete layout item, not its combo widget.
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(combo, 1)
+        choice = _AccessibleChoice(combo, holder)
+        row.addWidget(choice.button)
+        combo.setProperty("digiflyAccessibleChoiceInstalled", True)
+        # Keep the Python virtual event filter alive alongside Qt ownership.
+        combo._digifly_accessible_choice = choice
 
 
 class Card(QFrame):

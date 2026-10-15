@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from array import array
 from dataclasses import dataclass
-from math import ceil, radians, sqrt, tan
+from math import ceil, isfinite, radians, sqrt, tan
 from typing import Iterable, Mapping
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
@@ -285,6 +285,8 @@ class CircuitViewport(QOpenGLWidget):
         self._selection_data = b""
         self._highlight_data = b""
         self._activity_data = b""
+        self._voltage_ranges: list[tuple[int, int, QVector4D]] = []
+        self._measured_voltage_mode = False
         self._geometry_dirty = True
         self._point_geometry_dirty = True
         self._preview_dirty = True
@@ -443,9 +445,14 @@ class CircuitViewport(QOpenGLWidget):
         build_preview = total_segments > INTERACTION_PREVIEW_THRESHOLD
         for morphology in items:
             neuron_id = morphology.record.neuron_id
-            spatial_root, vertex_index = _build_spatial_tree(
-                morphology.segments, vertices, vertex_index
-            )
+            if morphology.segments:
+                spatial_root, vertex_index = _build_spatial_tree(
+                    morphology.segments, vertices, vertex_index
+                )
+            else:
+                # A published point-only skeleton has soma geometry but no
+                # drawable edges. Keep an empty range, never invent a branch.
+                spatial_root = _SpatialNode(morphology.bounds, vertex_index, 0)
             self._spatial_roots[neuron_id] = spatial_root
             if build_preview:
                 preview_start = preview_vertex_index
@@ -726,6 +733,8 @@ class CircuitViewport(QOpenGLWidget):
     ) -> None:
         """Set the Results-only inferred activity overlay without changing targets."""
 
+        self._voltage_ranges = []
+        self._measured_voltage_mode = False
         vertices = array("f")
         for raw_neuron_id, raw_node_ids in dict(segment_ids or {}).items():
             morphology = self.morphologies.get(str(raw_neuron_id))
@@ -745,8 +754,44 @@ class CircuitViewport(QOpenGLWidget):
         self._activity_dirty = True
         self.update()
 
+    def set_measured_voltages(self, voltages: Mapping[str, Mapping[int, float]]) -> None:
+        """Color only measured edges; fixed −90..50mV scale, gray unrecorded edges.
+
+        The value is the recorded edge-center voltage, not a measurement along
+        the entire edge. Quantization affects display colors only, not data.
+        """
+        bins: dict[int, array] = {}
+        for neuron, values in voltages.items():
+            morphology = self.morphologies.get(str(neuron))
+            if morphology is None:
+                raise ValueError("Voltage overlay refers to an unknown neuron")
+            segments = {s.child_id: s for s in morphology.segments}
+            for node, voltage in values.items():
+                if node not in segments or not isfinite(voltage):
+                    raise ValueError("Voltage overlay refers to an invalid edge/value")
+                color_bin = round(255 * min(1.0, max(0.0, (voltage+90.0)/140.0)))
+                vertices = bins.setdefault(color_bin, array("f"))
+                vertices.extend(segments[node].parent)
+                vertices.extend(segments[node].child)
+        vertices = array("f")
+        ranges = []
+        for color_bin, data in sorted(bins.items()):
+            fraction = color_bin / 255.0
+            # Blue → cyan → yellow → red. Legend endpoints are fixed.
+            color = QColor.fromHsvF((1.0-fraction)*2.0/3.0, .85, .95)
+            ranges.append((len(vertices)//3, len(data)//3,
+                           QVector4D(color.redF(), color.greenF(), color.blueF(), 1.0)))
+            vertices.extend(data)
+        self._activity_data = vertices.tobytes()
+        self._voltage_ranges = ranges
+        self._measured_voltage_mode = True
+        self._activity_dirty = True
+        self.update()
+
     def clear_activity_flow(self, *, update: bool = True) -> None:
         self._activity_data = b""
+        self._voltage_ranges = []
+        self._measured_voltage_mode = False
         self._activity_dirty = True
         if update:
             self.update()
@@ -986,6 +1031,8 @@ class CircuitViewport(QOpenGLWidget):
                     else (1.0 if use_preview else 1.35)
                 )
             )
+            if self._measured_voltage_mode:
+                program.setUniformValue("tint", _rgba("#687484"))
             for start, count in self._render_ranges_for(
                 neuron_id, matrix, use_preview=use_preview
             ):
@@ -1050,9 +1097,14 @@ class CircuitViewport(QOpenGLWidget):
             self._activity_buffer.bind()
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
-            program.setUniformValue("tint", self._activity_rgba)
             functions.glLineWidth(self._export_scale * 6.0)
-            functions.glDrawArrays(GL_LINES, 0, len(self._activity_data) // 12)
+            if self._measured_voltage_mode:
+                for start, count, color in self._voltage_ranges:
+                    program.setUniformValue("tint", color)
+                    functions.glDrawArrays(GL_LINES, start, count)
+            else:
+                program.setUniformValue("tint", self._activity_rgba)
+                functions.glDrawArrays(GL_LINES, 0, len(self._activity_data) // 12)
             program.disableAttributeArray(0)
             self._activity_buffer.release()
             functions.glEnable(GL_DEPTH_TEST)

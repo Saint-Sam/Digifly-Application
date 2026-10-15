@@ -4,11 +4,40 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from urllib.parse import urlsplit
 
 
 NEUPRINT_CREDENTIAL_ENV = "NEUPRINT_APPLICATION_CREDENTIALS"
 NEUPRINT_KEYRING_SERVICE = "org.digifly.workstation.neuprint"
+WORKSPACE_NEUPRINT_TOKEN_NAME = "Neuprint Token.txt"
+
+
+def workspace_token_path(workspace_root: Path | None) -> Path | None:
+    """Resolve only the selected workspace's established Phase 1 credential."""
+    return (Path(workspace_root) / "Phase 1" / WORKSPACE_NEUPRINT_TOKEN_NAME
+            if workspace_root is not None else None)
+
+
+def token_from_workspace(workspace_root: Path | None, server: str) -> str:
+    """Read an existing user token in memory, never copy or persist it.
+
+    Automatic workspace credentials are restricted to the official origin.
+    A custom server must use a separately supplied credential.
+    """
+    if server.strip().rstrip("/").casefold() != "https://neuprint.janelia.org":
+        raise ValueError("The workspace token is only used with https://neuprint.janelia.org")
+    path = workspace_token_path(workspace_root)
+    if path is None:
+        raise ValueError("Select a Digifly workspace to use its Phase 1 token file")
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("Workspace neuPrint token file exceeds the credential size limit")
+        return normalize_neuprint_token(raw)
+    except (OSError, UnicodeError):
+        raise ValueError("Could not read the selected workspace's Phase 1/Neuprint Token.txt") from None
 
 
 class CredentialStoreError(RuntimeError):

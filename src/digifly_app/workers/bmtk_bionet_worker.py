@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""App-owned BMTK/BioNet classic-HH execution worker.
+"""App-owned BMTK/BioNet HH and source-bound membrane execution worker.
 
 The public entry point consumes the same schema-1 request document as the
 generic Arbor/NEURON worker.  BMTK and NEURON imports are deliberately deferred
@@ -203,8 +203,6 @@ def _validate_contacts(
         raise ValueError("BioNet requires an explicit selected-subgraph edge manifest")
     if tuple(str(value) for value in edge_manifest.get("neuron_ids") or ()) != neuron_ids:
         raise ValueError("The edge-manifest neuron order does not match the circuit")
-    if edge_manifest.get("electrical_edges"):
-        raise ValueError("BMTK/BioNet gap-junction execution is not supported")
 
     selected = set(neuron_ids)
     contact_ids: set[str] = set()
@@ -228,6 +226,28 @@ def _validate_contacts(
         point = list(contact.get("post_coordinate_um") or ())
         if len(point) != 3 or not all(math.isfinite(float(value)) for value in point):
             raise ValueError(f"Chemical contact {contact_id} lacks a finite post coordinate")
+
+    for edge in edge_manifest.get("electrical_edges") or ():
+        a, b = str(edge.get("neuron_a")), str(edge.get("neuron_b"))
+        contacts = list(edge.get("contacts") or ())
+        if a == b or {a, b} - selected or not contacts or int(edge.get("contact_count", -1)) != len(contacts):
+            raise ValueError("Electrical contact pair/count is invalid")
+        for contact in contacts:
+            identity = str(contact.get("contact_id") or "")
+            if not identity or identity in contact_ids:
+                raise ValueError("Electrical contact IDs must be present and unique")
+            contact_ids.add(identity)
+            if {str(contact.get("pre_id")), str(contact.get("post_id"))} != {a,b}:
+                raise ValueError("Electrical contact endpoints differ from their pair")
+            if _finite(contact.get("effective_g_uS"), label="electrical conductance") < 0:
+                raise ValueError("Electrical conductance cannot be negative")
+            for end in ("pre", "post"):
+                if int(contact.get(f"{end}_source_node_id", 0)) <= 0:
+                    raise ValueError("Electrical contact lacks a source-edge identity")
+                xyz = list(contact.get(f"{end}_coordinate_um") or ())
+                if len(xyz) != 3 or not all(math.isfinite(float(v)) for v in xyz):
+                    raise ValueError("Electrical contact lacks finite coordinates")
+            _common._validate_gap_contact_placement(contact, dict(edge_manifest.get("gap_junction_policy") or {}))
 
     selected_hash = _json_sha256(
         {
@@ -274,35 +294,47 @@ def _validate_capabilities(
     gap_policy = dict(circuit.get("gap_junction_policy") or {})
     if dict(edge_manifest.get("gap_junction_policy") or {}) != gap_policy:
         raise ValueError("The edge-manifest gap policy differs from the circuit")
-    if str(gap_policy.get("mode") or "none") != "none":
-        raise ValueError("BMTK/BioNet requires gap-junction policy mode 'none'")
+    if gap_policy.get("mode") not in {"none", "ohmic", "rectifying", "heterotypic_rectifying"}:
+        raise ValueError("Unsupported BioNet gap-junction policy")
+    names = {"ohmic":"Gap", "rectifying":"RectGap", "heterotypic_rectifying":"HeteroRectGap"}
+    if gap_policy["mode"] != "none":
+        name = names[gap_policy["mode"]]
+        if (gap_policy.get("mechanism_name") != name
+                or gap_policy.get("source_sha256") != _common.NEURON_GAP_SOURCE_HASHES[name]):
+            raise ValueError("BioNet gap-junction source identity is invalid")
+        if gap_policy.get("placement_policy") not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
+            raise ValueError("BioNet electrical contacts require a supported explicit site policy")
+    if edge_manifest.get("electrical_edges") and gap_policy.get("mode") == "none":
+        raise ValueError("Electrical contacts have no active gap-junction policy")
+    if gap_policy.get("preferred_direction", "a_to_b") not in {"a_to_b", "b_to_a"}:
+        raise ValueError("Unsupported electrical preferred direction")
+    for field in ("g_closed_frac", "vhalf_mV", "vslope_mV", "empirical_residual_frac", "tau_open_ms", "tau_close_ms"):
+        _finite(gap_policy.get(field), label=f"gap-junction {field}")
+    if (not 0 <= float(gap_policy["g_closed_frac"]) <= 1
+            or not 0 <= float(gap_policy["empirical_residual_frac"]) <= 1
+            or any(float(gap_policy[f]) <= 0 for f in ("vslope_mV", "tau_open_ms", "tau_close_ms"))):
+        raise ValueError("Invalid gap-junction kinetics")
 
-    membrane_payloads = [dict(circuit.get("membrane") or {})]
+    membrane_payloads = _common._native_payloads(circuit)
     membrane_payloads.extend(
         dict(value or {})
         for value in dict(circuit.get("neuron_mechanism_overrides") or {}).values()
     )
-    if any(value.get("replace_builtin_hh", False) for value in membrane_payloads):
-        raise ValueError("BioNet classic-HH cannot replace the built-in HH mechanism")
     active_channels = {
         channel
         for membrane in membrane_payloads
         for channel in _common._active_native_channels(membrane)
     }
-    if active_channels:
-        raise ValueError(
-            "Native membrane mechanisms are outside the BioNet classic-HH lane: "
-            + ", ".join(sorted(active_channels))
-        )
-    if circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides"):
-        raise ValueError("Per-compartment biophysics is unsupported by the BioNet lane")
+    for membrane in membrane_payloads:
+        for key in _common._active_native_channels(membrane):
+            _common._validated_native_assignment(key, dict(membrane["channels"][key]))
 
     override_ids = set(dict(circuit.get("neuron_overrides") or {}))
     if override_ids - set(neuron_ids):
         raise ValueError("A per-neuron HH override targets a neuron outside the circuit")
     for neuron_id in neuron_ids:
         hh = _common._merged_hh(circuit, neuron_id)
-        if str(hh.get("active_scope") or "all") not in {"all", "soma"}:
+        if str(hh.get("active_scope") or "all") not in {"all", "soma", "soma_ais"}:
             raise ValueError("BioNet supports only all-neuron or soma-only classic HH")
         for key, value in hh.items():
             if key != "active_scope":
@@ -312,11 +344,12 @@ def _validate_capabilities(
     if len(stimuli) != 1:
         raise ValueError("BioNet requires exactly one enabled stimulus")
     stimulus = stimuli[0]
-    if stimulus.get("target_region") != "soma" or stimulus.get("waveform") not in {
+    if stimulus.get("target_region") not in {"soma", "all", "ais", "selected_compartments"} or stimulus.get("waveform") not in {
         "step",
         "pulse_train",
+        "ramp",
     }:
-        raise ValueError("BioNet supports soma step and pulse-train stimulation only")
+        raise ValueError("BioNet requires mapped step, pulse-train or ramp stimulation")
     target_ids = {str(value) for value in stimulus.get("target_neuron_ids") or neuron_ids}
     if target_ids - set(neuron_ids):
         raise ValueError("A stimulus target is outside the selected circuit")
@@ -332,15 +365,14 @@ def _validate_capabilities(
     if any(not name for name in names) or len({name.casefold() for name in names}) != len(names):
         raise ValueError("Enabled BioNet condition names must be non-empty and unique")
     for condition in conditions:
-        if condition.get("disabled_neuron_ids") or condition.get("mechanism_scales"):
-            raise ValueError("Neuron disabling and mechanism scaling are unsupported by BioNet")
+        _common._validate_condition_manipulations(circuit, condition)
         scale = _finite(condition.get("stimulus_scale", 1.0), label="condition stimulus scale")
         if scale < 0.0:
             raise ValueError("Condition stimulus scales cannot be negative")
 
     recording = dict(experiment.get("recording") or {})
-    if recording.get("target_region") != "soma" or not recording.get("record_voltage", False):
-        raise ValueError("BioNet requires soma voltage recording")
+    if recording.get("target_region") not in {"soma", "all", "ais", "selected_compartments"} or not (recording.get("record_voltage", False) or recording.get("detect_spikes", False)):
+        raise ValueError("BioNet requires voltage recording or spike detection in a mapped region")
     record_ids = {str(value) for value in recording.get("target_neuron_ids") or neuron_ids}
     if record_ids - set(neuron_ids):
         raise ValueError("A recording target is outside the selected circuit")
@@ -353,8 +385,8 @@ def _validate_capabilities(
         ratio, round(ratio), rel_tol=1e-9, abs_tol=1e-9
     ):
         raise ValueError("BioNet recording dt must be an integer multiple of integration dt")
-    if int(experiment.get("workers", 1)) != 1:
-        raise ValueError("This BioNet lane requires exactly one worker")
+    if not 1 <= int(experiment.get("workers",1)) <= 256:
+        raise ValueError("Worker count must be between 1 and 256")
     if int(experiment.get("repetitions", 0)) < 1:
         raise ValueError("BioNet requires at least one repetition")
     duration = _finite(experiment.get("duration_ms"), label="duration")
@@ -707,7 +739,7 @@ def _write_section_map(path: Path, plan: Mapping[str, Any]) -> None:
 
 
 def _prepare_morphologies(
-    request: Mapping[str, Any], output_dir: Path
+    request: Mapping[str, Any], output_dir: Path, edge_manifest: Mapping[str, Any] | None = None
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]], dict[str, Any]]:
     circuit = dict(request["circuit"])
     neuron_ids = tuple(str(value) for value in circuit["neuron_ids"])
@@ -735,10 +767,20 @@ def _prepare_morphologies(
             cell_dir,
             expected_source_sha256=str(source_record["sha256"]),
             source_label=f"Source SWC for {neuron_id}",
+            coordinate_transform=source_record.get("coordinate_transform"),
         )
         rows = _common._swc_rows(normalized_path)
         prefer_rostral = str(source_record.get("family") or "").upper().startswith("DN")
-        plan = _section_plan(rows, prefer_rostral_soma=prefer_rostral)
+        source_to_run = _common._source_to_run_node_map(node_map_path)
+        regional_data = None
+        if _common._regional_execution(circuit, dict(request["experiment"])):
+            regional_data = _common._regional_cell_data(circuit, neuron_id, source_to_run)
+            regional_data["electrical_contact_run_node_ids"] = _common._electrical_contact_run_nodes(edge_manifest or {}, neuron_id, source_to_run)
+            regional_data["prefer_rostral_soma"] = prefer_rostral
+            plan = _common._regional_plan(rows, regional_data)
+            _common._atomic_json(cell_dir / "regional_map.json", plan)
+        else:
+            plan = _section_plan(rows, prefer_rostral_soma=prefer_rostral)
         total_nseg += int(plan["estimated_nseg"])
         if total_nseg > MAX_TOTAL_SEGMENTS:
             raise RuntimeError(
@@ -758,6 +800,8 @@ def _prepare_morphologies(
                 "neuron_id": neuron_id,
                 "prefer_rostral_soma": prefer_rostral,
                 "hh": _common._merged_hh(circuit, neuron_id),
+                "membrane": dict(dict(circuit.get("neuron_mechanism_overrides") or {}).get(neuron_id, circuit.get("membrane") or {})),
+                "regional_data": regional_data,
             },
         )
         cells[neuron_id] = {
@@ -773,9 +817,12 @@ def _prepare_morphologies(
             "dynamics_params": dynamics_name,
             "neuron_type": str(source_record.get("neuron_type") or "Unknown"),
             "family": str(source_record.get("family") or ""),
+            "regional_data": regional_data,
             "source_sha256": str(source_record["sha256"]),
         }
         relative_dir = Path("morphologies") / safe_key
+        if regional_data:
+            artifacts.append({"kind": "document", "path": str(relative_dir / "regional_map.json"), "label": f"SWC edge/CV biophysics and recording map · {neuron_id}"})
         artifacts.extend(
             (
                 {
@@ -796,9 +843,11 @@ def _prepare_morphologies(
             )
         )
         metadata[neuron_id] = {
+            "safe_key": safe_key,
             "bmtk_node_id": bmtk_node_id,
             "source_swc_sha256": str(source_record["sha256"]),
             "simulation_swc_sha256": normalized_sha,
+            "coordinate_transform": source_record.get("coordinate_transform"),
             "target_run_node_id": int(plan["target_node_id"]),
             "section_count": len(plan["sections"]),
             "estimated_nseg": int(plan["estimated_nseg"]),
@@ -851,7 +900,52 @@ def _resolve_edge_manifest(
         contact["post_run_node_id"] = int(run_node_id)
         contact["bionet_section_id"] = int(site["section_id"])
         contact["bionet_section_pos"] = float(site["section_pos"])
+    for edge in resolved.get("electrical_edges") or ():
+        for contact in edge["contacts"]:
+            for end in ("pre", "post"):
+                cell = cells[str(contact[f"{end}_id"])]
+                run_node = cell["source_to_run"].get(int(contact[f"{end}_source_node_id"]))
+                if f"{end}_source_edge_fraction" in contact:
+                    section_id,x = _common._regional_contact_site(cell["section_plan"],run_node,float(contact[f"{end}_source_edge_fraction"]))
+                    site = {"section_id":section_id, "section_pos":x}
+                else:
+                    site = cell["section_plan"]["node_sites"].get(run_node)
+                if site is None:
+                    raise ValueError("Electrical contact cannot map to a BioNet section")
+                contact[f"{end}_run_node_id"] = int(run_node)
+                contact[f"{end}_bionet_node_id"] = int(cell["bmtk_node_id"])
+                contact[f"{end}_bionet_section_id"] = int(site["section_id"])
+                contact[f"{end}_bionet_section_pos"] = float(site["section_pos"])
     return resolved
+
+
+def _condition_bionet_cells(
+    cells: Mapping[str, Mapping[str, Any]], condition: Mapping[str, Any],
+    output_dir: Path, condition_key: str,
+) -> dict[str, dict[str, Any]]:
+    """Own dynamics and contiguous SONATA node IDs for the ablated/scaled condition."""
+    disabled = {str(value) for value in condition.get("disabled_neuron_ids") or ()}
+    model_root = output_dir / "sonata" / "components" / "biophysical_models"
+    condition_model_root = model_root / condition_key
+    condition_model_root.mkdir()
+    result = {}
+    for neuron_id, original in cells.items():
+        if neuron_id in disabled:
+            continue
+        cell = dict(original)
+        cell["bmtk_node_id"] = len(result)
+        dynamics = _load_object(model_root / str(original["dynamics_params"]), label="source-bound cell dynamics")
+        dynamics = _common._scale_cell_biophysics(dynamics, dict(condition.get("mechanism_scales") or {}))
+        if dynamics.get("regional_data"):
+            regional = _common._scale_cell_biophysics(dynamics["regional_data"], dict(condition.get("mechanism_scales") or {}))
+            dynamics["regional_data"] = regional
+            cell["regional_data"] = regional
+            cell["section_plan"] = _common._regional_plan(_common._swc_rows(Path(cell["normalized_path"])), regional)
+        model_name = str(Path(condition_key) / (str(cell["safe_key"]) + ".json"))
+        _common._atomic_json(model_root / model_name, dynamics)
+        cell["dynamics_params"] = model_name
+        result[neuron_id] = cell
+    return result
 
 
 def _write_synapse_models(
@@ -986,10 +1080,12 @@ def _simulation_config(
     neuron_ids = tuple(cells)
     stimulus_ids = tuple(
         str(value) for value in stimulus.get("target_neuron_ids") or neuron_ids
+        if str(value) in cells
     )
     recording = dict(experiment["recording"])
     recording_ids = tuple(
         str(value) for value in recording.get("target_neuron_ids") or neuron_ids
+        if str(value) in cells
     )
     node_ids = {neuron_id: int(cells[neuron_id]["bmtk_node_id"]) for neuron_id in neuron_ids}
     windows = _common._pulse_windows(stimulus)
@@ -1006,7 +1102,7 @@ def _simulation_config(
             )
         ),
     )
-    return {
+    payload = {
         "target_simulator": "BioNet",
         "digifly": {
             "schema_version": 1,
@@ -1022,7 +1118,10 @@ def _simulation_config(
             "tstart": 0.0,
             "tstop": float(experiment["duration_ms"]),
             "dt": float(experiment["integration_dt_ms"]),
-            "dL": TARGET_SEGMENT_UM,
+            # Owned regional templates already materialize the shared nseg
+            # map. BioCell otherwise rewrites it AFTER density decoration,
+            # before constructing report/clamp segment indices.
+            "dL": None if any(c.get("regional_data") for c in cells.values()) else TARGET_SEGMENT_UM,
             "spike_threshold": float(chemical_spike_threshold_mV),
             "nsteps_block": min(10_000, steps),
         },
@@ -1062,7 +1161,7 @@ def _simulation_config(
                 "variable_name": "v",
                 "sections": "soma",
                 "file_name": str((native_output / "soma_voltage.h5").resolve()),
-                "dt": float(recording["sample_dt_ms"]),
+                "dt": float(experiment["integration_dt_ms"]),
             }
         },
         "output": {
@@ -1073,12 +1172,51 @@ def _simulation_config(
             "overwrite_output_dir": True,
         },
     }
+    if any(c.get("regional_data") for c in cells.values()):
+        payload["reports"]["soma_voltage"]["sections"] = "all"
+        payload["inputs"] = {}
+        for neuron_id in stimulus_ids:
+            cell = cells[neuron_id]
+            specs = _common._regional_sites(cell["section_plan"], stimulus["target_region"], cell["regional_data"])
+            node_set = f"stimulus_{cell['bmtk_node_id']}"
+            payload["node_sets"][node_set] = {"population":POPULATION, "node_id":[node_ids[neuron_id]]}
+            for spec in specs:
+                payload["inputs"][f"{node_set}_edge_{spec['node_id']}"] = {
+                    "input_type":"current_clamp", "module":"IClamp", "node_set":node_set,
+                    "amp":[amplitude/len(specs) for _ in windows], "delay":[float(t) for t,_ in windows],
+                    "duration":[float(t) for _,t in windows], "section_name":"all",
+                    "section_index":spec["section_id"], "section_dist":.5}
+    if stimulus.get("waveform") == "ramp":
+        ramp_sites = []
+        for neuron_id in stimulus_ids:
+            cell = cells[neuron_id]
+            specs = _common._regional_sites(cell["section_plan"], stimulus["target_region"], cell["regional_data"]) if cell.get("regional_data") else [{"section_id":0}]
+            for spec in specs:
+                ramp_sites.append({"node_id":node_ids[neuron_id], "neuron_id":neuron_id,
+                    "section_name":"all" if cell.get("regional_data") else "soma",
+                    "section_id":int(spec["section_id"]), "section_pos":.5,
+                    "amplitude_nA":amplitude/len(specs)})
+        payload["digifly"]["ramp_stimulus"] = {"stimulus":dict(stimulus), "sites":ramp_sites,
+            "policy":"Continuous linear 0-to-peak current over declared interval, then instantaneous cutoff; total current divided over target edges"}
+        payload["inputs"] = {}
+    if not stimulus_ids:
+        payload["inputs"] = {}
+    if not recording_ids:
+        payload["reports"] = {}
+    return payload
 
 
 class _ClassicHHCell:
     """Minimal Python NEURON morphology object consumed by BioNet's BioCell."""
 
     def __init__(self, h: Any, swc_path: Path, params: Mapping[str, Any]):
+        if params.get("regional_data"):
+            built = _common._neuron_regional_cell(h, swc_path, str(params["neuron_id"]), params["regional_data"], MAX_TOTAL_SEGMENTS)
+            self.all = list(built["sections"])
+            self.digifly_regional_plan = built["regional_plan"]
+            for group in ("soma", "axon", "dend", "apic"):
+                setattr(self, group, [self.all[s["section_id"]] for s in built["regional_plan"]["sections"] if s["section_group"] == group])
+            return
         rows = _common._swc_rows(swc_path)
         by_id = {int(row[0]): row for row in rows}
         plan = _section_plan(
@@ -1155,17 +1293,10 @@ class _ClassicHHCell:
             target = 1 + 2 * int(float(section.L) / (2.0 * TARGET_SEGMENT_UM))
             section.nseg = max(1, target)
             total_nseg += int(section.nseg)
-            section.insert("hh")
-            section.ena = float(hh["ena_mV"])
-            section.ek = float(hh["ek_mV"])
-            values = _common._region_hh(
-                hh, soma=str(section_plan["section_group"]) == "soma"
+            _common._decorate_neuron_section(
+                section, hh, dict(params.get("membrane") or {}),
+                soma=str(section_plan["section_group"]) == "soma",
             )
-            for segment in section:
-                segment.hh.gnabar = values["gnabar"]
-                segment.hh.gkbar = values["gkbar"]
-                segment.hh.gl = values["gl"]
-                segment.hh.el = values["el"]
         if total_nseg > MAX_TOTAL_SEGMENTS:
             raise RuntimeError("A BioNet cell exceeded the explicit segment safety limit")
 
@@ -1182,25 +1313,211 @@ def _bionet_cell_loader(node: Any, _template_name: str, dynamics_params: Mapping
     return _ClassicHHCell(h, morphology_path, params)
 
 
-def execute_config(config_path: Path) -> None:
+def _attach_electrical_contacts(h: Any, network: Any, extension: Mapping[str, Any]) -> list[Any]:
+    """Serial Digifly extension on actual BioNetwork cells, before framework run.
+
+    BMTK1.2's built-in gap route assumes another Gap ABI and one junction per
+    pair. Preserve all imported sites and the app's pinned equations instead.
+    The supplemental document is explicitly not standard SONATA portability.
+    """
+    if not extension.get("enabled"):
+        return []
+    local_cells = network.get_local_cells()
+    if set(int(x) for x in local_cells) != set(int(x) for x in extension["node_ids"]):
+        raise ValueError("Electrical extension requires all selected BioNet cells on this serial rank")
+    processes = []
+    policy = extension["policy"]
+    mode = policy["mode"]
+    for edge in extension["edges"]:
+        a, b = str(edge["neuron_a"]), str(edge["neuron_b"])
+        for contact in edge["contacts"]:
+            sites = {}
+            for end in ("pre", "post"):
+                cell = local_cells[int(contact[f"{end}_bionet_node_id"])]
+                section = cell.hobj.all[int(contact[f"{end}_bionet_section_id"])]
+                x = float(contact[f"{end}_bionet_section_pos"])
+                if not 0 <= x <= 1:
+                    raise ValueError("Electrical section position is outside its cable")
+                sites[str(contact[f"{end}_id"])] = (section, x)
+            site_a, site_b = sites[a], sites[b]
+            g = float(contact["effective_g_uS"])*1000.0
+            if mode == "ohmic":
+                pair = [h.Gap(x, sec=sec) for sec, x in (site_a, site_b)]
+                for process, peer in zip(pair, (site_b, site_a)):
+                    process.g = g
+                    _common._neuron_set_gap_pointer(h, process, peer)
+                processes.extend(pair)
+            elif mode == "rectifying":
+                source, target = (site_a, site_b) if policy["preferred_direction"] == "a_to_b" else (site_b, site_a)
+                sec, x = target
+                process = h.RectGap(x, sec=sec)
+                process.gmax = g
+                _common._neuron_set_gap_pointer(h, process, source)
+                processes.append(process)
+            elif mode == "heterotypic_rectifying":
+                pair = [h.HeteroRectGap(x, sec=sec) for sec, x in (site_a, site_b)]
+                signs = (1., -1.) if policy["preferred_direction"] == "a_to_b" else (-1., 1.)
+                for process, orientation, peer in zip(pair, signs, (site_b, site_a)):
+                    process.gmax_open = g
+                    process.gmax_closed = g*float(policy["g_closed_frac"])
+                    process.orientation = orientation
+                    for dest, source in (("vhalf", "vhalf_mV"), ("vslope", "vslope_mV"),
+                                         ("empirical_residual_frac", "empirical_residual_frac"),
+                                         ("tau_open_ms", "tau_open_ms"), ("tau_close_ms", "tau_close_ms")):
+                        setattr(process, dest, float(policy[source]))
+                    _common._neuron_set_gap_pointer(h, process, peer)
+                processes.extend(pair)
+            else:
+                raise ValueError("Electrical extension mode is unsupported")
+    return processes
+
+
+def _regional_framework_cell_record(cell: Any) -> dict[str, Any] | None:
+    """Check the FINAL BioCell morphology before framework clamps/reports."""
+    plan = getattr(cell.hobj, "digifly_regional_plan", None)
+    if not plan:
+        return None
+    sections = list(cell.hobj.all)
+    if len(sections) != len(plan["sections"]):
+        raise ValueError("BioNet changed the owned regional section map")
+    actual = [{"node_id":s["node_id"], "nseg":int(sec.nseg), "length_um":float(sec.L)}
+              for s,sec in zip(plan["sections"],sections)]
+    if any(a["nseg"] != s["nseg"] or not math.isclose(a["length_um"],s["length_um"],abs_tol=1e-9)
+           for a,s in zip(actual,plan["sections"])):
+        raise ValueError("BioNet changed the owned regional spatial discretization")
+    return {"neuron_id":plan["neuron_id"], "sections":actual, "estimated_nseg":sum(a["nseg"] for a in actual)}
+
+
+def _validate_independent_trial_inputs(config_payload: Mapping[str, Any], *, hash_bound: bool) -> None:
+    marker = dict(config_payload.get("digifly") or {})
+    fields = {"independent_trial_input_pins", "independent_source_edge_manifest",
+        "independent_mapped_edge_manifest", "independent_active_neuron_ids", "independent_mapped_contact_sha256"}
+    if not hash_bound and not fields.intersection(marker):
+        return  # Preserve the existing serial child lane.
+    if not hash_bound or not fields.issubset(marker) or not marker["independent_trial_input_pins"]:
+        raise ValueError("Independent BioNet trial contact/source binding is incomplete")
+    _common._verify_trial_pins(marker["independent_trial_input_pins"])
+    _common._validate_independent_contact_manifest(marker["independent_source_edge_manifest"],
+        marker["independent_mapped_edge_manifest"], marker["independent_active_neuron_ids"],
+        marker["independent_mapped_contact_sha256"])
+
+
+def execute_config(config_path: Path, expected_sha256: str = "") -> None:
     """Internal child-process entry point for one condition/repetition."""
 
     config_path = config_path.resolve()
     if not config_path.is_file() or config_path.name != "simulation_config.json":
         raise ValueError("The BioNet simulation config path is invalid")
+    if expected_sha256 and _common._sha256(config_path) != expected_sha256:
+        raise ValueError("Independent BioNet trial config changed before child execution")
     config_payload = _load_object(config_path, label="BioNet simulation config")
     marker = dict(config_payload.get("digifly") or {})
+    _validate_independent_trial_inputs(config_payload, hash_bound=bool(expected_sha256))
     if marker.get("lane") != LANE_ID or config_payload.get("target_simulator") != "BioNet":
         raise ValueError("Refusing a simulation config outside the Digifly BioNet lane")
     _network_builder, bionet, _h5py, _runtime = _require_bionet_runtime()
+    native = dict(marker.get("native_channel_execution") or {})
+    gap = dict(marker.get("gap_mechanism_execution") or {})
+    if gap:
+        import neuron
+        _common._load_neuron_gap_mechanisms(neuron.h, neuron, Path(gap["mechanism_dir"]), expected_manifest_sha256=gap["manifest_sha256"])
+    if native:
+        import neuron
+        from neuron import h
+        # Upstream Augustin SUFFIX k shares a name with Import3d's hoc local.
+        # Parse the standard morphology procedures before registering k;
+        # preserve the original channel suffix and equations unchanged.
+        if not h.load_file("import3d.hoc"):
+            raise RuntimeError("BioNet morphology importer could not initialize")
+        library = Path(native["library"])
+        if _common._sha256(library) != native["library_sha256"] or neuron.__version__ != native["neuron_version"]:
+            raise ValueError("BioNet native-channel library identity/runtime mismatch")
+        for key, record in native["sources"].items():
+            if (record.get("suffix"), record.get("sha256")) != _common.NATIVE_CHANNELS.get(key):
+                raise ValueError("BioNet native-channel source identity mismatch")
+            probe = h.Section()
+            try:
+                probe.insert(record["suffix"])
+            except ValueError:
+                pass
+            else:
+                raise ValueError("BioNet runtime contains an unverified channel collision")
+            finally:
+                h.delete_section(sec=probe)
+        if not h.nrn_load_dll(str(library)):
+            raise RuntimeError("BioNet could not load the verified native-channel library")
+        for record in native["sources"].values():
+            probe = h.Section()
+            try:
+                probe.insert(record["suffix"])
+            finally:
+                h.delete_section(sec=probe)
     bionet.cell_model(CELL_MODEL_TEMPLATE, model_type="biophysical")(
         _bionet_cell_loader
     )
     config = bionet.Config.from_json(str(config_path))
     config.build_env()
-    network = bionet.BioNetwork.from_config(config)
+    class OwnedRegionalBioNetwork(bionet.BioNetwork):
+        # BioSimulator calls build_nodes BEFORE creating IClamps or report
+        # modules. Validate each constructed BioCell here, not by changing
+        # nseg after framework segment caches have already been allocated.
+        def _build_cell(self, *args: Any, **kwargs: Any) -> Any:
+            cell = super()._build_cell(*args, **kwargs)
+            record = _regional_framework_cell_record(cell)
+            if record:
+                self.digifly_actual_regional.append(record)
+            return cell
+    network = OwnedRegionalBioNetwork.from_config(config)
+    network.digifly_actual_regional = []
     simulator = bionet.BioSimulator.from_config(config, network=network)
+    actual_regional = network.digifly_actual_regional
+    if actual_regional:
+        _common._require_neuron_segment_budget(0,sum(p["estimated_nseg"] for p in actual_regional),segment_budget=MAX_TOTAL_SEGMENTS)
+        _common._atomic_json(config_path.parent / "regional_execution.json", {
+            "schema_version":1, "framework":"actual BMTK BioNetwork/BioSimulator cells before run",
+            "framework_dL":network.dL, "cells":actual_regional})
+    extension = marker.get("electrical_extension")
+    if extension:
+        path = Path(extension["path"]).resolve()
+        if path.parent != config_path.parent or _common._sha256(path) != extension["sha256"]:
+            raise ValueError("Run-owned electrical extension identity changed")
+        payload = _load_object(path, label="electrical extension")
+        import neuron
+        network._digifly_gap_processes = _attach_electrical_contacts(neuron.h, network, payload)
+        _common._atomic_json(config_path.parent / "electrical_execution.json", {
+            "schema_version":1, "extension_sha256":extension["sha256"],
+            "framework":"BMTK BioNetwork/BioSimulator", "workers":1,
+            "enabled":payload["enabled"], "mode":payload["policy"]["mode"],
+            "imported_contacts":sum(len(e["contacts"]) for e in payload["edges"]),
+            "point_processes":len(network._digifly_gap_processes),
+            "standard_sonata_portable":False})
+    for cell in network.get_local_cells().values():
+        plan = getattr(cell.hobj, "digifly_regional_plan", None)
+        if plan:
+            # The app-authored Python morphology has no Import3d `nl` field.
+            # Annotate actual framework reports from its explicit source-edge
+            # map, rather than BMTK's Import3d branch-name heuristic.
+            def source_swc_id(sec_id, sec_x, plan=plan):
+                spec = plan["sections"][int(sec_id)]
+                return (int(spec["path"][0]) if float(sec_x) == 0 else int(spec["node_id"]), float(sec_x))
+            cell.morphology.get_swc_id = source_swc_id
+    ramp = marker.get("ramp_stimulus")
+    if ramp:
+        import neuron
+        ramp_objects = []
+        local_cells = network.get_local_cells()
+        for site in ramp["sites"]:
+            cell = local_cells[int(site["node_id"])]
+            section = getattr(cell.hobj, site["section_name"])[int(site["section_id"])]
+            ramp_objects.extend(_common._neuron_current_clamps(neuron.h, section(float(site["section_pos"])), ramp["stimulus"], float(site["amplitude_nA"])))
+        network._digifly_ramp_objects = ramp_objects
+        _common._atomic_json(config_path.parent/"ramp_execution.json", {"schema_version":1,
+            "framework":"Actual BMTK BioNetwork/BioSimulator cells", "sites":ramp["sites"],
+            "stimulus":ramp["stimulus"], "policy":ramp["policy"], "clamps":len(ramp["sites"])})
     simulator.run()
+    _common._verify_trial_pins(marker.get("independent_trial_input_pins") or ())
+    if expected_sha256 and _common._sha256(config_path) != expected_sha256:
+        raise ValueError("Independent BioNet trial config changed during child execution")
 
 
 def _report_arrays_to_rows(
@@ -1322,6 +1639,8 @@ def _native_voltage_rows(
     expected_sample_dt_ms: float,
     condition: str,
     repetition: int,
+    regional_cells: Mapping[str, Any] | None = None,
+    recording_region: str = "soma",
 ) -> list[dict[str, Any]]:
     if not report_path.is_file():
         raise FileNotFoundError(f"BioNet did not produce its soma report: {report_path}")
@@ -1340,6 +1659,31 @@ def _native_voltage_rows(
         data = population_group.get("data")
         if mapping is None or data is None:
             raise ValueError("The native soma report is missing data or mapping")
+        if regional_cells:
+            nodes = [int(n) for n in mapping["node_ids"][:]]
+            pointers = [int(n) for n in mapping["index_pointer"][:]]
+            elements = list(mapping["element_ids"][:])
+            positions = list(mapping["element_pos"][:])
+            if len(pointers) != len(nodes)+1 or pointers[0] != 0 or pointers[-1] != data.shape[1] or len(elements) != data.shape[1] or len(positions) != data.shape[1] or len(set(nodes)) != len(nodes):
+                raise ValueError("Invalid regional SONATA compartment mapping")
+            result = []
+            for i, bmtk_id in enumerate(nodes):
+                if bmtk_id not in node_id_crosswalk:
+                    raise ValueError("Unknown regional SONATA node ID")
+                neuron_id = node_id_crosswalk[bmtk_id]
+                cell = regional_cells[neuron_id]
+                specs = _common._regional_sites(cell["section_plan"], recording_region, cell["regional_data"])
+                for spec in specs:
+                    columns = [j for j in range(pointers[i], pointers[i+1]) if int(elements[j]) == spec["section_id"] and math.isclose(float(positions[j]), .5, abs_tol=1e-9)]
+                    if len(columns) != 1:
+                        raise ValueError("SWC edge midpoint does not have exactly one SONATA element")
+                    rows = _report_arrays_to_rows(data[:, columns], [bmtk_id], [0,1], mapping["time"][:], node_id_crosswalk,
+                        integration_dt_ms=integration_dt_ms, expected_duration_ms=expected_duration_ms,
+                        expected_sample_dt_ms=expected_sample_dt_ms, condition=condition, repetition=repetition)
+                    for row in rows:
+                        row["compartment_id"] = spec["source_node_id"]
+                    result.extend(rows)
+            return result
         return _report_arrays_to_rows(
             data,
             mapping["node_ids"][:],
@@ -1565,8 +1909,20 @@ def _run(
     cancellation.raise_if_requested()
 
     cells, morphology_artifacts, morphology_metadata = _prepare_morphologies(
-        request, output_dir
+        request, output_dir, edge_manifest
     )
+    if any(c.get("regional_data") for c in cells.values()):
+        _common._regional_report_budget({n:c["section_plan"] for n,c in cells.items()}, experiment)
+    native_evidence = _common._prepare_native_channels(request, output_dir)
+    gap_evidence = {}
+    if edge_manifest.get("electrical_edges"):
+        gap_dir = Path(str(request.get("neuron_gap_mechanisms") or "")).resolve()
+        manifest_sha = str(request.get("neuron_gap_manifest_sha256") or "")
+        gap_manifest, gap_library = _common._validated_neuron_gap_manifest(
+            gap_dir, neuron_version=runtime["packages"]["neuron"]["version"], expected_manifest_sha256=manifest_sha)
+        gap_evidence = {"mechanism_dir":str(gap_dir), "manifest_sha256":manifest_sha,
+                        "library_sha256":_common._sha256(gap_library),
+                        "sources":gap_manifest["mechanisms"], "compiler":gap_manifest.get("compiler")}
     cancellation.raise_if_requested()
     resolved_edge_manifest = _resolve_edge_manifest(edge_manifest, cells)
     resolved_edge_path = output_dir / "resolved_edge_manifest.json"
@@ -1583,7 +1939,9 @@ def _run(
             "state": "running",
             "started_at": _common._now(),
             "lane": LANE_ID,
-            "morphology_transform": "parent_before_child_reindex_bionet_branch_runs_v1",
+            "native_channel_execution": native_evidence,
+            "gap_mechanism_execution": gap_evidence,
+            "morphology_transform": "parent_before_child_reindex_source_swc_edge_odd_cv_v1" if any(c.get("regional_data") for c in cells.values()) else "parent_before_child_reindex_bionet_branch_runs_v1",
             "morphologies": morphology_metadata,
             "resolved_edge_manifest_path": str(resolved_edge_path),
             "resolved_edge_manifest_sha256": _common._sha256(resolved_edge_path),
@@ -1594,7 +1952,7 @@ def _run(
     chemical_contacts = list(resolved_edge_manifest.get("chemical_edges") or ())
     _common._emit(
         "start",
-        "Starting BMTK/BioNet classic-HH experiment",
+        "Starting BMTK/BioNet source-bound membrane experiment",
         neuron_ids=list(neuron_ids),
         chemical_contacts=len(chemical_contacts),
     )
@@ -1610,9 +1968,11 @@ def _run(
     trace_path = output_dir / "voltage_traces.csv"
     spike_path = output_dir / "spikes.csv"
     plot_rows: list[dict[str, Any]] = []
+    spike_plot_rows: list[dict[str, Any]] = []
     execution_records: list[dict[str, Any]] = []
     execution_artifacts: list[dict[str, str]] = []
     sample_counts: dict[tuple[str, int, str], int] = {}
+    condition_execution = []
     previous_voltage: dict[tuple[str, int, str], float] = {}
     detected_spikes = 0
     total_trace_rows = 0
@@ -1624,16 +1984,23 @@ def _run(
     projected_rows = len(conditions) * repetitions * expected_samples * recording_count
     plot_stride = max(1, int(math.ceil(projected_rows / 500_000)))
 
+    prepared = _prepare_condition_trials(network_builder,output_dir,cells,resolved_edge_manifest,synapse_models,experiment,
+        stimulus,conditions,native_evidence,gap_evidence,cancellation)
+    parallel = int(experiment.get("workers",1)) > 1
+    if parallel:
+        manifest["worker_execution"] = _execute_condition_trials(prepared,conditions,request_path,experiment,cells,cancellation)
+        _common._atomic_json(manifest_path,manifest)
+
     with trace_path.open("w", encoding="utf-8", newline="") as trace_handle, spike_path.open(
         "w", encoding="utf-8", newline=""
     ) as spike_handle:
         trace_writer = csv.DictWriter(
             trace_handle,
-            fieldnames=("condition", "repetition", "neuron_id", "time_ms", "voltage_mV"),
+            fieldnames=("condition", "repetition", "neuron_id", "compartment_id", "time_ms", "voltage_mV"),
         )
         spike_writer = csv.DictWriter(
             spike_handle,
-            fieldnames=("condition", "repetition", "neuron_id", "spike_time_ms"),
+            fieldnames=("condition", "repetition", "neuron_id", "compartment_id", "spike_time_ms"),
         )
         trace_writer.writeheader()
         spike_writer.writeheader()
@@ -1641,19 +2008,23 @@ def _run(
         total_runs = len(conditions) * repetitions
         for condition_index, condition in enumerate(conditions, start=1):
             cancellation.raise_if_requested()
-            condition_key = f"condition-{condition_index:03d}-{_safe_component(str(condition['name']), prefix='condition')}"
-            condition_dir = output_dir / "sonata" / "conditions" / condition_key
-            condition_dir.mkdir(parents=True, exist_ok=False)
+            state=prepared[condition_index-1]
+            condition_dir=state["directory"]
+            condition_cells=state["cells"]
+            condition_edges=state["edges"]
+            condition_crosswalk=state["crosswalk"]
+            condition_execution.append({"condition":str(condition["name"]), "active_neuron_ids":list(condition_cells),
+                "disabled_neuron_ids":list(condition.get("disabled_neuron_ids") or ()),
+                "mechanism_scales":dict(condition.get("mechanism_scales") or {}),
+                "ablation_policy":"Remove cells, all incident chemical/electrical contacts, clamps and recordings; no fabricated voltage",
+                "scale_policy":"Multiply conductances after default/neuron/source-edge precedence; kinetics/reversals/source hashes unchanged",
+                "node_crosswalk":condition_crosswalk, "edge_manifest":condition_edges,
+                "dynamics":{n:{"path":str(Path("sonata/components/biophysical_models")/c["dynamics_params"]),
+                    "sha256":_common._sha256(output_dir/"sonata/components/biophysical_models"/c["dynamics_params"])} for n,c in condition_cells.items()}})
+            if not condition_cells:
+                execution_records.append({"condition":str(condition["name"]), "state":"empty_after_ablation", "active_neuron_ids":[]})
+                continue
             chemical_enabled = bool(condition.get("chemical_synapses_enabled", True))
-            circuit_config = _materialize_sonata_network(
-                network_builder,
-                output_dir,
-                condition_dir,
-                cells,
-                resolved_edge_manifest,
-                synapse_models,
-                chemical_enabled=chemical_enabled,
-            )
             cancellation.raise_if_requested()
             execution_artifacts.append(
                 _relative_artifact(
@@ -1688,31 +2059,29 @@ def _run(
                     completed=completed_runs - 1,
                     total=total_runs,
                 )
-                repetition_dir = condition_dir / f"repetition-{repetition:03d}"
-                repetition_dir.mkdir()
-                cancellation.raise_if_requested()
-                config_payload = _simulation_config(
-                    output_dir=output_dir,
-                    repetition_dir=repetition_dir,
-                    circuit_config=circuit_config,
-                    cells=cells,
-                    experiment=experiment,
-                    stimulus=stimulus,
-                    condition=condition,
-                    repetition=repetition,
-                    chemical_spike_threshold_mV=float(
-                        dict(resolved_edge_manifest["chemical_synapse_policy"])[
-                            "spike_threshold_mV"
-                        ]
-                    ),
-                )
-                config_path = repetition_dir / "simulation_config.json"
-                _common._atomic_json(config_path, config_payload)
-                child_log = _run_child(
+                trial=state["trials"][repetition-1]
+                repetition_dir=trial["directory"]
+                config_payload=trial["config"]
+                config_path=trial["path"]
+                extension_path=repetition_dir/"electrical_extension.json"
+                child_log = repetition_dir/"worker_subprocess.log" if parallel else _run_child(
                     config_path,
                     repetition_dir,
                     cancellation=cancellation,
                 )
+                if condition_edges.get("electrical_edges"):
+                    receipt = _load_object(repetition_dir / "electrical_execution.json", label="electrical execution")
+                    contact_count = sum(len(e["contacts"]) for e in condition_edges["electrical_edges"])
+                    enabled = bool(condition.get("gap_junctions_enabled", True))
+                    expected_processes = contact_count * (1 if resolved_edge_manifest["gap_junction_policy"]["mode"] == "rectifying" else 2) if enabled else 0
+                    if (receipt.get("extension_sha256") != _common._sha256(extension_path)
+                            or receipt.get("point_processes") != expected_processes
+                            or receipt.get("imported_contacts") != contact_count
+                            or receipt.get("enabled") != enabled):
+                        raise ValueError("BioNet did not materialize the exact electrical contact set")
+                    for filename in ("electrical_extension.json", "electrical_execution.json"):
+                        execution_artifacts.append(_relative_artifact(output_dir, repetition_dir/filename,
+                            kind="document", label=f"Digifly electrical extension · {condition['name']} · {filename}"))
                 cancellation.raise_if_requested()
                 native_output = repetition_dir / "native_output"
                 voltage_h5 = native_output / "soma_voltage.h5"
@@ -1724,22 +2093,32 @@ def _run(
                 rows = _native_voltage_rows(
                     h5py,
                     voltage_h5,
-                    node_crosswalk,
+                    condition_crosswalk,
                     integration_dt_ms=float(experiment["integration_dt_ms"]),
                     expected_duration_ms=float(experiment["duration_ms"]),
-                    expected_sample_dt_ms=float(recording["sample_dt_ms"]),
+                    expected_sample_dt_ms=float(experiment["integration_dt_ms"]),
                     condition=str(condition["name"]),
                     repetition=repetition,
-                )
+                    regional_cells=condition_cells if any(c.get("regional_data") for c in condition_cells.values()) else None,
+                    recording_region=recording["target_region"],
+                ) if config_payload["reports"] else ()
                 for row in rows:
+                    # Preserve the full native report. Export only measurements
+                    # actually taken on the requested grid, never interpolate or
+                    # rename post-fadvance samples as t=0.
+                    grid_index = float(row["time_ms"])/float(recording["sample_dt_ms"])
+                    if not math.isclose(grid_index, round(grid_index), abs_tol=1e-8):
+                        continue
                     if total_trace_rows % 4096 == 0:
                         cancellation.raise_if_requested()
-                    trace_writer.writerow(row)
+                    if recording.get("record_voltage", True):
+                        trace_writer.writerow(row)
                     total_trace_rows += 1
                     key = (
                         str(row["condition"]),
                         int(row["repetition"]),
                         str(row["neuron_id"]),
+                        str(row.get("compartment_id", "")),
                     )
                     count = sample_counts.get(key, 0)
                     sample_counts[key] = count + 1
@@ -1752,14 +2131,15 @@ def _run(
                         and previous is not None
                         and previous < spike_threshold <= voltage
                     ):
-                        spike_writer.writerow(
-                            {
+                        spike_row = {
                                 "condition": key[0],
                                 "repetition": key[1],
                                 "neuron_id": key[2],
+                                "compartment_id": key[3],
                                 "spike_time_ms": float(row["time_ms"]),
                             }
-                        )
+                        spike_writer.writerow(spike_row)
+                        spike_plot_rows.append(spike_row)
                         detected_spikes += 1
                     previous_voltage[key] = voltage
                 for path, kind, label in (
@@ -1768,6 +2148,8 @@ def _run(
                     (voltage_h5, "sonata", "Native BioNet soma voltage"),
                     (native_spikes, "sonata", "Native BioNet spikes"),
                 ):
+                    if not path.is_file() and path == voltage_h5 and not config_payload["reports"]:
+                        continue
                     execution_artifacts.append(
                         _relative_artifact(
                             output_dir,
@@ -1776,29 +2158,44 @@ def _run(
                             label=f"{label} · {condition['name']} · rep {repetition}",
                         )
                     )
+                if config_payload["digifly"].get("ramp_stimulus"):
+                    ramp_path = repetition_dir / "ramp_execution.json"
+                    ramp_receipt = _load_object(ramp_path, label="actual BioNet ramp execution")
+                    if ramp_receipt["sites"] != config_payload["digifly"]["ramp_stimulus"]["sites"]:
+                        raise ValueError("BioNet did not attach the exact declared ramp sites")
+                    execution_artifacts.append(_relative_artifact(output_dir, ramp_path, kind="document",label=f"BioNet ramp execution · {condition['name']}"))
                 execution_records.append(
                     {
                         "condition": str(condition["name"]),
                         "repetition": repetition,
                         "chemical_synapses_enabled": chemical_enabled,
+                        "gap_junctions_enabled": bool(condition.get("gap_junctions_enabled", True)),
+                        "electrical_extension": _file_provenance(output_dir, extension_path) if condition_edges.get("electrical_edges") else None,
+                        "electrical_execution": _file_provenance(output_dir, repetition_dir/"electrical_execution.json") if condition_edges.get("electrical_edges") else None,
                         "simulation_config": _file_provenance(output_dir, config_path),
-                        "native_soma_voltage": _file_provenance(output_dir, voltage_h5),
+                        "native_soma_voltage": _file_provenance(output_dir, voltage_h5) if config_payload["reports"] else None,
                         "native_spikes": _file_provenance(output_dir, native_spikes),
                     }
                 )
 
     cancellation.raise_if_requested()
+    record_compartments = {
+        neuron_id: [str(s["source_node_id"]) for s in _common._regional_sites(cells[neuron_id]["section_plan"], recording["target_region"], cells[neuron_id]["regional_data"])] if cells[neuron_id].get("regional_data") else [""]
+        for neuron_id in (recording.get("target_neuron_ids") or neuron_ids)
+    }
     expected_keys = {
-        (str(condition["name"]), repetition, neuron_id)
+        (str(condition["name"]), repetition, neuron_id, compartment_id)
         for condition in conditions
         for repetition in range(1, repetitions + 1)
         for neuron_id in (recording.get("target_neuron_ids") or neuron_ids)
+        if neuron_id not in (condition.get("disabled_neuron_ids") or ())
+        for compartment_id in record_compartments[neuron_id]
     }
     if set(sample_counts) != expected_keys or any(count < 2 for count in sample_counts.values()):
         raise RuntimeError("BioNet did not return a complete soma trace for every recording target")
 
     artifacts: list[dict[str, str]] = [
-        {"kind": "table", "path": trace_path.name, "label": "Soma voltage traces"},
+        {"kind": "table", "path": trace_path.name, "label": "Mapped membrane voltage traces"},
         {"kind": "table", "path": spike_path.name, "label": "Threshold-crossing spikes"},
         {"kind": "document", "path": "experiment.json", "label": "Experiment document"},
         {"kind": "document", "path": "circuit.json", "label": "Circuit document"},
@@ -1812,12 +2209,21 @@ def _run(
     ]
     artifacts.extend(morphology_artifacts)
     artifacts.extend(execution_artifacts)
+    if parallel:
+        artifacts.extend({"kind":"document","path":name,"label":label} for name,label in
+            (("worker_resource_forecast.json","Requested/effective independent trial resources"),("independent_trial_execution.json","Independent child execution and cleanup receipt")))
+    conditions_path = output_dir / "condition_execution.json"
+    _common._atomic_json(conditions_path, {"schema_version":1, "conditions":condition_execution})
+    artifacts.append({"kind":"document", "path":conditions_path.name, "label":"Condition ablation and materialized conductances"})
+    voltage_enabled = bool(recording.get("record_voltage", True))
+    if not voltage_enabled:
+        artifacts = [a for a in artifacts if a["path"] != trace_path.name]
     if experiment["recording"].get("make_plots", True):
-        plot_path = output_dir / "voltage_comparison.png"
-        _common._write_plot(plot_path, plot_rows, experiment)
+        plot_path = output_dir / ("voltage_comparison.png" if voltage_enabled else "spike_raster.png")
+        (_common._write_plot if voltage_enabled else _common._write_spike_plot)(plot_path, plot_rows if voltage_enabled else spike_plot_rows, experiment)
         cancellation.raise_if_requested()
         artifacts.append(
-            {"kind": "image", "path": plot_path.name, "label": "Voltage comparison"}
+            {"kind": "image", "path": plot_path.name, "label": "Voltage comparison" if voltage_enabled else "Spike raster"}
         )
 
     cancellation.raise_if_requested()
@@ -1853,12 +2259,13 @@ def _run(
             "native_sonata_mapping_preserved": True,
             "native_mapping_time_semantics": "configured report window",
             "sampling_hook": "BioSimulator post_fadvance",
-            "first_sample_offset_ms": float(experiment["integration_dt_ms"]),
+            "first_sample_offset_ms": float(recording["sample_dt_ms"]),
+            "export_policy": "Full integration-step native SONATA report retained; canonical CSV selects actual requested-grid samples. No interpolation or invented t=0.",
             "validated_native_mapping": {
                 "start_ms": 0.0,
                 "stop_ms": float(experiment["duration_ms"]),
-                "sample_dt_ms": float(recording["sample_dt_ms"]),
-                "expected_samples_per_target": expected_samples,
+                "sample_dt_ms": float(experiment["integration_dt_ms"]),
+                "expected_samples_per_target": int(round(float(experiment["duration_ms"])/float(experiment["integration_dt_ms"]))),
             },
         },
         "executions": execution_records,
@@ -1888,15 +2295,19 @@ def _run(
             "NEURON version": packages["neuron"]["version"],
             "Conditions": len(conditions),
             "Repetitions": repetitions,
+            "Requested independent trial workers":int(experiment.get("workers",1)),
+            "Effective independent trial workers":manifest.get("worker_execution",{}).get("effective_workers",1),
             "Duration (ms)": float(experiment["duration_ms"]),
             "Integration step (ms)": float(experiment["integration_dt_ms"]),
-            "Recorded samples": total_trace_rows,
+            "Recorded samples": total_trace_rows if voltage_enabled else 0,
+            "Samples used for spike detection": total_trace_rows,
             "Detected spikes": detected_spikes,
             "Morphology transform": "parent-before-child normalized maximal branch runs",
             "Simulation diameter floor (um)": "None; exact positive SWC diameters",
             "Target soma proxy length (um)": TARGET_SOMA_PROXY_LENGTH_UM,
             "Chemical contacts": len(chemical_contacts),
-            "Electrical contacts": 0,
+            "Electrical contacts": sum(len(e["contacts"]) for e in resolved_edge_manifest.get("electrical_edges") or ()),
+            "Electrical portability": "Digifly serial extension; not standard SONATA" if gap_evidence else "No electrical contacts",
             "Native output": "SONATA HDF5 preserved per condition/repetition",
             "Edge manifest SHA-256": str(request["edge_manifest_sha256"]),
         },
@@ -1916,6 +2327,91 @@ def _run(
     _common._atomic_json(manifest_path, manifest)
     _common._emit("complete", "BMTK/BioNet experiment completed", summary_path=str(summary_path))
     return summary_path
+
+
+def _prepare_condition_trials(network_builder: Any, output_dir: Path, cells: Mapping[str,Any], resolved_edges: Mapping[str,Any],
+                              synapse_models: Mapping[str,Any], experiment: Mapping[str,Any], stimulus: Mapping[str,Any],
+                              conditions: Sequence[Mapping[str,Any]], native: Mapping[str,Any], gap: Mapping[str,Any],
+                              cancellation: _CancellationController) -> list[dict[str,Any]]:
+    """Serial materialization before any independent child starts."""
+    prepared=[]
+    for index,condition in enumerate(conditions,start=1):
+        cancellation.raise_if_requested()
+        key=f"condition-{index:03d}-{_safe_component(str(condition['name']),prefix='condition')}"
+        directory=output_dir/"sonata"/"conditions"/key
+        directory.mkdir(parents=True,exist_ok=False)
+        condition_cells=_condition_bionet_cells(cells,condition,output_dir,key)
+        edges=_resolve_edge_manifest(_common._condition_edges(resolved_edges,tuple(condition_cells)),condition_cells)
+        crosswalk={int(c["bmtk_node_id"]):n for n,c in condition_cells.items()}
+        state={"directory":directory,"cells":condition_cells,"edges":edges,"crosswalk":crosswalk,"trials":[]}
+        prepared.append(state)
+        if not condition_cells:
+            continue
+        circuit_config=_materialize_sonata_network(network_builder,output_dir,directory,condition_cells,edges,synapse_models,
+            chemical_enabled=bool(condition.get("chemical_synapses_enabled",True)))
+        for repetition in range(1,int(experiment["repetitions"])+1):
+            repdir=directory/f"repetition-{repetition:03d}"
+            repdir.mkdir()
+            config=_simulation_config(output_dir=output_dir,repetition_dir=repdir,circuit_config=circuit_config,cells=condition_cells,
+                experiment=experiment,stimulus=stimulus,condition=condition,repetition=repetition,
+                chemical_spike_threshold_mV=float(resolved_edges["chemical_synapse_policy"]["spike_threshold_mV"]))
+            config["digifly"]["native_channel_execution"]=native
+            config["digifly"]["gap_mechanism_execution"]=gap
+            if edges.get("electrical_edges"):
+                extension=repdir/"electrical_extension.json"
+                _common._atomic_json(extension,{"schema_version":1,"enabled":bool(condition.get("gap_junctions_enabled",True)),
+                    "policy":edges["gap_junction_policy"],"edges":edges["electrical_edges"],"node_ids":sorted(crosswalk),
+                    "execution":"Digifly serial extension on framework-owned cells; not standard SONATA electrical portability"})
+                config["digifly"]["electrical_extension"]={"path":str(extension.resolve()),"sha256":_common._sha256(extension)}
+            config_path=repdir/"simulation_config.json"
+            _common._atomic_json(config_path,config)
+            state["trials"].append({"directory":repdir,"path":config_path,"config":config})
+    return prepared
+
+
+def _execute_condition_trials(prepared: Sequence[Mapping[str,Any]], conditions: Sequence[Mapping[str,Any]],
+                              request_path: Path, experiment: Mapping[str,Any], cells: Mapping[str,Any],
+                              cancellation: _CancellationController) -> dict[str,Any]:
+    tasks=[]
+    # Includes every run-owned immutable morphology, dynamic model, network and
+    # extension file. Reports and receipts are created only after this snapshot.
+    static=[p for p in (request_path.parent/"sonata").rglob("*") if p.is_file() and p.name!="simulation_config.json"]
+    static.extend([request_path,Path(__file__),Path(_common.__file__),Path(_common._trials.__file__)])
+    request=_load_object(request_path,label="independent trial parent request")
+    static.extend(Path(record["path"]) for record in request.get("morphologies",{}).values())
+    static.extend([request_path.parent/"edge_manifest.json",request_path.parent/"resolved_edge_manifest.json"])
+    source_edges=_common._load_edge_manifest(request,request_path.parent)
+    _common._validate_edge_source_identity(source_edges)
+    source_record={"path":request["edge_manifest_path"],"sha256":request["edge_manifest_sha256"]}
+    native=next((trial["config"]["digifly"].get("native_channel_execution") for state in prepared for trial in state["trials"] if trial["config"]["digifly"].get("native_channel_execution")),{})
+    if native:
+        static.extend([Path(native["library"]),Path(native["builder"]["path"]),*[Path(record["path"]) for record in native["sources"].values()]])
+    pins=_common._trial_input_pins(static)
+    for state,condition in zip(prepared,conditions):
+        for rep,trial in enumerate(state["trials"],start=1):
+            path=trial["path"]
+            config=trial["config"]
+            config["digifly"]["independent_trial_input_pins"]=pins
+            config["digifly"]["independent_source_edge_manifest"]=source_record
+            config["digifly"]["independent_mapped_edge_manifest"]=state["edges"]
+            config["digifly"]["independent_active_neuron_ids"]=list(state["cells"])
+            config["digifly"]["independent_mapped_contact_sha256"]=_common._contact_manifest_sha256(state["edges"])
+            _validate_independent_trial_inputs(config,hash_bound=True)
+            _common._atomic_json(path,config)
+            digest=_common._sha256(path)
+            tasks.append({"label":f"{condition['name']} repetition {rep}","seed":int(experiment.get("random_seed",1))+rep-1,
+                "cwd":str(trial["directory"]),"log_path":str(trial["directory"]/"worker_subprocess.log"),
+                "pins":[*pins,{"path":str(path),"sha256":digest}],
+                "command":[str(Path(sys.executable).absolute()),"-B",str(Path(__file__).resolve()),"--execute-config",str(path),"--config-sha256",digest]})
+    segments=sum(int(c["section_plan"]["estimated_nseg"]) for c in cells.values())
+    values=max(2,int(math.ceil(float(experiment["duration_ms"])/float(experiment["integration_dt_ms"]))))*max(1,segments)
+    forecast=_common._trials.resource_forecast(int(experiment.get("workers",1)),len(tasks),engine="bmtk",segments=segments,report_values=values)
+    _common._atomic_json(request_path.parent/"worker_resource_forecast.json",forecast)
+    environment=_child_environment()
+    environment.update(OMP_NUM_THREADS="1",OPENBLAS_NUM_THREADS="1",MKL_NUM_THREADS="1")
+    _common._trials.execute(tasks,forecast["effective_workers"],environment=environment,
+        receipt_path=request_path.parent/"independent_trial_execution.json",cancellation=cancellation.raise_if_requested)
+    return forecast
 
 
 def run(request_path: Path) -> Path:
@@ -1973,10 +2469,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--request")
     modes.add_argument("--execute-config")
+    parser.add_argument("--config-sha256",default="")
     args = parser.parse_args(argv)
     try:
         if args.execute_config:
-            execute_config(Path(args.execute_config).expanduser().resolve())
+            execute_config(Path(args.execute_config).expanduser().resolve(),args.config_sha256)
         else:
             run(Path(args.request).expanduser().resolve())
     except Exception as exc:

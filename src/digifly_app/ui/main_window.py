@@ -4,11 +4,13 @@ import json
 import os
 from pathlib import Path
 import sys
+from threading import Event
 from typing import Any, Mapping
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,6 +40,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -55,6 +59,20 @@ from digifly_app.core.models import (
     ResultRecord,
 )
 from digifly_app.core.morphology import Morphology, load_swc
+from digifly_app.core.netpyne_workbench import NetPyNEWorkbenchSpec
+from digifly_app.core.netpyne_workbench_run import (
+    NETPYNE_WORKBENCH_WORKFLOW,
+    prepare_workbench_run,
+    run_prepared_workbench,
+    workbench_run_directory,
+)
+from digifly_app.core.pdcm_replication import (
+    MODEL_COMMIT,
+    PDCMReplicationSpec,
+    prepare_run,
+    run_prepared,
+)
+from digifly_app.core.pdcm_source_view import PDCMSourceOverview, read_pinned_pdcm_overview
 from digifly_app.core.process_environment import (
     EXTERNAL_PYTHON_ENV_REMOVE,
     external_runtime_launcher,
@@ -106,15 +124,21 @@ from .circuit_viewport import (
 )
 from .data_library import DataLibraryPage
 from .experiment_builder import ExperimentBuilderPage
+from .netpyne_model_editor import NetPyNEModelEditor
+from .pdcm_replication_panel import PDCMReplicationPanel
 from .runtime_setup import RuntimeSetupDialog
 from .result_playback import (
     ActivityFlowTrack,
+    MorphologyVoltageTrack,
     active_flow_segments,
     active_spiking_somas,
     load_activity_flow_tracks,
+    load_morphology_voltage_tracks,
+    measured_segment_voltages,
     segment_distances_from_soma,
 )
 from .snapshot import save_image_with_dialog
+from .spike_raster import SpikeRasterWidget
 from .voltage_plot import (
     MODE_2D,
     MODE_3D_STACK,
@@ -146,6 +170,93 @@ class UpdateWorker(QThread):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
+
+
+class PDCMRunWorker(QThread):
+    """Execute one pinned paper condition without blocking the desktop UI."""
+
+    succeeded = Signal(str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        spec: PDCMReplicationSpec,
+        *,
+        model_dir: Path,
+        output_root: Path,
+        python: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.spec = spec
+        self.model_dir = model_dir
+        self.output_root = output_root
+        self.python = python
+        self._cancel = Event()
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        try:
+            run_root = prepare_run(
+                self.spec, model_dir=self.model_dir, output_root=self.output_root
+            )
+            summary = run_prepared(
+                run_root, python=self.python, cancel_requested=self._cancel.is_set
+            )
+        except InterruptedError:
+            self.cancelled.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(str(summary))
+
+
+class NetPyNEWorkbenchRunWorker(QThread):
+    """Run a validated v1 editable NetPyNE model outside the UI process."""
+
+    succeeded = Signal(str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        model: NetPyNEWorkbenchSpec,
+        *,
+        name: str,
+        output_root: Path,
+        python: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.model = model
+        self.name = name
+        self.output_root = output_root
+        self.python = python
+        self._cancel = Event()
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        try:
+            run_root = prepare_workbench_run(
+                self.model,
+                python_executable=self.python,
+                output_root=self.output_root,
+                run_name=self.name,
+            )
+            summary = run_prepared_workbench(
+                run_root, cancel_requested=self._cancel.is_set
+            )
+        except InterruptedError:
+            self.cancelled.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(str(summary))
 
 
 def _workspace_home() -> Path:
@@ -461,6 +572,10 @@ class OverviewPage(QWidget):
         self.bmtk_python_edit.setPlaceholderText(
             "Choose one Python containing BMTK, BioNet, NEURON, NumPy, and h5py"
         )
+        self.netpyne_python_edit = QLineEdit(str(container_runtime or ""))
+        self.netpyne_python_edit.setPlaceholderText(
+            "Choose one Python containing NetPyNE and NEURON"
+        )
         form.addRow(
             "Legacy source workspace",
             _path_row(self.workspace_edit, self, "Choose an existing Digifly Public workspace"),
@@ -475,7 +590,11 @@ class OverviewPage(QWidget):
             "BMTK BioNet Python",
             _path_row(self.bmtk_python_edit, self, "Choose BMTK BioNet Python", file_mode=True),
         )
-        runtime_setup = QPushButton("Find or install NEURON / Arbor / BMTK…")
+        form.addRow(
+            "NetPyNE Python",
+            _path_row(self.netpyne_python_edit, self, "Choose NetPyNE Python", file_mode=True),
+        )
+        runtime_setup = QPushButton("Find or install NEURON / Arbor / BMTK / NetPyNE…")
         runtime_setup.clicked.connect(self.open_runtime_setup)
         form.addRow("Runtime setup", runtime_setup)
         controls = QWidget()
@@ -534,6 +653,7 @@ class OverviewPage(QWidget):
             self.python_edit,
             self.arbor_python_edit,
             self.bmtk_python_edit,
+            self.netpyne_python_edit,
         ):
             editor.textChanged.connect(self.settings_changed)
 
@@ -542,6 +662,7 @@ class OverviewPage(QWidget):
             current_neuron=self.python_edit.text(),
             current_arbor=self.arbor_python_edit.text(),
             current_bmtk=self.bmtk_python_edit.text(),
+            current_netpyne=self.netpyne_python_edit.text(),
             parent=self,
         )
         dialog.runtimes_selected.connect(self._runtime_selected)
@@ -552,6 +673,7 @@ class OverviewPage(QWidget):
         neuron_python: str,
         arbor_python: str,
         bmtk_python: str = "",
+        netpyne_python: str = "",
     ) -> None:
         if neuron_python:
             self.python_edit.setText(neuron_python)
@@ -559,6 +681,8 @@ class OverviewPage(QWidget):
             self.arbor_python_edit.setText(arbor_python)
         if bmtk_python:
             self.bmtk_python_edit.setText(bmtk_python)
+        if netpyne_python:
+            self.netpyne_python_edit.setText(netpyne_python)
         profile_path = default_profile_path()
         try:
             profile = load_default_profile()
@@ -569,6 +693,7 @@ class OverviewPage(QWidget):
                     neuron_runtime=neuron_python or None,
                     arbor_runtime=arbor_python or None,
                     bmtk_runtime=bmtk_python or None,
+                    netpyne_runtime=netpyne_python or None,
                 )
                 updated = profile
             else:
@@ -577,6 +702,7 @@ class OverviewPage(QWidget):
                     neuron_runtime=neuron_python or None,
                     arbor_runtime=arbor_python or None,
                     bmtk_runtime=bmtk_python or None,
+                    netpyne_runtime=netpyne_python or None,
                 )
             destination = (
                 profile_path.with_name("resources-v2.json")
@@ -604,6 +730,7 @@ class OverviewPage(QWidget):
                 self.python_edit.text(),
                 self.arbor_python_edit.text(),
                 self.bmtk_python_edit.text(),
+                self.netpyne_python_edit.text(),
             )
             resources = capture_resources(self.output_edit.text())
         except Exception as exc:  # GUI boundary: show diagnostic rather than crash.
@@ -1283,7 +1410,10 @@ class ResultsPage(QWidget):
         self.experiment = experiment
         self._pixmap: QPixmap | None = None
         self._current_result_name = "digifly-result"
-        self._activity_tracks: tuple[ActivityFlowTrack, ...] = ()
+        self._activity_tracks: tuple[ActivityFlowTrack | MorphologyVoltageTrack, ...] = ()
+        self._flow_tracks: tuple[ActivityFlowTrack, ...] = ()
+        self._morphology_voltage_tracks: tuple[MorphologyVoltageTrack, ...] = ()
+        self._morphology_voltage_active = False
         self._activity_distances: dict[str, dict[int, float]] = {}
         self._activity_stimulus_ids: set[str] = set()
         self._activity_timer = QTimer(self)
@@ -1312,8 +1442,10 @@ class ResultsPage(QWidget):
         action_row.addStretch()
         self.result_status = QLabel("No result loaded")
         self.result_status.setObjectName("Muted")
-        action_row.addWidget(self.result_status)
+        self.result_status.setWordWrap(True)
+        self.result_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addLayout(action_row)
+        layout.addWidget(self.result_status)
 
         checks_card = Card()
         checks_layout = QVBoxLayout(checks_card)
@@ -1326,6 +1458,25 @@ class ResultsPage(QWidget):
         checks_layout.addLayout(self.result_checks)
         checks_layout.addStretch()
         layout.addWidget(checks_card)
+
+        self.population_evidence_card = Card()
+        population_layout = QVBoxLayout(self.population_evidence_card)
+        population_layout.setContentsMargins(16, 15, 16, 16)
+        self.population_evidence_heading = QLabel("Paper-window population evidence")
+        self.population_evidence_heading.setObjectName("SectionTitle")
+        population_layout.addWidget(self.population_evidence_heading)
+        self.population_evidence_note = QLabel()
+        self.population_evidence_note.setWordWrap(True)
+        self.population_evidence_note.setObjectName("Muted")
+        population_layout.addWidget(self.population_evidence_note)
+        self.population_evidence_table = QTableWidget(0, 4)
+        self.population_evidence_table.setHorizontalHeaderLabels(["Population", "Cells", "Mean rate (Hz)", "Mean ISI CV"])
+        self.population_evidence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.population_evidence_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.population_evidence_table.setMinimumHeight(284)
+        population_layout.addWidget(self.population_evidence_table)
+        self.population_evidence_card.hide()
+        layout.addWidget(self.population_evidence_card)
 
         self.artifact_section = _ResultDisclosure(
             "Artifacts",
@@ -1354,13 +1505,14 @@ class ResultsPage(QWidget):
         self.preview_splitter.setChildrenCollapsible(False)
 
         self.figure_panel = QWidget()
+        self.figure_panel.setMinimumWidth(440)
         figure_layout = QVBoxLayout(self.figure_panel)
         figure_layout.setContentsMargins(0, 0, 0, 0)
         figure_layout.setSpacing(7)
         figure_header = QHBoxLayout()
-        figure_title = QLabel("Voltage traces")
-        figure_title.setObjectName("Strong")
-        figure_header.addWidget(figure_title)
+        self.figure_title = QLabel("Voltage traces")
+        self.figure_title.setObjectName("Strong")
+        figure_header.addWidget(self.figure_title)
         figure_header.addStretch(1)
         self.expand_trace_button = QPushButton("Expand traces")
         self.expand_trace_button.setObjectName("ExpandResultTracesButton")
@@ -1372,14 +1524,16 @@ class ResultsPage(QWidget):
         figure_header.addWidget(self.expand_trace_button)
         self.image_info = QLabel("No figure loaded")
         self.image_info.setObjectName("Muted")
-        figure_header.addWidget(self.image_info)
+        self.image_info.setWordWrap(True)
+        self.image_info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        figure_actions = QHBoxLayout()
         self.full_resolution_button = QPushButton("Open source PNG")
         self.full_resolution_button.setEnabled(False)
         self.full_resolution_button.setToolTip(
             "Open the original plot at one source pixel per display pixel"
         )
         self.full_resolution_button.clicked.connect(self._open_full_resolution)
-        figure_header.addWidget(self.full_resolution_button)
+        figure_actions.addWidget(self.full_resolution_button)
         self.save_trace_button = QPushButton("Save plot…")
         self.save_trace_button.setObjectName("SaveResultTraceButton")
         self.save_trace_button.setEnabled(False)
@@ -1387,12 +1541,15 @@ class ResultsPage(QWidget):
             "Save the current 2-D or 3-D interactive plot as a high-resolution PNG"
         )
         self.save_trace_button.clicked.connect(self._save_voltage_trace)
-        figure_header.addWidget(self.save_trace_button)
+        figure_actions.addWidget(self.save_trace_button)
+        figure_actions.addStretch(1)
         figure_layout.addLayout(figure_header)
-        voltage_mode_row = QHBoxLayout()
-        voltage_mode_label = QLabel("View")
-        voltage_mode_label.setObjectName("Muted")
-        voltage_mode_row.addWidget(voltage_mode_label)
+        figure_layout.addWidget(self.image_info)
+        figure_layout.addLayout(figure_actions)
+        voltage_mode_row = QGridLayout()
+        self.voltage_mode_label = QLabel("View")
+        self.voltage_mode_label.setObjectName("Muted")
+        voltage_mode_row.addWidget(self.voltage_mode_label, 0, 0, 1, 2)
         self.voltage_2d_button = QPushButton("2D traces")
         self.voltage_2d_button.setObjectName("ViewModeButton")
         self.voltage_2d_button.setCheckable(True)
@@ -1409,22 +1566,28 @@ class ResultsPage(QWidget):
         self.voltage_morphology_button.setToolTip(
             "Requires actual compartment-voltage recordings; soma voltage is not spread across the morphology"
         )
+        self.spike_raster_button = QPushButton("Spike raster")
+        self.spike_raster_button.setObjectName("ViewModeButton")
+        self.spike_raster_button.setCheckable(True)
+        self.spike_raster_button.setEnabled(False)
         self.voltage_mode_group = QButtonGroup(self)
         self.voltage_mode_group.setExclusive(True)
-        for button in (
+        for index, button in enumerate((
             self.voltage_2d_button,
             self.voltage_3d_button,
             self.voltage_morphology_button,
-        ):
+            self.spike_raster_button,
+        )):
             self.voltage_mode_group.addButton(button)
-            voltage_mode_row.addWidget(button)
-        voltage_mode_row.addStretch(1)
+            voltage_mode_row.addWidget(button, 1 + index // 2, index % 2)
         self.voltage_2d_button.clicked.connect(
             lambda: self._set_voltage_plot_mode(MODE_2D)
         )
         self.voltage_3d_button.clicked.connect(
             lambda: self._set_voltage_plot_mode(MODE_3D_STACK)
         )
+        self.voltage_morphology_button.clicked.connect(self._set_morphology_voltage_mode)
+        self.spike_raster_button.clicked.connect(self._show_spike_raster)
         figure_layout.addLayout(voltage_mode_row)
         self.voltage_plot = VoltagePlotWidget()
         self.voltage_plot.status_message.connect(self.status_message)
@@ -1447,11 +1610,15 @@ class ResultsPage(QWidget):
         self.figure_stack.setObjectName("VoltageFigureStack")
         self.figure_stack.addWidget(self.voltage_plot)
         self.figure_stack.addWidget(self.image_scroll)
+        self.spike_raster = SpikeRasterWidget()
+        self.spike_raster.status_message.connect(self.status_message)
+        self.figure_stack.addWidget(self.spike_raster)
         self.figure_stack.setCurrentWidget(self.image_scroll)
         figure_layout.addWidget(self.figure_stack, 1)
         self.preview_splitter.addWidget(self.figure_panel)
 
         self.circuit_panel = QWidget()
+        self.circuit_panel.setMinimumWidth(300)
         circuit_layout = QVBoxLayout(self.circuit_panel)
         circuit_layout.setContentsMargins(0, 0, 0, 0)
         circuit_layout.setSpacing(7)
@@ -1471,12 +1638,13 @@ class ResultsPage(QWidget):
         self.result_full_skeletons_button.setEnabled(False)
         self.result_circuit_mode_group = QButtonGroup(self)
         self.result_circuit_mode_group.setExclusive(True)
+        circuit_modes = QHBoxLayout()
         for button in (
             self.result_soma_points_button,
             self.result_full_skeletons_button,
         ):
             self.result_circuit_mode_group.addButton(button)
-            circuit_header.addWidget(button)
+            circuit_modes.addWidget(button)
         self.result_soma_points_button.clicked.connect(
             lambda: self._set_result_circuit_mode(DISPLAY_MODE_SOMA_POINTS)
         )
@@ -1496,15 +1664,18 @@ class ResultsPage(QWidget):
         )
         circuit_header.addWidget(self.save_result_visualization_button)
         circuit_layout.addLayout(circuit_header)
+        circuit_layout.addLayout(circuit_modes)
         self.circuit_info = QLabel("No recorded morphology loaded")
         self.circuit_info.setObjectName("Muted")
         self.circuit_info.setWordWrap(True)
+        self.circuit_info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         circuit_layout.addWidget(self.circuit_info)
         self.circuit_identity = QLabel(
             "Run-packaged SWCs and their body IDs will appear here."
         )
         self.circuit_identity.setObjectName("Strong")
         self.circuit_identity.setWordWrap(True)
+        self.circuit_identity.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.circuit_identity.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -1535,6 +1706,7 @@ class ResultsPage(QWidget):
             "measurement of voltage in every compartment."
         )
         self.activity_method.setWordWrap(True)
+        self.activity_method.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         circuit_layout.addWidget(self.activity_method)
         activity_controls = QHBoxLayout()
         self.activity_condition_combo = QComboBox()
@@ -1543,6 +1715,8 @@ class ResultsPage(QWidget):
             "Activity playback condition"
         )
         self.activity_condition_combo.setEnabled(False)
+        self.activity_condition_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.activity_condition_combo.setMinimumContentsLength(12)
         self.activity_condition_combo.currentIndexChanged.connect(
             self._activity_track_changed
         )
@@ -1552,19 +1726,21 @@ class ResultsPage(QWidget):
         self.activity_play_button.setEnabled(False)
         self.activity_play_button.clicked.connect(self._toggle_activity_playback)
         activity_controls.addWidget(self.activity_play_button)
+        circuit_layout.addLayout(activity_controls)
+        activity_timeline = QHBoxLayout()
         self.activity_slider = QSlider(Qt.Orientation.Horizontal)
         self.activity_slider.setObjectName("ResultActivityTimeline")
         self.activity_slider.setAccessibleName("Activity playback simulation time")
         self.activity_slider.setRange(0, 0)
         self.activity_slider.setEnabled(False)
         self.activity_slider.valueChanged.connect(self._activity_frame_changed)
-        activity_controls.addWidget(self.activity_slider, 1)
+        activity_timeline.addWidget(self.activity_slider, 1)
         self.activity_time_label = QLabel("— ms")
         self.activity_time_label.setObjectName("Strong")
         self.activity_time_label.setMinimumWidth(68)
         self.activity_time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        activity_controls.addWidget(self.activity_time_label)
-        circuit_layout.addLayout(activity_controls)
+        activity_timeline.addWidget(self.activity_time_label)
+        circuit_layout.addLayout(activity_timeline)
         circuit_layout.addWidget(self.result_viewport, 1)
         circuit_hint = QLabel(
             "Drag to rotate · Shift-drag or middle-drag to move · wheel to zoom · "
@@ -1572,6 +1748,7 @@ class ResultsPage(QWidget):
         )
         circuit_hint.setObjectName("Muted")
         circuit_hint.setWordWrap(True)
+        circuit_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         circuit_layout.addWidget(circuit_hint)
         self.preview_splitter.addWidget(self.circuit_panel)
         self.preview_splitter.setStretchFactor(0, 7)
@@ -1628,6 +1805,7 @@ class ResultsPage(QWidget):
                 continue
             if manifest.get("state") == "completed":
                 candidates.append(summary)
+        candidates.extend((output_root / "replication_views").glob("*/summary.json"))
         if not candidates:
             QMessageBox.information(
                 self,
@@ -1662,7 +1840,14 @@ class ResultsPage(QWidget):
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Run summary must contain a JSON object.")
-        if payload.get("workflow") == EXPERIMENT_BUILDER_WORKFLOW:
+        if payload.get("workflow") == "pdcm_bionet_results_view_v1":
+            from digifly_app.core.pdcm_campaign_results import load_pdcm_campaign_result
+            return load_pdcm_campaign_result(path)
+        if payload.get("workflow") in {
+            EXPERIMENT_BUILDER_WORKFLOW,
+            "pdcm_replication_v1",
+            NETPYNE_WORKBENCH_WORKFLOW,
+        }:
             return load_generic_experiment_result(path)
         is_arbor = (
             payload.get("backend") == "arbor"
@@ -1675,12 +1860,39 @@ class ResultsPage(QWidget):
         )
 
     def display_result(self, result: ResultRecord) -> None:
+        is_pdcm = "PDCM" in result.title
+        is_netpyne = str(result.metadata.get("Engine", "")).casefold() == "netpyne"
+        is_point_network = is_pdcm or is_netpyne
+        run_root = Path(result.summary_path).expanduser().resolve().parent
+        has_spikes = (run_root / "spikes.csv").is_file() and (run_root / "cells.csv").is_file()
+        self.figure_title.setText(
+            "Population spike raster" if is_pdcm else
+            "NetPyNE spikes and voltage" if is_netpyne else "Voltage traces"
+        )
         self._current_result_name = Path(result.summary_path).expanduser().resolve().parent.name
         self._stop_activity_playback()
         self.result_status.setText(f"{result.status} · {result.completed_at}")
         clear_layout(self.result_checks)
         for check in result.checks:
             self.result_checks.addWidget(CheckRow(check))
+        population_rows = result.metadata.get("paper_population_table", [])
+        self.population_evidence_card.setVisible(bool(population_rows))
+        self.population_evidence_table.setRowCount(len(population_rows))
+        for row, values in enumerate(population_rows):
+            for column, key in enumerate(("population", "sampled_cells", "mean_rate_hz_60s", "mean_cv_isi_60s")):
+                value = str(values.get(key) or "undefined")
+                item = self.population_evidence_table.item(row, column)
+                if item is None:
+                    self.population_evidence_table.setItem(row, column, QTableWidgetItem(value))
+                else:
+                    item.setText(value)
+        if population_rows:
+            self.population_evidence_note.setText(
+                f"{result.metadata.get('drive')} · scale {result.metadata.get('scale')} · "
+                f"own network {result.metadata.get('network_seed')}, stimulus {result.metadata.get('stimulus_seed')} · "
+                "100–60,100 ms · undefined silent-population metrics remain blank in source data. "
+                "Technical acceptance is separate from scientific replication."
+            )
         clear_layout(self.artifact_rows)
         failed_artifacts = sum(not artifact.exists for artifact in result.artifacts)
         if failed_artifacts:
@@ -1726,6 +1938,26 @@ class ResultsPage(QWidget):
             )
         self._display_recorded_circuit(result)
         self._configure_voltage_plot(result)
+        self.expand_trace_button.setVisible(not is_point_network)
+        self.circuit_panel.setVisible(not is_point_network and not self.expand_trace_button.isChecked())
+        for control in (
+            self.voltage_mode_label,
+            self.voltage_2d_button,
+            self.voltage_3d_button,
+            self.voltage_morphology_button,
+        ):
+            control.setVisible(not is_pdcm)
+        self.spike_raster_button.setVisible(is_point_network and not is_pdcm and has_spikes)
+        self.spike_raster_button.setEnabled(is_point_network and has_spikes)
+        if is_point_network and has_spikes:
+            self.spike_raster.set_run(result.summary_path)
+            self.figure_stack.setCurrentWidget(self.spike_raster)
+            if not is_pdcm:
+                self.spike_raster_button.setChecked(True)
+            self.image_info.setText("Interactive spikes · zoom and filter populations")
+            self.save_trace_button.setEnabled(True)
+        else:
+            self.spike_raster.clear_run()
         self.status_message.emit(f"Loaded result: {Path(result.summary_path).name}")
 
     def _open_full_resolution(self) -> None:
@@ -1747,6 +1979,9 @@ class ResultsPage(QWidget):
         dialog.activateWindow()
 
     def _save_voltage_trace(self) -> None:
+        if self.figure_stack.currentWidget() is self.spike_raster:
+            self.spike_raster.save_current_view()
+            return
         if self.voltage_plot.trace_count:
             image = self.voltage_plot.render_high_resolution()
             mode = "3d-trace-stack" if self.voltage_plot.mode == MODE_3D_STACK else "2d-traces"
@@ -1797,7 +2032,11 @@ class ResultsPage(QWidget):
     def _set_voltage_plot_mode(self, mode: str) -> None:
         if not self.voltage_plot.trace_count:
             return
+        if self._morphology_voltage_active:
+            self._morphology_voltage_active = False
+            self._select_playback_tracks()
         self.voltage_plot.set_mode(mode)
+        self.figure_stack.setCurrentWidget(self.voltage_plot)
         is_3d = mode == MODE_3D_STACK
         self.voltage_2d_button.setChecked(not is_3d)
         self.voltage_3d_button.setChecked(is_3d)
@@ -1806,6 +2045,26 @@ class ResultsPage(QWidget):
             if is_3d
             else "Voltage plot switched to interactive 2-D traces"
         )
+
+    def _set_morphology_voltage_mode(self) -> None:
+        if not self._morphology_voltage_tracks:
+            return
+        self._morphology_voltage_active = True
+        self.voltage_morphology_button.setChecked(True)
+        self._set_trace_view_expanded(False)
+        self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS)
+        self._select_playback_tracks()
+        self.status_message.emit("Measured edge-center voltage playback; gray edges were not recorded")
+
+    def _show_spike_raster(self) -> None:
+        if self.spike_raster.index is None and self.spike_raster.window is None:
+            # The initial CSV index may still be loading in the background.
+            self.figure_stack.setCurrentWidget(self.spike_raster)
+            return
+        self.figure_stack.setCurrentWidget(self.spike_raster)
+        self.spike_raster_button.setChecked(True)
+        self.image_info.setText("Interactive spikes · zoom and filter populations")
+        self.status_message.emit("Showing interactive NetPyNE spike raster")
 
     def _voltage_time_selected(self, time_ms: float) -> None:
         track = self._current_activity_track()
@@ -1819,7 +2078,7 @@ class ResultsPage(QWidget):
 
     def _save_result_visualization(self) -> None:
         self.result_viewport.save_high_resolution_snapshot(
-            f"{self._current_result_name}-activity-flow.png"
+            f"{self._current_result_name}-{'measured-edge-voltage' if self._morphology_voltage_active else 'inferred-activity-flow'}.png"
         )
 
     @staticmethod
@@ -1994,16 +2253,30 @@ class ResultsPage(QWidget):
         stimulus_ids: set[str],
     ) -> None:
         self._stop_activity_playback()
-        self._activity_tracks = load_activity_flow_tracks(run_root)
+        self._flow_tracks = load_activity_flow_tracks(run_root)
+        self._morphology_voltage_active = False
+        try:
+            self._morphology_voltage_tracks = load_morphology_voltage_tracks(run_root, morphologies)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._morphology_voltage_tracks = ()
+            self.status_message.emit(f"Morphology voltage unavailable: {exc}")
+        self.voltage_morphology_button.setEnabled(bool(self._morphology_voltage_tracks))
         self._activity_distances = {
             morphology.record.neuron_id: segment_distances_from_soma(morphology)
             for morphology in morphologies
         }
         self._activity_stimulus_ids = set(stimulus_ids)
+        self._select_playback_tracks()
+
+    def _select_playback_tracks(self) -> None:
+        self._stop_activity_playback()
+        self.result_viewport.clear_activity_flow()
+        self._activity_tracks = self._morphology_voltage_tracks if self._morphology_voltage_active else self._flow_tracks
+        self.result_soma_points_button.setEnabled(not self._morphology_voltage_active and bool(self.result_viewport.neuron_count))
         has_spikes = any(
-            any(track.spikes_by_neuron.values()) for track in self._activity_tracks
+            any(track.spikes_by_neuron.values()) for track in self._flow_tracks
         )
-        enabled = bool(self._activity_tracks and has_spikes)
+        enabled = bool(self._activity_tracks and (self._morphology_voltage_active or has_spikes))
         self.activity_condition_combo.blockSignals(True)
         self.activity_condition_combo.clear()
         for index, track in enumerate(self._activity_tracks):
@@ -2014,8 +2287,10 @@ class ResultsPage(QWidget):
         self.activity_slider.setEnabled(enabled)
         if enabled:
             self.activity_method.setText(
-                "Inferred activity flow · soma spikes + SWC path distance"
+                "Measured edge-center voltage · blue −90 to red +50 mV (display clipped) · gray = unrecorded · temporal interpolation only within recorded support"
+                if self._morphology_voltage_active else "Inferred activity flow · soma spikes + SWC path distance"
             )
+            self.activity_method.setToolTip(self.activity_method.text())
             self._activity_track_changed(0)
         else:
             self.activity_slider.setRange(0, 0)
@@ -2028,6 +2303,10 @@ class ResultsPage(QWidget):
     def _reset_activity_playback(self) -> None:
         self._stop_activity_playback()
         self._activity_tracks = ()
+        self._flow_tracks = ()
+        self._morphology_voltage_tracks = ()
+        self._morphology_voltage_active = False
+        self.voltage_morphology_button.setEnabled(False)
         self._activity_distances = {}
         self._activity_stimulus_ids = set()
         self.activity_condition_combo.clear()
@@ -2044,7 +2323,7 @@ class ResultsPage(QWidget):
         self.result_soma_points_button.setEnabled(False)
         self.result_full_skeletons_button.setEnabled(False)
 
-    def _current_activity_track(self) -> ActivityFlowTrack | None:
+    def _current_activity_track(self) -> ActivityFlowTrack | MorphologyVoltageTrack | None:
         index = self.activity_condition_combo.currentData()
         if not isinstance(index, int) or not (0 <= index < len(self._activity_tracks)):
             return None
@@ -2069,6 +2348,13 @@ class ResultsPage(QWidget):
         time_ms = track.frame_times_ms[index]
         self.activity_time_label.setText(f"{time_ms:.2f} ms")
         self.voltage_plot.set_time_cursor(time_ms)
+        if isinstance(track, MorphologyVoltageTrack):
+            if self.result_viewport.display_mode != DISPLAY_MODE_FULL_SKELETONS:
+                self.result_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+                self.result_full_skeletons_button.setChecked(True)
+            self.result_viewport.set_highlights(soma_ids=set())
+            self.result_viewport.set_measured_voltages(measured_segment_voltages(track, time_ms))
+            return
         if self.result_viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
             self.result_viewport.set_activity_flow({})
             self.result_viewport.set_highlights(
@@ -2121,16 +2407,41 @@ class ResultsPage(QWidget):
 
 
 class EnginesPage(QWidget):
-    def __init__(self, overview: OverviewPage, parent: QWidget | None = None):
+    result_ready = Signal(str)
+
+    def __init__(
+        self,
+        overview: OverviewPage,
+        parent: QWidget | None = None,
+        *,
+        mode: str = "both",
+    ):
         super().__init__(parent)
+        if mode not in {"both", "adapters", "netpyne"}:
+            raise ValueError(f"Unsupported EnginesPage mode: {mode}")
+        self.mode = mode
         self.overview = overview
+        self._pdcm_worker: PDCMRunWorker | None = None
+        self._netpyne_worker: NetPyNEWorkbenchRunWorker | None = None
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(30, 26, 30, 32)
         layout.setSpacing(18)
-        layout.addLayout(
+        if mode == "netpyne":
+            layout.addLayout(
+                _page_header(
+                    "NetPyNE Workbench",
+                    "Define, simulate, and analyze",
+                    "Build a supported synthetic model or run a condition from the pinned cortical microcircuit reference. Results open in Digifly's Results tab.",
+                )
+            )
+        adapter_host = QWidget()
+        adapter_layout = QVBoxLayout(adapter_host)
+        adapter_layout.setContentsMargins(0, 0, 0, 0)
+        adapter_layout.setSpacing(18)
+        adapter_layout.addLayout(
             _page_header(
                 "Adapters",
                 "Independent scientific runtimes",
@@ -2143,10 +2454,10 @@ class EnginesPage(QWidget):
         top = QHBoxLayout()
         top.addWidget(refresh)
         top.addStretch()
-        layout.addLayout(top)
+        adapter_layout.addLayout(top)
         self.cards = QVBoxLayout()
         self.cards.setSpacing(12)
-        layout.addLayout(self.cards)
+        adapter_layout.addLayout(self.cards)
         note = Card()
         note_layout = QVBoxLayout(note)
         note_layout.setContentsMargins(17, 15, 17, 15)
@@ -2162,9 +2473,429 @@ class EnginesPage(QWidget):
         body.setObjectName("Muted")
         body.setWordWrap(True)
         note_layout.addWidget(body)
-        layout.addWidget(note)
+        adapter_layout.addWidget(note)
+        if mode != "netpyne":
+            layout.addWidget(adapter_host)
+        replication = Card()
+        self.pdcm_card = replication
+        replication_form = QFormLayout(replication)
+        replication_form.setContentsMargins(18, 18, 18, 18)
+        replication_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        replication_title = QLabel("PDCM paper · NetPyNE condition")
+        replication_title.setObjectName("SectionTitle")
+        replication_form.addRow(replication_title)
+        replication_note = QLabel(
+            "Run one condition from the authors' pinned point-neuron model. "
+            "A short run is a compatibility pilot, not a full-paper replication. "
+            "The authors' model source stays outside the app package."
+        )
+        replication_note.setObjectName("Muted")
+        replication_note.setWordWrap(True)
+        replication_form.addRow(replication_note)
+        runtime_controls = QHBoxLayout()
+        self.pdcm_runtime_edit = QLineEdit(self.overview.netpyne_python_edit.text())
+        self.pdcm_runtime_edit.setReadOnly(True)
+        self.pdcm_runtime_edit.setPlaceholderText("Choose NetPyNE Python in Workspace")
+        self.overview.netpyne_python_edit.textChanged.connect(self.pdcm_runtime_edit.setText)
+        runtime_controls.addWidget(self.pdcm_runtime_edit, 1)
+        configure_runtime = QPushButton("Find/install…")
+        configure_runtime.clicked.connect(self.overview.open_runtime_setup)
+        runtime_controls.addWidget(configure_runtime)
+        replication_form.addRow("NetPyNE runtime", runtime_controls)
+        configured_model = str(QSettings(ORGANIZATION_NAME, APPLICATION_NAME).value("pdcm_model_dir", ""))
+        if not configured_model:
+            standard_model = Path(self.overview.output_edit.text()).expanduser().parent / "data" / "models" / f"PDCM_NetPyNE-{MODEL_COMMIT[:8]}"
+            if standard_model.is_dir():
+                configured_model = str(standard_model)
+        self.pdcm_model_edit = QLineEdit(configured_model)
+        self.pdcm_model_edit.setPlaceholderText("Select the authors' PDCM_NetPyNE model folder")
+        replication_form.addRow(
+            "Model source",
+            _path_row(self.pdcm_model_edit, self, "Choose PDCM model source"),
+        )
+        source_controls = QHBoxLayout()
+        self.pdcm_verify_button = QPushButton("Verify pinned source")
+        self.pdcm_verify_button.clicked.connect(self._verify_pdcm_source)
+        self.pdcm_model_edit.editingFinished.connect(self._verify_pdcm_source)
+        self.pdcm_source_status = QLabel("Source not verified")
+        self.pdcm_source_status.setObjectName("Muted")
+        self.pdcm_source_status.setWordWrap(True)
+        source_controls.addWidget(self.pdcm_verify_button)
+        source_controls.addWidget(self.pdcm_source_status, 1)
+        replication_form.addRow("", source_controls)
+        self.pdcm_preset = QComboBox()
+        self.pdcm_preset.addItem("Custom condition", None)
+        for percentage in (1, 2, 5, 10, 20, 30, 40, 50, 60, 80, 100):
+            for drive_label, drive in (
+                ("balanced Poisson", "balanced_poisson"),
+                ("balanced DC", "balanced_dc"),
+            ):
+                self.pdcm_preset.addItem(
+                    f"{percentage}% · 60 s {drive_label}",
+                    (percentage / 100, 60_100, drive),
+                )
+        self.pdcm_preset.insertSeparator(self.pdcm_preset.count())
+        self.pdcm_preset.addItem("100% · 1 s unbalanced Poisson", (1.0, 1_100, "unbalanced_poisson"))
+        self.pdcm_preset.addItem("1% · 200 ms compatibility check", (0.01, 200, "balanced_poisson"))
+        self.pdcm_preset.setToolTip(
+            "The 60-second presets follow the paper's supplementary scale grid. "
+            "Large networks may need a cluster; selecting a preset does not change where Digifly runs it."
+        )
+        replication_form.addRow("Condition preset", self.pdcm_preset)
+        self.pdcm_name_edit = QLineEdit()
+        self.pdcm_name_edit.setPlaceholderText("Unique name for this run")
+        replication_form.addRow("Run name", self.pdcm_name_edit)
+        self.pdcm_scale = QDoubleSpinBox()
+        self.pdcm_scale.setRange(0.01, 1.0)
+        self.pdcm_scale.setDecimals(2)
+        self.pdcm_scale.setSingleStep(0.01)
+        self.pdcm_scale.setValue(0.01)
+        replication_form.addRow("Network scale", self.pdcm_scale)
+        self.pdcm_duration = QSpinBox()
+        self.pdcm_duration.setRange(200, 61000)
+        self.pdcm_duration.setValue(1100)
+        self.pdcm_duration.setSuffix(" ms (includes 100 ms settling)")
+        replication_form.addRow("Duration", self.pdcm_duration)
+        self.pdcm_drive = QComboBox()
+        for label, value in (
+            ("Balanced Poisson", "balanced_poisson"),
+            ("Balanced DC", "balanced_dc"),
+            ("Unbalanced Poisson", "unbalanced_poisson"),
+        ):
+            self.pdcm_drive.addItem(label, value)
+        replication_form.addRow("External drive", self.pdcm_drive)
+        self.pdcm_seed = QSpinBox()
+        self.pdcm_seed.setRange(0, 2**31 - 1)
+        self.pdcm_seed.setValue(3)
+        self.pdcm_seed.setToolTip("Authors' stimulation seed; wiring and location seeds remain in their source model.")
+        replication_form.addRow("Stimulation seed", self.pdcm_seed)
+        self._applying_pdcm_preset = False
+        self.pdcm_preset.currentIndexChanged.connect(self._apply_pdcm_preset)
+        self.pdcm_scale.valueChanged.connect(self._mark_custom_pdcm_preset)
+        self.pdcm_scale.valueChanged.connect(self._update_pdcm_overview)
+        self.pdcm_duration.valueChanged.connect(self._mark_custom_pdcm_preset)
+        self.pdcm_drive.currentIndexChanged.connect(self._mark_custom_pdcm_preset)
+        self.pdcm_run_button = QPushButton("Create and simulate condition")
+        self.pdcm_run_button.setProperty("netpynePrimary", True)
+        self.pdcm_run_button.clicked.connect(self._run_pdcm)
+        self.pdcm_stop_button = QPushButton("Stop")
+        self.pdcm_stop_button.setEnabled(False)
+        self.pdcm_stop_button.clicked.connect(self._stop_pdcm)
+        self.pdcm_status = QLabel("Not started")
+        self.pdcm_status.setObjectName("Muted")
+        self.pdcm_status.setWordWrap(True)
+        controls = QHBoxLayout()
+        controls.addWidget(self.pdcm_run_button)
+        controls.addWidget(self.pdcm_stop_button)
+        controls.addWidget(self.pdcm_status, 1)
+        replication_form.addRow("", controls)
+        self._pdcm_source_overview: PDCMSourceOverview | None = None
+        if mode != "adapters":
+            if mode == "netpyne":
+                self.netpyne_tabs = QTabWidget()
+                self.netpyne_tabs.setObjectName("NetPyNEWorkspaceTabs")
+                self.netpyne_tabs.tabBar().setObjectName("NetPyNEWorkspaceTabs")
+                self.netpyne_tabs.setDocumentMode(True)
+                reference_page = QWidget()
+                reference_layout = QVBoxLayout(reference_page)
+                reference_layout.setContentsMargins(0, 12, 0, 0)
+                reference_layout.setSpacing(12)
+                target_layout = reference_layout
+            else:
+                target_layout = layout
+            target_layout.addWidget(replication)
+            model_card = Card()
+            model_layout = QVBoxLayout(model_card)
+            model_layout.setContentsMargins(18, 18, 18, 18)
+            model_layout.setSpacing(10)
+            model_heading = QLabel("Pinned network overview")
+            model_heading.setObjectName("SectionTitle")
+            model_layout.addWidget(model_heading)
+            self.pdcm_model_note = QLabel(
+                "Verify the author source to inspect its populations and connectivity. "
+                "Figures 1–9 use IntFire_PD point neurons, so there are no SWCs to load in this reference lane. "
+                "The source's excitatory weights are positive and inhibitory weights negative; "
+                "this panel does not edit those rules."
+            )
+            self.pdcm_model_note.setObjectName("Muted")
+            self.pdcm_model_note.setWordWrap(True)
+            model_layout.addWidget(self.pdcm_model_note)
+            self.pdcm_population_table = QTableWidget(0, 4)
+            self.pdcm_population_table.setHorizontalHeaderLabels(
+                ["Population", "Effect", "Cells at scale", "Full-size cells"]
+            )
+            self.pdcm_population_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            self.pdcm_population_table.setAlternatingRowColors(True)
+            self.pdcm_population_table.horizontalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Stretch
+            )
+            self.pdcm_population_table.setMinimumHeight(262)
+            model_layout.addWidget(self.pdcm_population_table)
+            connection_heading = QLabel("Connection probability · rows receive from columns")
+            connection_heading.setObjectName("Strong")
+            model_layout.addWidget(connection_heading)
+            self.pdcm_connection_table = QTableWidget(0, 0)
+            self.pdcm_connection_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            self.pdcm_connection_table.setAlternatingRowColors(True)
+            self.pdcm_connection_table.horizontalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Stretch
+            )
+            self.pdcm_connection_table.setMinimumHeight(270)
+            model_layout.addWidget(self.pdcm_connection_table)
+            target_layout.addWidget(model_card)
+            if mode == "netpyne":
+                reference_layout.addStretch(1)
+                self.netpyne_tabs.addTab(reference_page, "PDCM reference model")
+                editable_page = QWidget()
+                editable_layout = QVBoxLayout(editable_page)
+                editable_layout.setContentsMargins(0, 12, 0, 0)
+                editable_layout.setSpacing(12)
+                self.netpyne_editor = NetPyNEModelEditor()
+                run_card = Card()
+                run_layout = QFormLayout(run_card)
+                run_layout.setContentsMargins(18, 18, 18, 18)
+                run_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+                run_heading = QLabel("Run editable model locally")
+                run_heading.setObjectName("SectionTitle")
+                run_layout.addRow(run_heading)
+                run_note = QLabel(
+                    "Only schema-v1 synthetic single-soma HH models run in this lane. "
+                    "NetPyNE and NEURON execute in the Workspace runtime; saved inputs and results stay in your output root."
+                )
+                run_note.setObjectName("Muted")
+                run_note.setWordWrap(True)
+                run_layout.addRow(run_note)
+                self.netpyne_run_name = QLineEdit()
+                self.netpyne_run_name.setPlaceholderText("Unique name for this run")
+                run_layout.addRow("Run name", self.netpyne_run_name)
+                run_controls = QHBoxLayout()
+                self.netpyne_run_button = QPushButton("Create and simulate model")
+                self.netpyne_run_button.setProperty("netpynePrimary", True)
+                self.netpyne_run_button.clicked.connect(self._run_netpyne_workbench)
+                self.netpyne_stop_button = QPushButton("Stop")
+                self.netpyne_stop_button.setEnabled(False)
+                self.netpyne_stop_button.clicked.connect(self._stop_netpyne_workbench)
+                self.netpyne_run_status = QLabel("Not started")
+                self.netpyne_run_status.setObjectName("Muted")
+                self.netpyne_run_status.setWordWrap(True)
+                run_controls.addWidget(self.netpyne_run_button)
+                run_controls.addWidget(self.netpyne_stop_button)
+                run_controls.addWidget(self.netpyne_run_status, 1)
+                run_layout.addRow("", run_controls)
+                editable_layout.addWidget(run_card)
+                editable_layout.addWidget(self.netpyne_editor)
+                self.netpyne_editor.validation_changed.connect(
+                    lambda valid, _message: self.netpyne_run_button.setEnabled(
+                        valid and self._netpyne_worker is None
+                    )
+                )
+                self.netpyne_tabs.addTab(editable_page, "Build a model · v1")
+                self.replication_panel = PDCMReplicationPanel(self.overview, self)
+                self.replication_panel.result_ready.connect(self.result_ready.emit)
+                self.replication_panel.busy_changed.connect(self._replication_busy_changed)
+                self.netpyne_tabs.addTab(self.replication_panel, "Replication · BioNet / saved runs")
+                layout.addWidget(self.netpyne_tabs)
+            if configured_model:
+                self._verify_pdcm_source()
         layout.addStretch(1)
         root.addWidget(_scroll_page(content))
+
+    def _replication_busy_changed(self, busy: bool) -> None:
+        # The local scientific runtimes share one serial execution lane.
+        self.pdcm_run_button.setEnabled(not busy and self._pdcm_worker is None)
+        self.netpyne_run_button.setEnabled(not busy and self._netpyne_worker is None)
+
+    def _verify_pdcm_source(self) -> None:
+        path = self.pdcm_model_edit.text().strip()
+        if not path:
+            self._pdcm_source_overview = None
+            self.pdcm_source_status.setText("Choose the authors' model folder")
+            self._update_pdcm_overview()
+            return
+        try:
+            overview = read_pinned_pdcm_overview(Path(path))
+        except (OSError, ValueError) as exc:
+            self._pdcm_source_overview = None
+            self.pdcm_source_status.setText(f"Not verified · {exc}")
+        else:
+            self._pdcm_source_overview = overview
+            self.pdcm_source_status.setText(f"Verified read-only source · {MODEL_COMMIT[:12]}")
+        self._update_pdcm_overview()
+
+    def _update_pdcm_overview(self, _value: object = None) -> None:
+        if self.mode == "adapters":
+            return
+        overview = self._pdcm_source_overview
+        if overview is None:
+            self.pdcm_population_table.setRowCount(0)
+            self.pdcm_connection_table.setRowCount(0)
+            self.pdcm_connection_table.setColumnCount(0)
+            return
+        self.pdcm_population_table.setRowCount(len(overview.populations))
+        scaled = overview.scaled_counts(self.pdcm_scale.value())
+        for row, (label, count, full) in enumerate(
+            zip(overview.populations, scaled, overview.full_counts, strict=True)
+        ):
+            role = "Excitatory (+)" if row % 2 == 0 else "Inhibitory (−)"
+            for column, value in enumerate((label, role, f"{count:,}", f"{full:,}")):
+                self.pdcm_population_table.setItem(row, column, QTableWidgetItem(value))
+        self.pdcm_connection_table.setRowCount(len(overview.populations))
+        self.pdcm_connection_table.setColumnCount(len(overview.populations))
+        self.pdcm_connection_table.setHorizontalHeaderLabels(list(overview.populations))
+        self.pdcm_connection_table.setVerticalHeaderLabels(list(overview.populations))
+        for row, values in enumerate(overview.connection_probabilities):
+            for column, probability in enumerate(values):
+                self.pdcm_connection_table.setItem(
+                    row, column, QTableWidgetItem(f"{probability:.4f}")
+                )
+
+    def _apply_pdcm_preset(self, index: int) -> None:
+        preset = self.pdcm_preset.itemData(index)
+        if preset is None:
+            return
+        scale, duration, drive = preset
+        self._applying_pdcm_preset = True
+        try:
+            self.pdcm_scale.setValue(scale)
+            self.pdcm_duration.setValue(duration)
+            drive_index = self.pdcm_drive.findData(drive)
+            if drive_index >= 0:
+                self.pdcm_drive.setCurrentIndex(drive_index)
+        finally:
+            self._applying_pdcm_preset = False
+
+    def _mark_custom_pdcm_preset(self, _value: object) -> None:
+        if not self._applying_pdcm_preset and self.pdcm_preset.currentIndex() != 0:
+            self.pdcm_preset.setCurrentIndex(0)
+
+    def _run_pdcm(self) -> None:
+        if self._pdcm_worker is not None or getattr(self, "runtime_busy", lambda: False)():
+            QMessageBox.warning(self, "Scientific run already active", "Finish or safely stop the active app run first.")
+            return
+        try:
+            spec = PDCMReplicationSpec(
+                name=self.pdcm_name_edit.text(),
+                scale=self.pdcm_scale.value(),
+                duration_ms=self.pdcm_duration.value(),
+                drive=str(self.pdcm_drive.currentData()),
+                seed=self.pdcm_seed.value(),
+            )
+            spec.validate()
+            if not self.pdcm_model_edit.text().strip():
+                raise ValueError("Choose the authors' PDCM model folder first")
+            if not self.overview.netpyne_python_edit.text().strip():
+                raise ValueError("Choose a NetPyNE Python in Workspace first")
+            model_dir = Path(self.pdcm_model_edit.text()).expanduser()
+            output_root = Path(self.overview.output_edit.text()).expanduser()
+            python = Path(self.overview.netpyne_python_edit.text()).expanduser()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Cannot start PDCM run", str(exc))
+            return
+        if spec.scale >= 0.1:
+            answer = QMessageBox.question(
+                self,
+                "Large PDCM network",
+                "The paper describes over 30 million synapses for its 10% example, "
+                "but counts from this pinned source may differ. Larger scales can "
+                "require substantial memory and compute time. This local Digifly "
+                "lane uses one worker. Continue on this machine?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        QSettings(ORGANIZATION_NAME, APPLICATION_NAME).setValue("pdcm_model_dir", str(model_dir))
+        self.pdcm_run_button.setEnabled(False)
+        self.pdcm_stop_button.setEnabled(True)
+        self.pdcm_status.setText("Running in NetPyNE… this can take a while at larger scales")
+        self._pdcm_worker = PDCMRunWorker(
+            spec, model_dir=model_dir, output_root=output_root, python=python, parent=self
+        )
+        self._pdcm_worker.succeeded.connect(self._pdcm_completed)
+        self._pdcm_worker.failed.connect(self._pdcm_failed)
+        self._pdcm_worker.cancelled.connect(self._pdcm_cancelled)
+        self._pdcm_worker.finished.connect(self._pdcm_finished)
+        self._pdcm_worker.start()
+
+    def _pdcm_completed(self, summary: str) -> None:
+        self.pdcm_status.setText(f"Completed · {Path(summary).parent.name}")
+        self.result_ready.emit(summary)
+
+    def _pdcm_failed(self, detail: str) -> None:
+        self.pdcm_status.setText("Run failed · see the saved run's worker.log if it was prepared")
+        QMessageBox.warning(self, "PDCM run failed", detail)
+
+    def _stop_pdcm(self) -> None:
+        if self._pdcm_worker is not None:
+            self.pdcm_stop_button.setEnabled(False)
+            self.pdcm_status.setText("Stopping NetPyNE and recording cancellation…")
+            self._pdcm_worker.request_cancel()
+
+    def _pdcm_cancelled(self) -> None:
+        self.pdcm_status.setText("Run cancelled; partial output remains in its run folder")
+
+    def _pdcm_finished(self) -> None:
+        self.pdcm_run_button.setEnabled(True)
+        self.pdcm_stop_button.setEnabled(False)
+        if self._pdcm_worker is not None:
+            self._pdcm_worker.deleteLater()
+            self._pdcm_worker = None
+
+    def _run_netpyne_workbench(self) -> None:
+        if self._netpyne_worker is not None or getattr(self, "runtime_busy", lambda: False)():
+            QMessageBox.warning(self, "Scientific run already active", "Finish or safely stop the active app run first.")
+            return
+        try:
+            model = self.netpyne_editor.model_spec()
+            model.require_exportable()
+            name = self.netpyne_run_name.text().strip()
+            if not name:
+                raise ValueError("Name this NetPyNE run first")
+            if not self.overview.netpyne_python_edit.text().strip():
+                raise ValueError("Choose a NetPyNE Python in Workspace first")
+            output_root = Path(self.overview.output_edit.text()).expanduser()
+            run_root = workbench_run_directory(output_root, name)
+            if run_root.exists():
+                raise ValueError(f"A NetPyNE run with this name already exists: {run_root}")
+            python = Path(self.overview.netpyne_python_edit.text()).expanduser()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Cannot start NetPyNE run", str(exc))
+            return
+        self.netpyne_run_button.setEnabled(False)
+        self.netpyne_stop_button.setEnabled(True)
+        self.netpyne_editor.setEnabled(False)
+        self.netpyne_run_status.setText("Preparing a frozen model and starting NetPyNE…")
+        self._netpyne_worker = NetPyNEWorkbenchRunWorker(
+            model, name=name, output_root=output_root, python=python, parent=self
+        )
+        self._netpyne_worker.succeeded.connect(self._netpyne_workbench_completed)
+        self._netpyne_worker.failed.connect(self._netpyne_workbench_failed)
+        self._netpyne_worker.cancelled.connect(self._netpyne_workbench_cancelled)
+        self._netpyne_worker.finished.connect(self._netpyne_workbench_finished)
+        self._netpyne_worker.start()
+
+    def _netpyne_workbench_completed(self, summary: str) -> None:
+        self.netpyne_run_status.setText(f"Completed · {Path(summary).parent.name}")
+        self.result_ready.emit(summary)
+
+    def _netpyne_workbench_failed(self, detail: str) -> None:
+        self.netpyne_run_status.setText("Run failed · inspect the saved run log if preparation completed")
+        QMessageBox.warning(self, "NetPyNE run failed", detail)
+
+    def _stop_netpyne_workbench(self) -> None:
+        if self._netpyne_worker is not None:
+            self.netpyne_stop_button.setEnabled(False)
+            self.netpyne_run_status.setText("Stopping NetPyNE; partial run files will remain…")
+            self._netpyne_worker.request_cancel()
+
+    def _netpyne_workbench_cancelled(self) -> None:
+        self.netpyne_run_status.setText("Run cancelled; partial files remain in its run folder")
+
+    def _netpyne_workbench_finished(self) -> None:
+        self.netpyne_stop_button.setEnabled(False)
+        self.netpyne_editor.setEnabled(True)
+        if self._netpyne_worker is not None:
+            self._netpyne_worker.deleteLater()
+            self._netpyne_worker = None
+        self.netpyne_run_button.setEnabled(self.netpyne_editor.refresh_validation())
 
     def refresh(self) -> None:
         clear_layout(self.cards)
@@ -2174,6 +2905,7 @@ class EnginesPage(QWidget):
                 self.overview.python_edit.text(),
                 self.overview.arbor_python_edit.text(),
                 self.overview.bmtk_python_edit.text(),
+                self.overview.netpyne_python_edit.text(),
             )
         except Exception as exc:
             self.cards.addWidget(_muted_label(f"Engine probe failed: {exc}"))
@@ -2237,6 +2969,7 @@ class MainWindow(QMainWindow):
                 ("Circuit Builder", "⌁"),
                 ("Experiment Builder", "◉"),
                 ("Results", "▦"),
+                ("NetPyNE", "◈"),
                 ("Engines", "◇"),
             )
         ):
@@ -2292,6 +3025,9 @@ class MainWindow(QMainWindow):
         self.overview_page.output_edit.textChanged.connect(
             self.experiment_page.set_output_root
         )
+        self.circuit_builder_page.experiment_globals_applied.connect(
+            self.experiment_page.apply_circuit_experiment_globals
+        )
         self.overview_page.python_edit.textChanged.connect(
             self.experiment_page.set_neuron_runtime
         )
@@ -2305,13 +3041,27 @@ class MainWindow(QMainWindow):
             self.experiment_page.set_digifly_public_root
         )
         self.results_page = ResultsPage(self.overview_page, self.experiment_page)
-        self.engines_page = EnginesPage(self.overview_page)
+        self.netpyne_page = EnginesPage(self.overview_page, mode="netpyne")
+        self.netpyne_page.runtime_busy = lambda: (
+            self.experiment_page._process is not None or self.netpyne_page.replication_panel.active
+            or self.netpyne_page._pdcm_worker is not None or self.netpyne_page._netpyne_worker is not None
+        )
+        self.netpyne_page.replication_panel.runtime_busy = lambda: (
+            self.experiment_page._process is not None or self.netpyne_page._pdcm_worker is not None
+            or self.netpyne_page._netpyne_worker is not None
+        )
+        self.experiment_page.runtime_busy = lambda: (
+            self.netpyne_page.replication_panel.active or self.netpyne_page._pdcm_worker is not None
+            or self.netpyne_page._netpyne_worker is not None
+        )
+        self.engines_page = EnginesPage(self.overview_page, mode="adapters")
         for page in (
             self.overview_page,
             self.data_library_page,
             self.circuit_builder_page,
             self.experiment_page,
             self.results_page,
+            self.netpyne_page,
             self.engines_page,
         ):
             self.pages.addWidget(page)
@@ -2335,6 +3085,7 @@ class MainWindow(QMainWindow):
         )
         self.experiment_page.status_message.connect(self.statusBar().showMessage)
         self.results_page.status_message.connect(self.statusBar().showMessage)
+        self.netpyne_page.result_ready.connect(self._show_pdcm_result)
         self.experiment_page.result_ready.connect(
             lambda _result: self.show_page(self.pages.indexOf(self.results_page))
         )
@@ -2343,6 +3094,8 @@ class MainWindow(QMainWindow):
         self._project_workflow: str | None = None
         self._build_menu()
         self._restore_settings()
+        from .widgets import add_accessible_choice_buttons
+        add_accessible_choice_buttons(self)
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
         self.show_page(0)
@@ -2438,6 +3191,14 @@ class MainWindow(QMainWindow):
         """Navigate for mouse, keyboard, and accessibility state changes."""
         if checked and self.pages.currentIndex() != index:
             self.show_page(index)
+
+    def _show_pdcm_result(self, summary: str) -> None:
+        try:
+            self.results_page.display_result(self.results_page._load_result(Path(summary)))
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open PDCM result", str(exc))
+            return
+        self.show_page(self.pages.indexOf(self.results_page))
 
     def show_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
@@ -2608,6 +3369,7 @@ class MainWindow(QMainWindow):
         saved_worker_python = self.settings.value("neuron_python")
         saved_arbor_python = self.settings.value("arbor_python")
         saved_bmtk_python = self.settings.value("bmtk_python")
+        saved_netpyne_python = self.settings.value("netpyne_python")
         try:
             profile = load_default_profile()
         except (OSError, ValueError):
@@ -2617,12 +3379,14 @@ class MainWindow(QMainWindow):
         profile_neuron: Path | None = None
         profile_arbor: Path | None = None
         profile_bmtk: Path | None = None
+        profile_netpyne: Path | None = None
         if profile is not None:
             profile_workspace = profile.workspace_root
             profile_output = profile.output_root
             profile_neuron = profile.runtime_path(ResourceKind.NEURON_RUNTIME)
             profile_arbor = profile.runtime_path(ResourceKind.ARBOR_RUNTIME)
             profile_bmtk = profile.runtime_path(ResourceKind.BMTK_RUNTIME)
+            profile_netpyne = profile.runtime_path(ResourceKind.NETPYNE_RUNTIME)
 
         workspace = _first_valid_path(
             saved_workspace,
@@ -2654,6 +3418,12 @@ class MainWindow(QMainWindow):
             validator=_valid_runtime_path,
             preserve_final_symlink=True,
         )
+        netpyne_python = _first_valid_path(
+            profile_netpyne,
+            saved_netpyne_python,
+            validator=_valid_runtime_path,
+            preserve_final_symlink=True,
+        )
         container_runtime = container_runtime_launcher()
         if not worker_python and container_runtime:
             worker_python = container_runtime
@@ -2661,6 +3431,8 @@ class MainWindow(QMainWindow):
             arbor_python = container_runtime or bundled_arbor_python()
         if not bmtk_python and container_runtime:
             bmtk_python = container_runtime
+        if not netpyne_python and container_runtime:
+            netpyne_python = container_runtime
         # Import only read-only input/runtime bindings from the legacy app on
         # first launch. Workstation outputs deliberately remain in their new
         # default root so the two applications cannot overwrite each other's
@@ -2686,6 +3458,11 @@ class MainWindow(QMainWindow):
             self.overview_page.arbor_python_edit.setText(str(arbor_python))
         if bmtk_python:
             self.overview_page.bmtk_python_edit.setText(str(bmtk_python))
+        if netpyne_python:
+            self.overview_page.netpyne_python_edit.setText(str(netpyne_python))
+        # The cell-set page is constructed before saved workspace restoration.
+        # Discover its sources from the restored root, not the initial blank root.
+        self.circuit_builder_page.refresh_connectomes()
         if (
             (saved_workspace and not _valid_workspace_path(saved_workspace))
             or (saved_output and not _valid_output_path(saved_output))
@@ -2695,6 +3472,25 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: Any) -> None:
+        replication = getattr(self.netpyne_page, "replication_panel", None)
+        if replication is not None and replication.active:
+            QMessageBox.warning(
+                self,
+                "Replication work is still active",
+                "Return to the replication tab and use Stop safely for a simulation, "
+                "or let the saved-result import finish. Partial evidence is preserved.",
+            )
+            event.ignore()
+            return
+        pdcm_worker = self.netpyne_page._pdcm_worker
+        if pdcm_worker is not None and pdcm_worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "A NetPyNE run is still active",
+                "Return to NetPyNE and use Stop. Digifly will record the run as cancelled before closing.",
+            )
+            event.ignore()
+            return
         if self.data_library_page.import_in_progress:
             QMessageBox.warning(
                 self,
@@ -2719,6 +3515,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("neuron_python", self.overview_page.python_edit.text())
         self.settings.setValue("arbor_python", self.overview_page.arbor_python_edit.text())
         self.settings.setValue("bmtk_python", self.overview_page.bmtk_python_edit.text())
+        self.settings.setValue("netpyne_python", self.overview_page.netpyne_python_edit.text())
         super().closeEvent(event)
 
 

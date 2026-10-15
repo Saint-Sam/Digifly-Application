@@ -12,6 +12,7 @@ from typing import Any
 
 from .circuit import CircuitSpec
 from .connectomes import NeuronRecord
+from .swc_units import source_coordinate_contract
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class Morphology:
     nodes: tuple[SwcNode, ...]
     segments: tuple[SwcSegment, ...]
     bounds: tuple[float, float, float, float, float, float]
+    coordinate_transform: dict[str, Any] | None = None
 
     @property
     def center(self) -> tuple[float, float, float]:
@@ -155,8 +157,18 @@ def locate_soma(morphology: Morphology) -> SomaLocation:
     return SomaLocation(None, morphology.center, 0.01, "inferred-soma")
 
 
-def load_swc(record: NeuronRecord) -> Morphology:
+def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
+             allow_point_preview: bool = False) -> Morphology:
+    """Read an SWC without healing; execution remains single-root by default.
+
+    A visualization caller may preserve disconnected release components. This
+    does not infer their missing links or make the SWC simulation-ready.
+    A separately opted-in point-only preview preserves a published skeleton
+    with no branches; execution still requires drawable segments by default.
+    """
     path = Path(record.swc_path).expanduser().resolve()
+    coordinate_transform = source_coordinate_contract(path)
+    scale = float(coordinate_transform["scale_to_um"])
     nodes: dict[int, SwcNode] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -175,10 +187,10 @@ def load_swc(record: NeuronRecord) -> Morphology:
                 node = SwcNode(
                     node_id=int(node_id_value),
                     swc_type=int(swc_type_value),
-                    x=float(fields[2]),
-                    y=float(fields[3]),
-                    z=float(fields[4]),
-                    radius=float(fields[5]),
+                    x=float(fields[2]) * scale,
+                    y=float(fields[3]) * scale,
+                    z=float(fields[4]) * scale,
+                    radius=float(fields[5]) * scale,
                     parent_id=int(parent_id_value),
                 )
             except ValueError as exc:
@@ -198,12 +210,12 @@ def load_swc(record: NeuronRecord) -> Morphology:
         raise ValueError(f"No valid SWC nodes found in {path}")
 
     roots = [node.node_id for node in nodes.values() if node.parent_id == -1]
-    if len(roots) != 1:
+    if not roots or (len(roots) != 1 and not allow_forest_preview):
         raise ValueError(f"SWC must contain exactly one root; found {len(roots)} in {path}")
     for node in nodes.values():
         if node.parent_id >= 0 and node.parent_id not in nodes:
             raise ValueError(f"SWC node {node.node_id} has missing parent {node.parent_id} in {path}")
-    resolved = {roots[0]}
+    resolved = set(roots)
     for node_id in nodes:
         current = node_id
         chain: list[int] = []
@@ -235,7 +247,7 @@ def load_swc(record: NeuronRecord) -> Morphology:
                 swc_type=child.swc_type,
             )
         )
-    if not segments:
+    if not segments and not allow_point_preview:
         raise ValueError(f"No drawable SWC segments found in {path}")
 
     xs = [node.x for node in ordered]
@@ -246,6 +258,7 @@ def load_swc(record: NeuronRecord) -> Morphology:
         nodes=ordered,
         segments=tuple(segments),
         bounds=(min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)),
+        coordinate_transform=coordinate_transform,
     )
 
 
@@ -368,6 +381,7 @@ def save_custom_morphology(
         "source_sha256": sha256_file(source),
         "custom_sha256": sha256_file(destination),
         "custom_swc": destination.relative_to(bundle).as_posix(),
+        "coordinate_transform": morphology.coordinate_transform or source_coordinate_contract(source),
         "biophysics_sidecar": sidecar_path.relative_to(bundle).as_posix(),
         "note": (
             "SWC geometry is copied unchanged; HH and membrane-mechanism overrides are stored "

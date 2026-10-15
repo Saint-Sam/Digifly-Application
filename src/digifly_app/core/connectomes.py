@@ -54,6 +54,8 @@ class ConnectionClassSummary:
     scope_note: str = ""
     unavailable_reason: str = ""
     connection_kind: str = "connection"
+    a_to_b_weight: int | None = None
+    b_to_a_weight: int | None = None
 
     @property
     def total_count(self) -> int:
@@ -87,6 +89,8 @@ class ConnectionClassSummary:
 
         if not self.available:
             return self.unavailable_reason or "Connection data are unavailable."
+        if self.connection_kind == "weighted pair":
+            return f"Aggregate total_weight: {self.a_to_b_weight} A→B and {self.b_to_a_weight} B→A; {self.total_count} pair rows, not located contacts."
         if self.connection_kind == "gap junction":
             noun = "gap-junction contact" if self.total_count == 1 else "gap-junction contacts"
             return f"{self.total_count} {noun} in the loaded scoped bundle."
@@ -300,6 +304,20 @@ class ConnectomeEdgeCatalog:
         )
 
     def _chemical_summary(self, neuron_a: str, neuron_b: str) -> ConnectionClassSummary:
+        if self.source.pair_graph_path:
+            from .pair_graph import pair_rows
+            try:
+                rows = pair_rows(self.source, neuron_a, neuron_b)
+                forward = [row for row in rows if str(row["preId"]) == neuron_a]
+                reverse = [row for row in rows if str(row["preId"]) == neuron_b]
+                return ConnectionClassSummary(True, len(forward), len(reverse),
+                    source_path=self.source.pair_graph_path, source_label="Selected MANC aggregate pair Parquet",
+                    scope_note="All supplied pair rows; weight is total_weight, not µS or located contacts. Missing pairs are only absent in this file; release/weak-edge completeness unverified.",
+                    connection_kind="weighted pair", a_to_b_weight=sum(row["total_weight"] for row in forward),
+                    b_to_a_weight=sum(row["total_weight"] for row in reverse))
+            except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
+                return ConnectionClassSummary(False, source_path=self.source.pair_graph_path,
+                    connection_kind="weighted pair", unavailable_reason=str(exc))
         if not self._canonical_manc:
             return ConnectionClassSummary(
                 available=False,
@@ -438,6 +456,8 @@ class ConnectomeEdgeCatalog:
         the chosen circuit rather than the complete connectome.
         """
 
+        if self.source.pair_graph_path:
+            raise ValueError("The selected MANC Parquet is an aggregate pair graph, not located chemical contacts. Choose an explicit aggregate-weight/kinetics/placement simulation policy first; the previous SQLite contact source is not substituted.")
         selected = tuple(dict.fromkeys(str(value).strip() for value in neuron_ids))
         if not selected:
             return ()
@@ -558,6 +578,8 @@ class ConnectomeEdgeCatalog:
         return {
             "kind": "immutable_parquet",
             "label": "Male-CNS v0.9 external chemical contact table",
+            "coordinate_convention": "male-cns-v0.9-native-8nm-to-um",
+            "coordinate_scale_to_um": 0.008,
             "path": str(path),
             **identity,
             "identity_sha256": fingerprint,
@@ -600,6 +622,7 @@ def _label_for_dataset(name: str) -> str:
     labels = {
         "manc_v1.2.1": "MANC v1.2.1 · curated Phase 1 subset",
         "male-cns_v0.9": "Male CNS v0.9",
+        "male-cns_v1.0": "Male CNS v1.0",
         "fafb": "FAFB",
         "banc": "BANC",
     }
@@ -610,6 +633,7 @@ def _key_for_dataset(name: str) -> str:
     canonical = {
         "manc_v1.2.1": "manc:v1.2.1",
         "male-cns_v0.9": "male-cns:v0.9",
+        "male-cns_v1.0": "male-cns:v1.0",
     }
     return canonical.get(name, _slug(name))
 

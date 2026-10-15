@@ -8,4 +8,4 @@ is not a cropped or recolored connectome rendering.
 
 The PNG is the editable high-resolution source used by the application. The
 ICNS file is a multi-resolution macOS derivative. Both are covered by the
-repository's private development license.
+repository's MIT License. Third-party artwork is not relicensed by this notice.

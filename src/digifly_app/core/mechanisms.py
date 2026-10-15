@@ -24,7 +24,7 @@ class MembraneMechanismDefinition:
     source_default_gbar_s_cm2: float
     editor_step: float
     note: str
-    supported_engines: tuple[str, ...] = ("neuron",)
+    supported_engines: tuple[str, ...] = ("neuron", "arbor", "bmtk")
 
 
 MEMBRANE_MECHANISMS: tuple[MembraneMechanismDefinition, ...] = (
@@ -554,6 +554,7 @@ class ChemicalSynapsePolicy:
     source_mode: str = "soma_threshold"
     placement_policy: str = "imported_post_contact"
     weight_policy: str = "source_or_default_per_contact"
+    kinetics_policy: str = "source_or_default"
     default_weight_uS: float = 0.000003
     weight_scale: float = 1.0
     default_delay_ms: float = 1.0
@@ -576,6 +577,8 @@ class ChemicalSynapsePolicy:
             raise ValueError("Chemical synapses require imported postsynaptic contact placement.")
         if self.weight_policy != "source_or_default_per_contact":
             raise ValueError("Unsupported chemical-synapse weight policy.")
+        if self.kinetics_policy not in {"source_or_default", "global_override"}:
+            raise ValueError("Unsupported chemical-synapse kinetics policy.")
         if self.aggregation_policy != "per_site_unchanged":
             raise ValueError("Chemical contacts must remain unaggregated in the generic lane.")
         if self.edge_scope != "all_chemical_edges":
@@ -757,16 +760,17 @@ def mechanism_capability_message(
         suffixes = ", ".join(item.suffix for item in active)
         if engine == "neuron":
             statements.append(
-                f"Native Phase 2 NMODL identity is preserved ({suffixes}), but the "
-                "generic NEURON lane currently accepts classic HH only; execution "
-                "fails closed instead of substituting another channel."
+                f"Exact hash-locked native channels ({suffixes}) execute with soma/branch "
+                "densities in NEURON. Run compiles in its own folder using the selected "
+                "compatible runtime; changed sources and unknown parameters fail closed."
             )
         elif engine == "arbor":
-            statements.append(f"Preserved but not Arbor-qualified: {suffixes}. The staged custom catalogue is not linked/validated, so execution must be blocked rather than approximated.")
+            statements.append(f"Arbor 0.12.2 equation translations ({suffixes}) compile as a run-owned catalogue. Small native/current and timestep comparisons are recorded; solver and TABLE-interpolation differences remain, not exact backend parity.")
         else:
             statements.append(
-                f"Preserved as design intent ({suffixes}); the bounded BMTK BioNet "
-                "lane currently accepts classic HH only."
+                f"Native channels ({suffixes}) and regional densities execute through "
+                "BMTK BioNet/SONATA using the same locked NEURON sources. "
+                "BioNet requires a compatible isolated BMTK/NEURON interpreter."
             )
     elif engine == "arbor" and not membrane.replace_builtin_hh:
         statements.append("Built-in classic HH is within the qualified mechanism subset of the curated Arbor staging scenarios.")
@@ -798,8 +802,8 @@ def mechanism_capability_message(
             )
         else:
             statements.append(
-                "The ohmic edge policy is preserved, but BMTK BioNet electrical-edge "
-                "execution is intentionally blocked."
+                "Serial BioNet executes exact app-owned Gap contacts on actual BioNetwork cells through a run-owned Digifly extension. "
+                "This electrical extension is not portable standard SONATA; MPI and PointNet are unsupported."
             )
     elif gap_policy.mode in {"rectifying", "heterotypic_rectifying"}:
         if engine == "neuron":
@@ -815,16 +819,13 @@ def mechanism_capability_message(
             )
             statements.append(
                 f"The app-owned {arbor_port} equation port for {gap_policy.mechanism_label} "
-                "is built and validated in a real two-cell Arbor test; the dedicated "
-                "Escape-SIZ adapter uses digifly_hetero_rect_gap for its locked recipe. "
-                "BLOCKED for generic Arbor execution until the Circuit Builder can translate "
-                "electrical endpoints and contact placement; no static ohmic approximation "
-                "will be substituted."
+                "executes mapped source-SWC electrical endpoints in the generic Arbor lane. "
+                "Measured finite-step differences remain explicit; no static ohmic approximation will be substituted."
             )
         else:
             statements.append(
-                f"{gap_policy.mechanism_label} is preserved, but BMTK BioNet "
-                "electrical-edge execution is intentionally blocked."
+                f"Serial BioNet executes exact app-owned {gap_policy.mechanism_label} contacts on actual BioNetwork cells through a run-owned Digifly extension. "
+                "This electrical extension is not portable standard SONATA; MPI and PointNet are unsupported."
             )
     else:
         statements.append("No mass-applied electrical-edge mechanism is selected.")

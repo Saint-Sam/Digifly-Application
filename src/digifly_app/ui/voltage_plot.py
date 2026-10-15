@@ -61,6 +61,7 @@ class VoltageTrace:
     times_ms: tuple[float, ...]
     voltages_mV: tuple[float, ...]
     color: str
+    compartment_id: str = ""
 
 
 def load_voltage_traces(
@@ -73,7 +74,7 @@ def load_voltage_traces(
     source = Path(path).expanduser().resolve()
     if not source.is_file():
         return ()
-    grouped: dict[tuple[str, int, str], list[tuple[float, float]]] = {}
+    grouped: dict[tuple[str, int, str, str], list[tuple[float, float]]] = {}
     with source.open("r", encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             try:
@@ -84,17 +85,18 @@ def load_voltage_traces(
                 continue
             neuron_id = str(row.get("neuron_id") or "").strip()
             condition = str(row.get("condition") or "Recorded run").strip()
+            compartment_id = str(row.get("compartment_id") or "").strip()
             if neuron_id and isfinite(time_ms) and isfinite(voltage_mV):
-                grouped.setdefault((condition, repetition, neuron_id), []).append(
+                grouped.setdefault((condition, repetition, neuron_id, compartment_id), []).append(
                     (time_ms, voltage_mV)
                 )
 
     repetition_counts: dict[str, set[int]] = {}
-    for condition, repetition, _neuron_id in grouped:
+    for condition, repetition, _neuron_id, _compartment_id in grouped:
         repetition_counts.setdefault(condition, set()).add(repetition)
     labels = {str(key): str(value) for key, value in dict(neuron_labels or {}).items()}
     traces: list[VoltageTrace] = []
-    for index, ((condition, repetition, neuron_id), samples) in enumerate(grouped.items()):
+    for index, ((condition, repetition, neuron_id, compartment_id), samples) in enumerate(grouped.items()):
         ordered = sorted(samples)
         neuron_label = labels.get(neuron_id, f"body {neuron_id}")
         repetition_suffix = (
@@ -102,16 +104,18 @@ def load_voltage_traces(
             if len(repetition_counts.get(condition, ())) > 1
             else ""
         )
+        compartment_suffix = f" · SWC {compartment_id}" if compartment_id else ""
         traces.append(
             VoltageTrace(
-                key=f"{condition}\x1f{repetition}\x1f{neuron_id}",
-                label=f"{condition} · {neuron_label}{repetition_suffix}",
+                key=f"{condition}\x1f{repetition}\x1f{neuron_id}" + (f"\x1f{compartment_id}" if compartment_id else ""),
+                label=f"{condition} · {neuron_label}{compartment_suffix}{repetition_suffix}",
                 condition=condition,
                 repetition=repetition,
                 neuron_id=neuron_id,
                 times_ms=tuple(item[0] for item in ordered),
                 voltages_mV=tuple(item[1] for item in ordered),
                 color=TRACE_COLORS[index % len(TRACE_COLORS)],
+                compartment_id=compartment_id,
             )
         )
     return tuple(traces)
@@ -676,11 +680,14 @@ class VoltagePlotWidget(QWidget):
             "Shift-click to isolate"
         )
         hint.setObjectName("Muted")
-        legend_header.addWidget(hint)
-        legend_header.addStretch(1)
+        hint.setWordWrap(True)
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout.addWidget(hint)
         self.trace_count_label = QLabel("0 traces")
         self.trace_count_label.setObjectName("Muted")
-        legend_header.addWidget(self.trace_count_label)
+        self.trace_count_label.setWordWrap(True)
+        self.trace_count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        legend_header.addWidget(self.trace_count_label, 1)
         self.show_all_button = QPushButton("Show all")
         self.show_all_button.setObjectName("VoltageLegendShowAll")
         self.show_all_button.clicked.connect(self.show_all)
@@ -741,17 +748,21 @@ class VoltagePlotWidget(QWidget):
             button = QPushButton(f"●  {trace.label}")
             button.setObjectName("VoltageLegendButton")
             button.setCheckable(True)
+            # Full labels remain accessible and in the tooltip; a long body
+            # name must not impose a wider-than-window grid column minimum.
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setMinimumWidth(0)
             button.setChecked(True)
             button.setAccessibleName(f"Voltage trace {trace.label}")
             button.setToolTip(
-                "Click to keep this trace visible but faded; Shift-click to isolate it"
+                f"{trace.label}\nClick to keep this trace visible but faded; Shift-click to isolate it"
             )
             button.setStyleSheet(f"QPushButton {{ color: {trace.color}; text-align: left; }}")
             button.clicked.connect(
                 lambda checked, key=trace.key: self._legend_clicked(key, checked)
             )
-            self.legend_layout.addWidget(button, index // 2, index % 2)
             self.legend_buttons[trace.key] = button
+        self._relayout_legend()
         self.canvas.set_traces(self.traces)
         self._refresh_legend_buttons()
         self.show_all_button.setEnabled(bool(self.traces))
@@ -759,6 +770,21 @@ class VoltagePlotWidget(QWidget):
         self.legend_filter.clear()
         self.legend_scroll.setVisible(bool(self.traces))
         self._update_trace_count()
+
+    def _relayout_legend(self) -> None:
+        # A narrow split panel needs one readable column; a full-width plot
+        # can use two. This changes layout only, never trace membership/state.
+        if not hasattr(self, "legend_layout"):
+            return
+        columns = 1 if self.width() < 680 else 2
+        while self.legend_layout.count():
+            self.legend_layout.takeAt(0)
+        for index, button in enumerate(self.legend_buttons.values()):
+            self.legend_layout.addWidget(button, index // columns, index % columns)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt virtual name
+        super().resizeEvent(event)
+        self._relayout_legend()
 
     def set_mode(self, mode: str) -> None:
         self.canvas.set_mode(mode)

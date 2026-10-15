@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -114,7 +115,9 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Number of times to repeat the complete experiment, useful for stochastic comparisons and replicates."
     ),
     "workers": (
-        "Maximum worker threads requested from the execution backend for this experiment."
+        "Arbor: maximum CPU threads. NEURON/BioNet: maximum concurrent independent "
+        "condition/repetition processes, limited by trial count, CPU and memory. "
+        "This does not split one network across workers or use MPI."
     ),
     "stimulus_targets": (
         "Neuron IDs or exact neuron types that receive this stimulus, separated by spaces or commas. Types such as DNp01 or TTMn resolve to every matching neuron in the loaded circuit. Leave blank to target every circuit neuron."
@@ -135,6 +138,8 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
     "control_condition": (
         "Include an unmodified reference run for comparison with runtime manipulations."
     ),
+    "control_electrical_edges": "Keep electrical connections active in the Control reference condition.",
+    "control_chemical_edges": "Keep chemical synaptic connections active in the Control reference condition.",
     "manipulation_condition": (
         "Include a second run whose connectivity, neurons, stimulus, or mechanisms can be changed at runtime."
     ),
@@ -155,7 +160,9 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Optional JSON map of mechanism names to runtime multipliers, for example {\"para\": 0.5}."
     ),
     "recording_targets": (
-        "Neuron IDs to record, separated by spaces or commas. Leave blank to record every circuit neuron."
+        "Neuron IDs to record, separated by spaces or commas (for example 10110, 10068). "
+        "Cell-type names such as TTMn are not IDs; use Circuit Builder to select a type. "
+        "Leave blank to record every circuit neuron."
     ),
     "recording_region": "Morphological region from which signals will be sampled.",
     "signals": "Choose which simulator signals and events are saved for analysis.",
@@ -210,22 +217,15 @@ def _section_title(text: str) -> QLabel:
 
 
 def _proximal_axon_segment_ids(morphology: Morphology) -> set[int]:
-    """Return a small visual AIS proxy from the nearest type-2 SWC segments."""
-
-    axonal = [segment for segment in morphology.segments if segment.swc_type == 2]
-    if not axonal:
+    """Use the same explicitly labeled geometric proxy as execution."""
+    from ..workers.generic_experiment_worker import _regional_plan
+    from ..core.circuit import HodgkinHuxleySpec
+    if not morphology.nodes:
         return set()
-    soma = locate_soma(morphology).point
-
-    def distance_squared(segment: Any) -> float:
-        return min(
-            sum((value - origin) ** 2 for value, origin in zip(point, soma))
-            for point in (segment.parent, segment.child)
-        )
-
-    axonal.sort(key=distance_squared)
-    preview_count = max(1, min(16, (len(axonal) + 19) // 20))
-    return {segment.child_id for segment in axonal[:preview_count]}
+    rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes]
+    plan = _regional_plan(rows, {"hh":HodgkinHuxleySpec().to_dict(), "membrane":{},
+                                "prefer_rostral_soma":morphology.record.family.upper().startswith("DN")})
+    return {s["node_id"] for s in plan["sections"] if s["ais_proxy"]}
 
 
 class ExperimentBuilderPage(QWidget):
@@ -427,6 +427,14 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(run_form, "repetitions", "Repetitions", self.repetitions)
         add_help_row(run_form, "workers", "Workers / threads", self.workers)
         run_layout.addLayout(run_form)
+        self.global_settings_help = QLabel(
+            "Initial voltage and temperature here are the global settings executed by all simulators. "
+            "Circuit Builder sends them only when you explicitly apply cell-set defaults or Mass apply; "
+            "loading a circuit or a saved experiment does not replace them."
+        )
+        self.global_settings_help.setObjectName("ExperimentGlobalSettingsHelp")
+        self.global_settings_help.setWordWrap(True)
+        run_layout.addWidget(self.global_settings_help)
 
         stimulus_hint = QLabel(
             "Enter neuron IDs, exact neuron types such as DNp01 or TTMn, or leave blank for every circuit neuron. The execution adapter resolves simulator locations after validation."
@@ -505,6 +513,16 @@ class ExperimentBuilderPage(QWidget):
         condition_layout.addWidget(
             helped_control(self.control_enabled, "control_condition")
         )
+        self.control_gap_enabled = QCheckBox("Control gap junctions enabled")
+        self.control_gap_enabled.setChecked(True)
+        self.control_chemical_enabled = QCheckBox("Control chemical synapses enabled")
+        self.control_chemical_enabled.setChecked(True)
+        condition_layout.addWidget(
+            helped_control(self.control_gap_enabled, "control_electrical_edges")
+        )
+        condition_layout.addWidget(
+            helped_control(self.control_chemical_enabled, "control_chemical_edges")
+        )
         self.manipulation_enabled = QCheckBox("Run comparison / manipulation condition")
         self.manipulation_enabled.setChecked(True)
         condition_layout.addWidget(
@@ -570,7 +588,7 @@ class ExperimentBuilderPage(QWidget):
         )
         recording_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.recording_targets = QLineEdit()
-        self.recording_targets.setPlaceholderText("all circuit neurons")
+        self.recording_targets.setPlaceholderText("Neuron IDs, e.g. 10110, 10068; blank = all")
         self.recording_region = QComboBox()
         self.recording_region.addItem("Soma", "soma")
         self.recording_region.addItem("All compartments", "all")
@@ -709,7 +727,7 @@ class ExperimentBuilderPage(QWidget):
         action_layout.setContentsMargins(17, 14, 17, 15)
         action_layout.setSpacing(9)
         action_row = QHBoxLayout()
-        self.validate_button = QPushButton("Validate experiment draft")
+        self.validate_button = QPushButton("Check run readiness")
         self.validate_button.setProperty("primary", True)
         self.validate_button.clicked.connect(self.validate_draft)
         self.run_button = QPushButton("Run experiment")
@@ -803,6 +821,8 @@ class ExperimentBuilderPage(QWidget):
             self.frequency,
             self.pulse_count,
             self.control_enabled,
+            self.control_gap_enabled,
+            self.control_chemical_enabled,
             self.manipulation_enabled,
             self.manipulation_name,
             self.manip_gap_enabled,
@@ -820,6 +840,10 @@ class ExperimentBuilderPage(QWidget):
         ):
             self._connect_change(control)
         self.name_edit.textChanged.connect(self._update_name_availability)
+        # macOS defaults can omit non-editable combos from keyboard traversal.
+        # Keep simulator and region choices reachable without precise arrow clicks.
+        for combo in self.findChildren(QComboBox):
+            combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.set_config(ExperimentSpec())
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
@@ -835,6 +859,29 @@ class ExperimentBuilderPage(QWidget):
             if signal is not None:
                 signal.connect(self._invalidate)
                 return
+
+    def apply_circuit_experiment_globals(
+        self, initial_voltage_mV: float, temperature_C: float
+    ) -> None:
+        """Receive an explicit Circuit Apply action, never a rendering/load event."""
+        settings = (
+            (initial_voltage_mV, self.initial_voltage, "initial voltage"),
+            (temperature_C, self.temperature, "temperature"),
+        )
+        for value, control, label in settings:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not control.minimum() <= value <= control.maximum()
+            ):
+                raise ValueError(f"Invalid experiment-global {label}")
+        self.initial_voltage.setValue(initial_voltage_mV)
+        self.temperature.setValue(temperature_C)
+        self.status_message.emit(
+            "Applied Circuit Builder experiment globals: "
+            f"initial voltage {initial_voltage_mV:g} mV; temperature {temperature_C:g} °C"
+        )
 
     def set_circuit_spec(self, spec: CircuitSpec) -> None:
         """Attach a circuit document, retaining geometry only for the same cell set."""
@@ -998,8 +1045,8 @@ class ExperimentBuilderPage(QWidget):
             self.target_region_viewport.set_highlights(segment_ids=segment_ids)
             summary = (
                 f"Target region: AIS · {self.target_region_viewport.highlighted_segment_count} "
-                "proximal axonal SWC segment(s) are brightened as a visual proxy; "
-                "the execution adapter resolves the exact AIS"
+                "proximal axonal SWC segment(s) are brightened using the same geometric proxy as execution; "
+                "this is not anatomically verified AIS"
             )
         else:
             segment_ids = self._selected_compartment_targets(target_ids)
@@ -1021,7 +1068,13 @@ class ExperimentBuilderPage(QWidget):
             raise ValueError("Mechanism scales must be a JSON object.")
         conditions: list[ConditionSpec] = []
         if self.control_enabled.isChecked():
-            conditions.append(ConditionSpec(name="Control"))
+            conditions.append(
+                ConditionSpec(
+                    name="Control",
+                    gap_junctions_enabled=self.control_gap_enabled.isChecked(),
+                    chemical_synapses_enabled=self.control_chemical_enabled.isChecked(),
+                )
+            )
         if self.manipulation_enabled.isChecked():
             conditions.append(
                 ConditionSpec(
@@ -1111,6 +1164,9 @@ class ExperimentBuilderPage(QWidget):
                 (item for item in config.conditions if item is not control), None
             )
             self.control_enabled.setChecked(bool(control and control.enabled))
+            control_settings = control or ConditionSpec(name="Control")
+            self.control_gap_enabled.setChecked(control_settings.gap_junctions_enabled)
+            self.control_chemical_enabled.setChecked(control_settings.chemical_synapses_enabled)
             self.manipulation_enabled.setChecked(bool(manipulation and manipulation.enabled))
             manipulation = manipulation or ConditionSpec(name="Comparison")
             self.manipulation_name.setText(manipulation.name)
@@ -1140,6 +1196,7 @@ class ExperimentBuilderPage(QWidget):
         self.set_config(ExperimentSpec())
 
     def validate_draft(self) -> None:
+        self.validation_state.setToolTip("")
         try:
             config = self.config()
             errors = config.errors(self._circuit)
@@ -1160,12 +1217,51 @@ class ExperimentBuilderPage(QWidget):
             self.validation_state.setText(f"{len(errors)} issue(s) · {errors[0]}")
             self.status_message.emit(self.validation_state.text())
             return
-        self.validation_state.setText(
-            "Draft valid · Run will preflight the selected simulator and launch app-owned output"
+        self.validation_state.setText("Checking simulator readiness…")
+        adapter = GenericExperimentAdapter(
+            self._runtime_paths,
+            digifly_public_root=self._digifly_public_root,
         )
+        try:
+            report = adapter.validate(
+                self._circuit, config, self._morphologies,
+                output_root=self._output_root(),
+            )
+        except Exception as exc:
+            self.validation_state.setText(f"Preflight failed · {exc}")
+            self.status_message.emit(self.validation_state.text())
+            return
+        preparation = [
+            check for check in report.checks
+            if check.blocking and check.state == CheckState.FAIL
+            and check.key in {"arbor_gap_catalogue", "neuron_gap_mechanisms"}
+            and "not built" in check.detail and "Run will" in check.detail
+        ]
+        failures = [
+            f"{check.title}: {check.detail}" for check in report.checks
+            if check.blocking and check.state == CheckState.FAIL
+            and check not in preparation
+        ]
+        self.document_preview.appendPlainText(
+            "\nSimulator preflight\n" + "\n".join(
+                f"{check.state.value}: {check.title}: {check.detail}"
+                for check in report.checks
+            )
+        )
+        self.validation_state.setText(
+            f"Cannot run · {len(failures)} issue(s) · {failures[0]}"
+            if failures
+            else "Preparation required · Run will build the app-owned gap mechanisms and recheck"
+            if preparation
+            else "Preflight passed · Run will recheck before creating output"
+        )
+        self.validation_state.setToolTip("\n".join(failures + [f"{c.title}: {c.detail}" for c in preparation]))
         self.status_message.emit(self.validation_state.text())
 
     def request_run(self) -> None:
+        if getattr(self, "runtime_busy", lambda: False)():
+            QMessageBox.warning(self, "Scientific run already active", "Finish or safely stop the active replication run first.")
+            return
         """Preflight and launch the generic classic-HH worker."""
 
         if self._process is not None:

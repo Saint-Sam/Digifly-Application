@@ -72,9 +72,9 @@ MACHINE_PATH_PATTERNS = (
     re.compile(rb"/home/[A-Za-z0-9._-]+/"),
     re.compile(rb"[A-Za-z]:\\\\Users\\\\[^\\\r\n]+\\\\"),
 )
-PRIVATE_LICENSE_MARKER = b"DIGIFLY WORKSTATION PRIVATE DEVELOPMENT LICENSE"
-PRIVATE_LICENSE_SHA256 = (
-    "e465e6eb03be6d7bbe104451b459000a2dbc475816d8eec4bad48b41a8167d47"
+PROJECT_LICENSE_MARKER = b"MIT License"
+PROJECT_LICENSE_SHA256 = (
+    "ddff84afdac51697e2bcd237ffe0a363cb2f4b25dfa0d6efa3457ac31613bc5d"
 )
 
 # These files are the minimum self-contained bridge between a Digifly release
@@ -82,8 +82,28 @@ PRIVATE_LICENSE_SHA256 = (
 # install root is intentionally different for an sdist, wheel data directory,
 # and native application bundle.
 REQUIRED_RELEASE_COMPONENTS = {
+    "licensing scope notice": "THIRD_PARTY_NOTICES.md",
     "generic experiment worker": "digifly_app/workers/generic_experiment_worker.py",
+    "aggregate pair Parquet indexer": "digifly_app/workers/pair_graph_import_worker.py",
+    "isolated independent-trial scheduler": "digifly_app/workers/independent_trials.py",
+    "Arbor channel translator": "digifly_app/workers/arbor_channel_translation.py",
+    "Augustin nat source": "mechanisms/augustin_2019/nat.mod",
+    "Augustin nap source": "mechanisms/augustin_2019/nap.mod",
+    "Augustin k source": "mechanisms/augustin_2019/k.mod",
     "BMTK BioNet worker": "digifly_app/workers/bmtk_bionet_worker.py",
+    "NetPyNE PDCM worker": "digifly_app/workers/pdcm_netpyne_worker.py",
+    "independent BioNet app worker": "digifly_app/workers/pdcm_bionet_app_worker.py",
+    "independent BioNet scalable app worker": "digifly_app/workers/pdcm_bionet_scalable_app_worker.py",
+    "independent BioNet 5% app worker": "digifly_app/workers/pdcm_bionet_5pct_app_worker.py",
+    "independent BioNet 5% app controller source": "digifly_app/core/pdcm_bionet_5pct_app.py",
+    "independent BioNet saved Results converter": "digifly_app/workers/pdcm_campaign_results.py",
+    "NetPyNE Workbench worker": "digifly_app/workers/netpyne_workbench_worker.py",
+    "NetPyNE PDCM MPI worker": "digifly_app/workers/pdcm_netpyne_mpi_worker.py",
+    "NetPyNE PDCM Athene runner": "scripts/run_pdcm_athene.sh",
+    "NetPyNE PDCM Athene layer installer": "scripts/install_pdcm_athene_layer.sh",
+    "NEURON MPI diagnostic": "scripts/probe_neuron_mpi.py",
+    "NetPyNE PDCM Athene runbook": "docs/PDCM_ATHENE_RUNBOOK.md",
+    "NetPyNE workbench plan": "docs/NETPYNE_WORKBENCH_PLAN.md",
     "NEURON Gap source": "mechanisms/neuron_gap_junctions/Gap.mod",
     "NEURON RectGap source": "mechanisms/neuron_gap_junctions/RectGap.mod",
     "NEURON HeteroRectGap source": (
@@ -94,8 +114,20 @@ REQUIRED_RELEASE_COMPONENTS = {
     ),
     "NEURON mechanism build helper": "scripts/build_neuron_gap_mechanisms.py",
 }
+from ..workers.pdcm_bionet_app_worker import SOURCE_PINS, SCAFFOLD
+
+for _source in (*SOURCE_PINS, *SCAFFOLD):
+    REQUIRED_RELEASE_COMPONENTS[f"independent BioNet frozen {_source}"] = (
+        f"digifly_app/pdcm_bionet/primary_v3/{_source}"
+    )
+from ..workers.pdcm_bionet_scalable_app_worker import SOURCE_PINS as SCALABLE_SOURCE_PINS, SCAFFOLD as SCALABLE_SCAFFOLD
+
+for _source in (*SCALABLE_SOURCE_PINS, *SCALABLE_SCAFFOLD):
+    REQUIRED_RELEASE_COMPONENTS[f"independent BioNet scalable frozen {_source}"] = (
+        f"digifly_app/pdcm_bionet/primary_v4/{_source}"
+    )
 _NEURON_MECHANISM_NAMES = ("Gap", "RectGap", "HeteroRectGap")
-_VENDORED_RUNTIME_PACKAGES = frozenset({"arbor", "bmtk", "h5py", "neuron", "numpy"})
+_VENDORED_RUNTIME_PACKAGES = frozenset({"arbor", "bmtk", "h5py", "netpyne", "neuron", "numpy"})
 _VENDORED_RUNTIME_EXECUTABLES = frozenset(
     {
         "arbor-build-catalogue",
@@ -159,6 +191,10 @@ def _release_kind(path: Path) -> str | None:
 
     name = path.name
     folded = name.casefold()
+    if path.is_dir() and (path / "digifly_windows_package.json").is_file():
+        return "windows"
+    if _DIGIFLY_ARCHIVE_RE.match(name) and folded.endswith("-windows-x86_64.zip"):
+        return "windows"
     if path.is_dir() and folded.endswith(".app"):
         stem = folded.removesuffix(".app")
         if "digifly" in stem and "workstation" in stem:
@@ -353,7 +389,7 @@ def audit_artifact(
     release_kind = _release_kind(path)
     artifact_is_app = path.is_dir() and path.suffix.casefold() == ".app"
     component_entries: dict[str, _Entry] = {}
-    private_license_entry: _Entry | None = None
+    project_license_entry: _Entry | None = None
     bundled_arbor_marker: _Entry | None = None
     vendored_roots: set[str] = set()
     allow_bundled_arbor = (
@@ -362,6 +398,19 @@ def audit_artifact(
         in {"1", "true", "yes", "on"}
     )
     count = total = 0
+    windows_binaries = {}
+    if release_kind == "windows":
+        try:
+            marker_entry = next(e for e in _entries(path) if e.name == "digifly_windows_package.json")
+            marker = json.loads(marker_entry.data.decode("utf-8"))
+            if marker["schema"] != "digifly-windows-package-v1":
+                raise ValueError("Unknown Windows package schema")
+            windows_binaries = {name: record for name, record in marker["files"].items()
+                                if PurePosixPath(name).suffix.casefold() in BINARY_SUFFIXES}
+            if "Digifly Workstation.exe" not in windows_binaries:
+                raise ValueError("Windows application entrypoint absent")
+        except (StopIteration, KeyError, ValueError, TypeError, AttributeError):
+            issues.append(ArtifactIssue("invalid_windows_package", "digifly_windows_package.json", "Windows binaries require a declared package inventory."))
     for entry in _entries(path):
         count += 1
         total += entry.size
@@ -378,19 +427,21 @@ def audit_artifact(
                 ArtifactIssue(
                     "incompatible_distribution_component",
                     entry.name,
-                    "Qt Virtual Keyboard is not part of the proprietary Digifly release boundary.",
+                    "Qt Virtual Keyboard is not part of the Digifly release boundary.",
                 )
             )
         for component_suffix in REQUIRED_RELEASE_COMPONENTS.values():
-            if _ends_with_path(logical, component_suffix):
+            converter_module = (component_suffix == "digifly_app/workers/pdcm_campaign_results.py"
+                and _ends_with_path(logical, "digifly_app/core/pdcm_campaign_results.py"))
+            if _ends_with_path(logical, component_suffix) or converter_module:
                 component_entries.setdefault(component_suffix, entry)
         if (
             logical.name.casefold() == "license"
             and entry.data is not None
-            and PRIVATE_LICENSE_MARKER in entry.data
-            and hashlib.sha256(entry.data).hexdigest() == PRIVATE_LICENSE_SHA256
+            and PROJECT_LICENSE_MARKER in entry.data
+            and hashlib.sha256(entry.data).hexdigest() == PROJECT_LICENSE_SHA256
         ):
-            private_license_entry = entry
+            project_license_entry = entry
         vendored = None if approved_arbor_entry else _vendored_runtime_root(logical)
         if vendored is not None:
             runtime_root, detail = vendored
@@ -426,7 +477,9 @@ def audit_artifact(
                     f"Dataset-like file type {suffix} is forbidden in the core artifact.",
                 )
             )
-        if suffix in BINARY_SUFFIXES and not _inside_native_bundle(
+        declared_windows_binary = (release_kind == "windows" and entry.name in windows_binaries
+                                   and windows_binaries[entry.name].get("bytes") == entry.size)
+        if suffix in BINARY_SUFFIXES and not declared_windows_binary and not _inside_native_bundle(
             logical, artifact_is_app=artifact_is_app
         ):
             issues.append(
@@ -466,12 +519,12 @@ def audit_artifact(
                 )
             )
     if release_kind is not None:
-        if private_license_entry is None:
+        if project_license_entry is None:
             issues.append(
                 ArtifactIssue(
                     "missing_release_component",
                     "LICENSE",
-                    f"Digifly {release_kind} is missing its private project license.",
+                    f"Digifly {release_kind} is missing its exact MIT project license.",
                 )
             )
         for label, component_suffix in REQUIRED_RELEASE_COMPONENTS.items():
@@ -484,6 +537,13 @@ def audit_artifact(
                     )
                 )
         issues.extend(_validate_neuron_manifest(component_entries))
+        for version, pins in (("primary_v3", SOURCE_PINS), ("primary_v4", SCALABLE_SOURCE_PINS)):
+            for source, expected_hash in pins.items():
+                suffix = f"digifly_app/pdcm_bionet/{version}/{source}"
+                entry = component_entries.get(suffix)
+                if entry is not None and (entry.data is None or hashlib.sha256(entry.data).hexdigest() != expected_hash):
+                    issues.append(ArtifactIssue("changed_scientific_source", suffix,
+                        "Frozen independent BioNet scientific source does not match its qualified bytes."))
     return ArtifactReport(str(path), count, total, tuple(issues))
 
 

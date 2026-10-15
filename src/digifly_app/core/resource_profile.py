@@ -30,6 +30,7 @@ class ResourceKind(str, Enum):
     NEURON_RUNTIME = "neuron_runtime"
     ARBOR_RUNTIME = "arbor_runtime"
     BMTK_RUNTIME = "bmtk_runtime"
+    NETPYNE_RUNTIME = "netpyne_runtime"
     VND_VIEWER = "vnd_viewer"
     MANAGED_DATA_ROOT = "managed_data_root"
     OUTPUT_ROOT = "output_root"
@@ -50,6 +51,7 @@ _EXPECTED_ACCESS = {
     ResourceKind.NEURON_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.ARBOR_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.BMTK_RUNTIME: AccessMode.EXECUTABLE,
+    ResourceKind.NETPYNE_RUNTIME: AccessMode.EXECUTABLE,
     ResourceKind.VND_VIEWER: AccessMode.READ_ONLY,
     ResourceKind.MANAGED_DATA_ROOT: AccessMode.READ_WRITE,
     ResourceKind.OUTPUT_ROOT: AccessMode.READ_WRITE,
@@ -149,6 +151,7 @@ class ResourceProfile:
             ResourceKind.NEURON_RUNTIME,
             ResourceKind.ARBOR_RUNTIME,
             ResourceKind.BMTK_RUNTIME,
+            ResourceKind.NETPYNE_RUNTIME,
             ResourceKind.VND_VIEWER,
         ):
             if len(self.bindings(kind)) > 1:
@@ -183,6 +186,7 @@ class ResourceProfile:
             ResourceKind.NEURON_RUNTIME,
             ResourceKind.ARBOR_RUNTIME,
             ResourceKind.BMTK_RUNTIME,
+            ResourceKind.NETPYNE_RUNTIME,
         }:
             raise ValueError(f"{kind.value} is not a runtime binding")
         binding = self.binding(kind)
@@ -258,6 +262,7 @@ class ResourceProfile:
                     ResourceKind.NEURON_RUNTIME,
                     ResourceKind.ARBOR_RUNTIME,
                     ResourceKind.BMTK_RUNTIME,
+                    ResourceKind.NETPYNE_RUNTIME,
                 }
                 else binding.resolved_path
             )
@@ -285,6 +290,7 @@ class ResourceProfile:
                 ResourceKind.NEURON_RUNTIME,
                 ResourceKind.ARBOR_RUNTIME,
                 ResourceKind.BMTK_RUNTIME,
+                ResourceKind.NETPYNE_RUNTIME,
             }:
                 exists = path.is_file() and os.access(path, os.X_OK)
                 detail = "Executable runtime is available." if exists else "Runtime is missing or not executable."
@@ -467,12 +473,14 @@ def update_runtime_bindings(
     neuron_runtime: str | Path | None = None,
     arbor_runtime: str | Path | None = None,
     bmtk_runtime: str | Path | None = None,
+    netpyne_runtime: str | Path | None = None,
 ) -> ResourceProfile:
     """Return a profile with verified external runtime choices replaced by kind."""
     replacements = {
         ResourceKind.NEURON_RUNTIME: neuron_runtime,
         ResourceKind.ARBOR_RUNTIME: arbor_runtime,
         ResourceKind.BMTK_RUNTIME: bmtk_runtime,
+        ResourceKind.NETPYNE_RUNTIME: netpyne_runtime,
     }
     resources = list(profile.resources)
     for kind, runtime in replacements.items():
@@ -503,6 +511,7 @@ def make_default_profile(
     neuron_runtime: str | Path | None = None,
     arbor_runtime: str | Path | None = None,
     bmtk_runtime: str | Path | None = None,
+    netpyne_runtime: str | Path | None = None,
     vnd_viewer: str | Path | None = None,
     morphology_sources: Iterable[tuple[str, str | Path, str]] = (),
 ) -> ResourceProfile:
@@ -543,6 +552,7 @@ def make_default_profile(
         ("neuron", ResourceKind.NEURON_RUNTIME, neuron_runtime, "NEURON Python"),
         ("arbor", ResourceKind.ARBOR_RUNTIME, arbor_runtime, "Arbor Python"),
         ("bmtk", ResourceKind.BMTK_RUNTIME, bmtk_runtime, "BMTK Python"),
+        ("netpyne", ResourceKind.NETPYNE_RUNTIME, netpyne_runtime, "NetPyNE Python"),
         ("vnd", ResourceKind.VND_VIEWER, vnd_viewer, "VND viewer"),
     )
     for resource_id, kind, path, label in optional:
@@ -556,6 +566,7 @@ def make_default_profile(
                 ResourceKind.NEURON_RUNTIME,
                 ResourceKind.ARBOR_RUNTIME,
                 ResourceKind.BMTK_RUNTIME,
+                ResourceKind.NETPYNE_RUNTIME,
             }
             else Path(path).expanduser()
         )

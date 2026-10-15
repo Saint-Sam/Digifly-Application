@@ -30,6 +30,14 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--package-smoke-test":
+        import argparse
+        from digifly_app.ui.package_smoke import run_package_smoke
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--package-smoke-test", type=Path, required=True)
+        parser.add_argument("--data-reader", type=Path, required=True)
+        args = parser.parse_args()
+        return run_package_smoke(args.package_smoke_test, args.data_reader)
     ok, detail = _qt_smoke_test()
     if not ok:
         print(

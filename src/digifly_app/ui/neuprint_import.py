@@ -9,7 +9,7 @@ import threading
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -35,6 +35,8 @@ from digifly_app.core.credentials import (
     credential_reference,
     normalize_neuprint_token,
     token_from_environment,
+    token_from_workspace,
+    workspace_token_path,
 )
 from digifly_app.core.data_library import ManagedResource, safe_component
 from digifly_app.core.neuprint import (
@@ -113,6 +115,7 @@ class NeuPrintImportDialog(QDialog):
         self._success_handler: Callable[[Any], None] | None = None
         self._active_token = ""
         self._credential_ref = ""
+        self._token_source = "provided"
         self._preview: tuple[NeuPrintNeuron, ...] = ()
         self._cancel_event = threading.Event()
         self._operation_kind = ""
@@ -167,7 +170,7 @@ class NeuPrintImportDialog(QDialog):
         self.remember_token.setEnabled(self.credential_store.available)
         if not self.remember_token.isEnabled():
             self.remember_token.setToolTip(
-                "Install a supported keyring backend; Digifly will not fall back to a plaintext token file."
+                "Install a supported keyring backend to save tokens. Existing workspace tokens can be read without copying them."
             )
         token_options_layout.addWidget(self.remember_token)
         self.load_saved_button = QPushButton("Use saved token")
@@ -176,6 +179,16 @@ class NeuPrintImportDialog(QDialog):
         token_options_layout.addWidget(self.load_saved_button)
         token_options_layout.addStretch(1)
         connection_form.addRow("Credential source", token_options)
+        self.workspace_token = QCheckBox("Use workspace Phase 1/Neuprint Token.txt")
+        self.workspace_token.setObjectName("WorkspaceNeuPrintToken")
+        workspace_file = workspace_token_path(profile.workspace_root)
+        file_available = workspace_file is not None and workspace_file.is_file()
+        self.workspace_token.setEnabled(file_available)
+        self.workspace_token.setChecked(file_available)
+        self.workspace_token.setToolTip(
+            str(workspace_file) if workspace_file else "Select a Digifly workspace first"
+        )
+        connection_form.addRow("Workspace credential file", self.workspace_token)
         connection_actions = QWidget()
         connection_actions_layout = QHBoxLayout(connection_actions)
         connection_actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -195,12 +208,18 @@ class NeuPrintImportDialog(QDialog):
         selection_form.setHorizontalSpacing(16)
         selection_form.setVerticalSpacing(9)
         self.dataset_combo = QComboBox()
+        self.dataset_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.dataset_combo.setAccessibleName("NeuPrint dataset and version")
+        self.dataset_combo.setToolTip("Exact NeuPrint dataset/version. Alt+D focuses this selector.")
+        self.dataset_focus_shortcut = QShortcut(QKeySequence("Alt+D"), self)
+        self.dataset_focus_shortcut.activated.connect(self.dataset_combo.setFocus)
         self.dataset_combo.setEnabled(False)
         selection_form.addRow("Dataset and version", self.dataset_combo)
         selection_row = QWidget()
         selection_layout = QHBoxLayout(selection_row)
         selection_layout.setContentsMargins(0, 0, 0, 0)
         self.selection_mode = QComboBox()
+        self.selection_mode.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for label, key, example in SELECTION_OPTIONS:
             self.selection_mode.addItem(label, key)
             self.selection_mode.setItemData(self.selection_mode.count() - 1, example, Qt.ItemDataRole.ToolTipRole)
@@ -311,6 +330,7 @@ class NeuPrintImportDialog(QDialog):
         self.server_edit.textChanged.connect(self._connection_invalidated)
         self.token_edit.textChanged.connect(self._connection_invalidated)
         self.environment_token.toggled.connect(self._connection_invalidated)
+        self.workspace_token.toggled.connect(self._connection_invalidated)
         self.dataset_combo.currentIndexChanged.connect(self._preview_invalidated)
         self.selection_mode.currentIndexChanged.connect(self._selection_mode_changed)
         self.selection_edit.textChanged.connect(self._preview_invalidated)
@@ -421,9 +441,15 @@ class NeuPrintImportDialog(QDialog):
             token = token_from_environment()
             if token is None:
                 raise ValueError(f"{NEUPRINT_CREDENTIAL_ENV} is not set for this app launch")
+            self._token_source = "environment"
             return token
         if self._active_token and not self.token_edit.text().strip():
             return self._active_token
+        if not self.token_edit.text().strip() and self.workspace_token.isChecked():
+            token = token_from_workspace(self.profile.workspace_root, self.server_edit.text())
+            self._token_source = "workspace_file"
+            return token
+        self._token_source = "provided"
         return normalize_neuprint_token(self.token_edit.text())
 
     def _load_saved_token(self) -> None:
@@ -438,6 +464,7 @@ class NeuPrintImportDialog(QDialog):
             return
         self._active_token = token
         self._credential_ref = credential_reference(server)
+        self._token_source = "saved"
         self.token_edit.blockSignals(True)
         self.token_edit.clear()
         self.token_edit.blockSignals(False)
@@ -466,8 +493,10 @@ class NeuPrintImportDialog(QDialog):
         self.dataset_combo.blockSignals(True)
         self.dataset_combo.clear()
         for dataset in datasets:
-            description = f" — {dataset.description}" if dataset.description else ""
-            self.dataset_combo.addItem(f"{dataset.name}{description}", dataset.name)
+            self.dataset_combo.addItem(dataset.name, dataset.name)
+            if dataset.description:
+                self.dataset_combo.setItemData(self.dataset_combo.count() - 1,
+                                              dataset.description, Qt.ItemDataRole.ToolTipRole)
         preferred_index = self.dataset_combo.findData(self._preferred_dataset)
         if preferred_index >= 0:
             self.dataset_combo.setCurrentIndex(preferred_index)
@@ -568,6 +597,8 @@ class NeuPrintImportDialog(QDialog):
             neurons=self._selected_neurons(),
             token=self._active_token,
             credential_ref=self._credential_ref,
+            acquisition_entrypoint="workstation_neuprint_dialog",
+            credential_source=self._token_source,
             include_connectivity=self.connectivity_check.isChecked(),
         )
 

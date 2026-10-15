@@ -35,12 +35,24 @@ NEURON and Arbor adapters remain available as
 versioned scientific backends and provenance references, but Escape-SIZ is no
 longer an application tab or project model.
 
+The NetPyNE tab has two deliberately separate lanes: a hash-locked, read-only
+Potjans–Diesmann cortical microcircuit condition, and an editable version-1
+synthetic single-soma HH model. The editable lane validates and saves its
+network/experiment document, runs locally in a selected NetPyNE/NEURON Python,
+and opens spikes and voltage in Results. Its external SWC and dataset references
+are not yet executable imports. Results has a windowed, population-filtered
+spike raster that leaves raw events intact. This is **not** a complete paper
+reproduction or a general imported-network editor. The figure-by-figure scope,
+Athene pilots, missing analyses, and Arbor/BMTK port criteria are in
+[the PDCM replication record](docs/PDCM_REPLICATION.md); remaining UI and data
+work is in the [NetPyNE Workbench plan](docs/NETPYNE_WORKBENCH_PLAN.md).
+
 ## Early tester quick start
 
-This is a private alpha. Invited collaborators are authorized by Digifly to
-clone and run this repository solely for private evaluation and feedback. That
-authorization does not permit redistribution, publication, sublicensing, or
-production use of the source or a built application.
+This is alpha software. Digifly's original source is available under the
+[MIT License](LICENSE); [third-party materials](THIRD_PARTY_NOTICES.md) retain
+their own terms. The source-license transition does not certify existing
+native builds for redistribution or scientific results for publication.
 
 Download the Mac build matching the test machine from
 [Digifly Workstation 0.1.0 alpha 1](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.1):
@@ -383,11 +395,14 @@ Arbor versions or architectures.
 
 ## Repository status
 
-This folder is deliberately separate from `Digifly Public` and is ready to
-become the `Digifly Workstation` repository. It is currently private and
-proprietary under the [Digifly Workstation Private Development License](LICENSE);
-no public use or redistribution permission is granted. Third-party software,
-datasets, models, and mechanism sources retain their own terms.
+This folder is deliberately separate from `Digifly Public`. Digifly's original
+code, documentation and original interface assets are licensed under the
+[MIT License](LICENSE), including the independently authored replication code.
+Third-party software, datasets, models and mechanism sources retain their own
+terms; see [licensing scope](THIRD_PARTY_NOTICES.md). Preparing this source
+transition has not published a repository, uploaded results or replaced any
+existing application bundle. Distribution notices, reproducible packaging and
+scientific acceptance remain separate release gates.
 
 Local macOS builds remain ad-hoc signed. The repository also contains a
 fail-closed Developer ID/notarization lane for private distribution once an

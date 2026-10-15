@@ -27,6 +27,7 @@
               "neuron_runtime",
               "arbor_runtime",
               "bmtk_runtime",
+              "netpyne_runtime",
               "vnd_viewer",
               "managed_data_root",
               "output_root"

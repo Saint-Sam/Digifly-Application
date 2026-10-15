@@ -135,6 +135,8 @@ class NeuPrintAcquisitionRequest:
     neurons: tuple[NeuPrintNeuron, ...]
     token: str = field(repr=False, compare=False)
     credential_ref: str = ""
+    acquisition_entrypoint: str = "programmatic"
+    credential_source: str = "provided"
     max_skeleton_bytes: int = DEFAULT_MAX_SKELETON_BYTES
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
     include_connectivity: bool = False
@@ -143,6 +145,10 @@ class NeuPrintAcquisitionRequest:
 
     def __post_init__(self) -> None:
         normalize_server(self.server)
+        if self.acquisition_entrypoint not in {"programmatic", "workstation_neuprint_dialog"}:
+            raise ValueError("Unknown neuPrint acquisition entrypoint")
+        if self.credential_source not in {"provided", "workspace_file", "environment", "saved"}:
+            raise ValueError("Unknown neuPrint credential source")
         safe_component(self.dataset, field="dataset")
         safe_component(self.resource_id, field="download name")
         safe_component(self.source_version, field="snapshot name")
@@ -983,6 +989,13 @@ def acquire_neuprint_bundle(
             "schema_version": 1,
             "server": normalize_server(request.server),
             "dataset": request.dataset,
+            "swc_coordinate_convention": (
+                {"input_units": "8nm", "scale_to_um": 0.008,
+                 "frame": "male-cns-v0.9-native", "raw_bytes_preserved": True}
+                if request.dataset == "male-cns:v0.9"
+                and normalize_server(request.server) == "https://neuprint.janelia.org"
+                else None
+            ),
             "selection": request.selection.to_dict(),
             "neurons": [neuron.to_dict() for neuron in request.neurons],
             "connectivity_included": bool(request.include_connectivity),
@@ -1016,6 +1029,9 @@ def acquire_neuprint_bundle(
         manifest_payload = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "provider": "neuprint",
+            "swc_coordinate_convention": metadata.get("swc_coordinate_convention"),
+            "acquisition_entrypoint": request.acquisition_entrypoint,
+            "credential_source": request.credential_source,
             "resource_id": safe_component(request.resource_id),
             "dataset": request.dataset,
             "source_version": safe_component(request.source_version),

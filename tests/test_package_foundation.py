@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import hashlib
+import tomllib
 import tarfile
 import zipfile
 
 import pytest
 
 from digifly_app.core.paths import resource_path, resource_root, worker_path
-from digifly_app.packaging.audit import audit_artifact
+from digifly_app.packaging.audit import audit_artifact, PROJECT_LICENSE_SHA256
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,12 +18,45 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _current_release_payload(*, archive_root: str, wheel: bool) -> dict[str, bytes]:
     sources = {
+        "digifly_app/workers/pair_graph_import_worker.py": PROJECT_ROOT / "src/digifly_app/workers/pair_graph_import_worker.py",
+        "digifly_app/workers/arbor_channel_translation.py": PROJECT_ROOT / "src/digifly_app/workers/arbor_channel_translation.py",
+        "mechanisms/augustin_2019/nat.mod": PROJECT_ROOT / "mechanisms/augustin_2019/nat.mod",
+        "mechanisms/augustin_2019/nap.mod": PROJECT_ROOT / "mechanisms/augustin_2019/nap.mod",
+        "mechanisms/augustin_2019/k.mod": PROJECT_ROOT / "mechanisms/augustin_2019/k.mod",
         "LICENSE": PROJECT_ROOT / "LICENSE",
+        "THIRD_PARTY_NOTICES.md": PROJECT_ROOT / "THIRD_PARTY_NOTICES.md",
         "digifly_app/workers/generic_experiment_worker.py": (
             PROJECT_ROOT / "src/digifly_app/workers/generic_experiment_worker.py"
         ),
+        "digifly_app/workers/independent_trials.py": (
+            PROJECT_ROOT / "src/digifly_app/workers/independent_trials.py"
+        ),
         "digifly_app/workers/bmtk_bionet_worker.py": (
             PROJECT_ROOT / "src/digifly_app/workers/bmtk_bionet_worker.py"
+        ),
+        "digifly_app/workers/pdcm_netpyne_worker.py": (
+            PROJECT_ROOT / "src/digifly_app/workers/pdcm_netpyne_worker.py"
+        ),
+        "digifly_app/workers/netpyne_workbench_worker.py": (
+            PROJECT_ROOT / "src/digifly_app/workers/netpyne_workbench_worker.py"
+        ),
+        "digifly_app/workers/pdcm_netpyne_mpi_worker.py": (
+            PROJECT_ROOT / "src/digifly_app/workers/pdcm_netpyne_mpi_worker.py"
+        ),
+        "scripts/run_pdcm_athene.sh": (
+            PROJECT_ROOT / "scripts/run_pdcm_athene.sh"
+        ),
+        "scripts/install_pdcm_athene_layer.sh": (
+            PROJECT_ROOT / "scripts/install_pdcm_athene_layer.sh"
+        ),
+        "scripts/probe_neuron_mpi.py": (
+            PROJECT_ROOT / "scripts/probe_neuron_mpi.py"
+        ),
+        "docs/PDCM_ATHENE_RUNBOOK.md": (
+            PROJECT_ROOT / "docs/PDCM_ATHENE_RUNBOOK.md"
+        ),
+        "docs/NETPYNE_WORKBENCH_PLAN.md": (
+            PROJECT_ROOT / "docs/NETPYNE_WORKBENCH_PLAN.md"
         ),
         "mechanisms/neuron_gap_junctions/Gap.mod": (
             PROJECT_ROOT / "mechanisms/neuron_gap_junctions/Gap.mod"
@@ -40,10 +75,22 @@ def _current_release_payload(*, archive_root: str, wheel: bool) -> dict[str, byt
         ),
     }
     payload: dict[str, bytes] = {}
+    sources["digifly_app/workers/pdcm_bionet_app_worker.py"] = PROJECT_ROOT / "src/digifly_app/workers/pdcm_bionet_app_worker.py"
+    for name in ("pdcm_bionet_scalable_app_worker.py", "pdcm_bionet_5pct_app_worker.py"):
+        sources[f"digifly_app/workers/{name}"] = PROJECT_ROOT / "src/digifly_app/workers" / name
+    sources["digifly_app/core/pdcm_bionet_5pct_app.py"] = PROJECT_ROOT / "src/digifly_app/core/pdcm_bionet_5pct_app.py"
+    # Native releases expose this source as a standalone converter; wheels keep
+    # the same data-file layout in addition to the ordinary core module.
+    sources["digifly_app/core/pdcm_campaign_results.py"] = PROJECT_ROOT / "src/digifly_app/core/pdcm_campaign_results.py"
+    for version in ("primary_v3", "primary_v4"):
+        frozen = PROJECT_ROOT / "src/digifly_app/pdcm_bionet" / version
+        for source in frozen.rglob("*"):
+            if source.is_file() and "__pycache__" not in source.parts:
+                sources[f"digifly_app/pdcm_bionet/{version}/{source.relative_to(frozen)}"] = source
     for relative, source in sources.items():
-        if wheel and relative == "LICENSE":
-            destination = f"{archive_root}.data/data/share/digifly-workstation/LICENSE"
-        elif wheel and relative.startswith(("mechanisms/", "scripts/")):
+        if wheel and relative in {"LICENSE", "THIRD_PARTY_NOTICES.md"}:
+            destination = f"{archive_root}.data/data/share/digifly-workstation/{relative}"
+        elif wheel and relative.startswith(("docs/", "mechanisms/", "scripts/")):
             destination = (
                 f"{archive_root}.data/data/share/digifly-workstation/{relative}"
             )
@@ -83,6 +130,9 @@ def test_declared_application_resources_resolve_from_the_active_installation():
     assert worker_path("escape_siz_worker.py").is_file()
     assert worker_path("generic_experiment_worker.py").is_file()
     assert worker_path("bmtk_bionet_worker.py").is_file()
+    assert worker_path("pdcm_netpyne_worker.py").is_file()
+    assert worker_path("netpyne_workbench_worker.py").is_file()
+    assert worker_path("pdcm_netpyne_mpi_worker.py").is_file()
 
 
 def test_macos_bundle_explicitly_includes_bmtk_bionet_worker():
@@ -93,13 +143,125 @@ def test_macos_bundle_explicitly_includes_bmtk_bionet_worker():
         "--include-data-file=src/digifly_app/workers/bmtk_bionet_worker.py="
         "digifly_app/workers/bmtk_bionet_worker.py"
     ) in deploy_spec
+    assert (
+        "--include-data-file=src/digifly_app/workers/pdcm_netpyne_worker.py="
+        "digifly_app/workers/pdcm_netpyne_worker.py"
+    ) in deploy_spec
+    assert (
+        "--include-data-file=src/digifly_app/workers/netpyne_workbench_worker.py="
+        "digifly_app/workers/netpyne_workbench_worker.py"
+    ) in deploy_spec
+    assert (
+        "--include-data-file=src/digifly_app/workers/pdcm_netpyne_mpi_worker.py="
+        "digifly_app/workers/pdcm_netpyne_mpi_worker.py"
+    ) in deploy_spec
+    assert (
+        "--include-data-file=scripts/install_pdcm_athene_layer.sh="
+        "scripts/install_pdcm_athene_layer.sh"
+    ) in deploy_spec
+    assert (
+        "--include-data-file=scripts/probe_neuron_mpi.py="
+        "scripts/probe_neuron_mpi.py"
+    ) in deploy_spec
+    assert (
+        "--include-data-file=docs/NETPYNE_WORKBENCH_PLAN.md="
+        "docs/NETPYNE_WORKBENCH_PLAN.md"
+    ) in deploy_spec
 
 
-def test_macos_bundle_explicitly_includes_private_project_license():
+def test_macos_bundle_explicitly_includes_project_license():
     deploy_spec = (
         Path(__file__).resolve().parents[1] / "pysidedeploy.spec"
     ).read_text(encoding="utf-8")
     assert "--include-data-file=LICENSE=LICENSE" in deploy_spec
+    assert "--include-data-file=THIRD_PARTY_NOTICES.md=THIRD_PARTY_NOTICES.md" in deploy_spec
+
+
+def test_original_code_mit_license_and_metadata_match_release_pin():
+    license_bytes = (PROJECT_ROOT / "LICENSE").read_bytes()
+    assert hashlib.sha256(license_bytes).hexdigest() == PROJECT_LICENSE_SHA256
+    assert license_bytes.startswith(b"MIT License\n\nCopyright (c) 2026 Juan Lopez\n")
+    metadata = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+    classifiers = metadata["project"]["classifiers"]
+    assert "License :: OSI Approved :: MIT License" in classifiers
+    assert "Private :: Do Not Upload" not in classifiers
+    assert "License :: Other/Proprietary License" not in classifiers
+    branding = (PROJECT_ROOT / "src/digifly_app/assets/BRANDING.md").read_text()
+    assert "MIT License" in branding
+    assert "private development license" not in branding
+
+
+def test_release_audit_requires_licensing_scope_notice(tmp_path: Path):
+    archive_root = "digifly_workstation-0.1.0"
+    payload = _current_release_payload(archive_root=archive_root, wheel=True)
+    del payload[f"{archive_root}.data/data/share/digifly-workstation/THIRD_PARTY_NOTICES.md"]
+    artifact = tmp_path / f"{archive_root}-py3-none-any.whl"
+    _write_zip(artifact, payload)
+    report = audit_artifact(artifact)
+    assert any(issue.code == "missing_release_component" and issue.path == "THIRD_PARTY_NOTICES.md"
+               for issue in report.issues)
+
+
+def test_modified_mit_holder_does_not_pass_release_audit(tmp_path: Path):
+    archive_root = "digifly_workstation-0.1.0"
+    payload = _current_release_payload(archive_root=archive_root, wheel=True)
+    project_license = f"{archive_root}.data/data/share/digifly-workstation/LICENSE"
+    payload[project_license] = payload[project_license].replace(b"Juan Lopez", b"Another Holder")
+    artifact = tmp_path / f"{archive_root}-py3-none-any.whl"
+    _write_zip(artifact, payload)
+    report = audit_artifact(artifact)
+    assert any(issue.code == "missing_release_component" and issue.path == "LICENSE"
+               for issue in report.issues)
+
+
+def test_macos_build_does_not_stage_scientific_outputs():
+    build_script = (PROJECT_ROOT / "scripts/build_macos.sh").read_text(encoding="utf-8")
+    assert "--exclude '/outputs/'" in build_script
+
+
+def test_macos_build_stages_distinct_external_bionet_workers():
+    build_script = (PROJECT_ROOT / "scripts/build_macos.sh").read_text(encoding="utf-8")
+    for name in ("pdcm_bionet_scalable_app_worker.py", "pdcm_bionet_5pct_app_worker.py"):
+        assert f'cp "$stage_root/src/digifly_app/workers/{name}"' in build_script
+        assert f'"$stage_bundle/Contents/MacOS/digifly_app/workers/{name}"' in build_script
+    assert 'cp "$stage_root/src/digifly_app/core/pdcm_bionet_5pct_app.py"' in build_script
+    assert '"$stage_bundle/Contents/MacOS/digifly_app/core/pdcm_bionet_5pct_app.py"' in build_script
+
+
+@pytest.mark.parametrize("missing", [
+    "digifly_app/workers/pdcm_bionet_5pct_app_worker.py",
+    "digifly_app/core/pdcm_bionet_5pct_app.py",
+    "digifly_app/pdcm_bionet/primary_v4/scripts/run_pdcm_bionet_scalable_v4.py",
+    "digifly_app/pdcm_bionet/primary_v4/src/digifly_app/pdcm_bionet/mod/DigiflyPDCMEvent.mod",
+])
+def test_release_audit_requires_5pct_worker_and_immutable_scalable_sources(tmp_path, missing):
+    archive_root = "digifly_workstation-0.1.0"
+    payload = _current_release_payload(archive_root=archive_root, wheel=True)
+    del payload[missing]
+    artifact = tmp_path / f"{archive_root}-py3-none-any.whl"
+    _write_zip(artifact, payload)
+    report = audit_artifact(artifact)
+    assert any(issue.code == "missing_release_component" and issue.path == missing for issue in report.issues)
+
+
+def test_release_audit_rejects_changed_immutable_scalable_mod(tmp_path):
+    archive_root = "digifly_workstation-0.1.0"
+    payload = _current_release_payload(archive_root=archive_root, wheel=True)
+    source = "digifly_app/pdcm_bionet/primary_v4/src/digifly_app/pdcm_bionet/mod/DigiflyPDCMEvent.mod"
+    payload[source] += b"\n: changed frozen source\n"
+    artifact = tmp_path / f"{archive_root}-py3-none-any.whl"
+    _write_zip(artifact, payload)
+    report = audit_artifact(artifact)
+    assert any(issue.code == "changed_scientific_source" and issue.path == source for issue in report.issues)
+
+
+def test_release_metadata_retains_both_immutable_bionet_source_versions():
+    metadata = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+    package_data = metadata["tool"]["setuptools"]["package-data"]["digifly_app"]
+    manifest = (PROJECT_ROOT / "MANIFEST.in").read_text()
+    for version in ("primary_v3", "primary_v4"):
+        assert f"pdcm_bionet/{version}/src/digifly_app/pdcm_bionet/mod/*.mod" in package_data
+        assert f"recursive-include src/digifly_app/pdcm_bionet/{version} *.json" in manifest
 
 
 def test_macos_bundle_uses_the_digifly_owned_icon():
@@ -272,6 +434,9 @@ def test_artifact_audit_rejects_stale_digifly_app_missing_runtime_bridges(
     assert "digifly_app/workers/bmtk_bionet_worker.py" in missing
     assert "mechanisms/neuron_gap_junctions/Gap.mod" in missing
     assert "scripts/build_neuron_gap_mechanisms.py" in missing
+    assert "scripts/install_pdcm_athene_layer.sh" in missing
+    assert "scripts/probe_neuron_mpi.py" in missing
+    assert "docs/NETPYNE_WORKBENCH_PLAN.md" in missing
 
 
 @pytest.mark.parametrize("kind", ["wheel", "sdist"])
@@ -293,7 +458,7 @@ def test_artifact_audit_accepts_current_wheel_and_sdist_release_layouts(
     assert report.ok, report.issues
 
 
-def test_dependency_license_does_not_replace_private_project_license(tmp_path: Path):
+def test_dependency_license_does_not_replace_project_license(tmp_path: Path):
     archive_root = "digifly_workstation-0.1.0"
     payload = _current_release_payload(archive_root=archive_root, wheel=True)
     project_license = (
@@ -313,13 +478,30 @@ def test_dependency_license_does_not_replace_private_project_license(tmp_path: P
     )
 
 
-def test_truncated_private_license_does_not_pass_release_audit(tmp_path: Path):
+@pytest.mark.parametrize("alteration", ["missing", "changed"])
+def test_release_audit_blocks_missing_or_changed_bionet_scientific_assets(tmp_path, alteration):
+    root = "digifly_workstation-0.1.0"
+    payload = _current_release_payload(archive_root=root, wheel=True)
+    asset = "digifly_app/pdcm_bionet/primary_v3/scripts/build_pdcm_bionet_primary_v3.py"
+    if alteration == "missing":
+        del payload[asset]
+    else:
+        payload[asset] += b"\n# changed scientific model\n"
+    artifact = tmp_path / f"{root}-py3-none-any.whl"
+    _write_zip(artifact, payload)
+    report = audit_artifact(artifact)
+    assert not report.ok
+    expected = "missing_release_component" if alteration == "missing" else "changed_scientific_source"
+    assert any(issue.code == expected and issue.path == asset for issue in report.issues)
+
+
+def test_truncated_project_license_does_not_pass_release_audit(tmp_path: Path):
     archive_root = "digifly_workstation-0.1.0"
     payload = _current_release_payload(archive_root=archive_root, wheel=True)
     project_license = (
         f"{archive_root}.data/data/share/digifly-workstation/LICENSE"
     )
-    payload[project_license] = b"DIGIFLY WORKSTATION PRIVATE DEVELOPMENT LICENSE\n"
+    payload[project_license] = b"MIT License\n"
     artifact = tmp_path / f"{archive_root}-py3-none-any.whl"
     _write_zip(artifact, payload)
 

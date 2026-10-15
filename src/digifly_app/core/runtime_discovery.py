@@ -23,13 +23,17 @@ class SimulatorRuntime:
     neuron_version: str = ""
     arbor_version: str = ""
     bmtk_version: str = ""
+    netpyne_version: str = ""
     neuron_origin: str = ""
     arbor_origin: str = ""
     bmtk_origin: str = ""
+    netpyne_origin: str = ""
     bionet_ready: bool = False
     bionet_origin: str = ""
     bionet_error: str = ""
     error: str = ""
+    neuron_distribution_version: str = ""
+    neuron_error: str = ""
 
     @property
     def has_neuron(self) -> bool:
@@ -42,6 +46,10 @@ class SimulatorRuntime:
     @property
     def has_bmtk(self) -> bool:
         return bool(self.bmtk_version)
+
+    @property
+    def has_netpyne(self) -> bool:
+        return bool(self.netpyne_version)
 
 
 def _common_environment_roots() -> tuple[Path, ...]:
@@ -165,6 +173,22 @@ def package(module, distributions):
             pass
     return {'version': version or 'installed', 'origin': getattr(spec, 'origin', '') or ''}
 
+def loaded_neuron():
+    installed = package('neuron', ('NEURON', 'neuron'))
+    if not installed['version']:
+        return installed
+    try:
+        selected = importlib.import_module('neuron')
+        version = str(getattr(selected, '__version__', '') or '').strip()
+        if not version or not hasattr(getattr(selected, 'h', None), 'Vector'):
+            raise RuntimeError('loaded NEURON lacks a version or working h.Vector API')
+        return {'version': version, 'origin': str(getattr(selected, '__file__', '') or ''),
+                'distribution_version': installed['version'], 'error': ''}
+    except Exception as exc:
+        return {'version': '', 'origin': installed['origin'],
+                'distribution_version': installed['version'],
+                'error': f'{type(exc).__name__}: {exc}'}
+
 def bionet_capability(bmtk):
     if not bmtk.get('version'):
         return {'ready': False, 'origin': '', 'error': ''}
@@ -207,9 +231,10 @@ bmtk = package('bmtk', ('bmtk',))
 
 print(json.dumps({
     'python_version': platform.python_version(),
-    'neuron': package('neuron', ('NEURON', 'neuron')),
+    'neuron': loaded_neuron(),
     'arbor': package('arbor', ('arbor',)),
     'bmtk': bmtk,
+    'netpyne': package('netpyne', ('netpyne',)),
     'bionet': bionet_capability(bmtk),
 }))
 """
@@ -243,6 +268,7 @@ print(json.dumps({
         neuron = dict(payload.get("neuron") or {})
         arbor = dict(payload.get("arbor") or {})
         bmtk = dict(payload.get("bmtk") or {})
+        netpyne = dict(payload.get("netpyne") or {})
         bionet = dict(payload.get("bionet") or {})
         return SimulatorRuntime(
             python=executable,
@@ -250,12 +276,16 @@ print(json.dumps({
             neuron_version=str(neuron.get("version") or ""),
             arbor_version=str(arbor.get("version") or ""),
             bmtk_version=str(bmtk.get("version") or ""),
+            netpyne_version=str(netpyne.get("version") or ""),
             neuron_origin=str(neuron.get("origin") or ""),
             arbor_origin=str(arbor.get("origin") or ""),
             bmtk_origin=str(bmtk.get("origin") or ""),
+            netpyne_origin=str(netpyne.get("origin") or ""),
             bionet_ready=bool(bionet.get("ready", False)),
             bionet_origin=str(bionet.get("origin") or ""),
             bionet_error=str(bionet.get("error") or ""),
+            neuron_distribution_version=str(neuron.get("distribution_version") or ""),
+            neuron_error=str(neuron.get("error") or ""),
         )
     except (ValueError, IndexError, TypeError) as exc:
         return SimulatorRuntime(executable, "", error=f"unexpected probe output: {exc}")
@@ -278,5 +308,5 @@ def discover_simulator_runtimes(
     return tuple(
         result
         for result in results
-        if result.has_neuron or result.has_arbor or result.has_bmtk
+        if result.has_neuron or result.has_arbor or result.has_bmtk or result.has_netpyne
     )

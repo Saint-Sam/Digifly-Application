@@ -72,6 +72,7 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "scrollbar_handle": "#31415e",
         "table_header": "#17223a",
         "table_header_text": "#aebdd5",
+        "table_alt": "#101a30",
         "progress": "#0c1425",
         "progress_border": "#263653",
         "progress_chunk": "#3c7be3",
@@ -95,6 +96,9 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "stimulus_signal": "#4fd7ff",
         "stimulus_signal_fill": "#40cdff",
         "stimulus_status": "#6fcff0",
+        "netpyne_accent": "#db62ab",
+        "netpyne_accent_hover": "#ec78bd",
+        "netpyne_selected": "#36233d",
     },
     LIGHT_THEME: {
         "text": "#1b2a3d",
@@ -158,6 +162,7 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "scrollbar_handle": "#aebccd",
         "table_header": "#e8eef6",
         "table_header_text": "#41566f",
+        "table_alt": "#f3f7fb",
         "progress": "#e7edf4",
         "progress_border": "#c1cedd",
         "progress_chunk": "#3474ca",
@@ -181,6 +186,9 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
         "stimulus_signal": "#087ea4",
         "stimulus_signal_fill": "#20a9d6",
         "stimulus_status": "#176f8d",
+        "netpyne_accent": "#9c2e70",
+        "netpyne_accent_hover": "#85215e",
+        "netpyne_selected": "#f6e6f0",
     },
 }
 
@@ -271,7 +279,30 @@ QPushButton:pressed { background: @button_pressed@; }
 QPushButton:disabled { color: @button_disabled_text@; background: @button_disabled@; border-color: @button_disabled_border@; }
 QPushButton[primary="true"] { color: white; background: @primary@; border-color: @primary_border@; }
 QPushButton[primary="true"]:hover { background: @primary_hover@; }
+QPushButton[netpynePrimary="true"] {
+    color: white; background: @netpyne_accent@; border-color: @netpyne_accent@;
+}
+QPushButton[netpynePrimary="true"]:hover {
+    background: @netpyne_accent_hover@; border-color: @netpyne_accent_hover@;
+}
 QPushButton[danger="true"] { background: @danger@; border-color: @danger_border@; color: @danger_text@; }
+QFrame#NetPyNEModelRail {
+    background: @side_panel@; border: 1px solid @card_border@; border-radius: 8px;
+}
+QLabel#NetPyNERailHeading {
+    color: @netpyne_accent@; font-size: 10px; font-weight: 750; letter-spacing: 1px;
+}
+QPushButton#NetPyNESectionNavButton {
+    min-height: 34px; padding: 0 10px; text-align: left;
+    color: @nav_text@; background: transparent; border: 0; border-radius: 5px;
+}
+QPushButton#NetPyNESectionNavButton:hover {
+    color: @strong@; background: @nav_hover@;
+}
+QPushButton#NetPyNESectionNavButton:checked {
+    color: @strong@; background: @netpyne_selected@;
+    border-left: 3px solid @netpyne_accent@;
+}
 QPushButton#NavButton {
     min-height: 42px; padding: 0 14px; text-align: left; border: 0;
     background: transparent; color: @nav_text@;
@@ -318,7 +349,25 @@ QHeaderView::section {
     background: @table_header@; border: 0; border-bottom: 1px solid @input_border@;
     color: @table_header_text@; padding: 8px; font-weight: 600;
 }
-QTableWidget { gridline-color: @card_border@; }
+QHeaderView, QHeaderView::viewport { background: @table_header@; }
+QTableWidget {
+    gridline-color: @card_border@; background: @input@;
+    alternate-background-color: @table_alt@;
+}
+QTableWidget::viewport { background: @input@; }
+QTableWidget QTableCornerButton::section { background: @table_header@; border: 0; }
+QTabWidget::pane { border: 0; background: transparent; }
+QTabBar::tab {
+    color: @nav_text@; background: @button@; border: 1px solid @button_border@;
+    border-bottom: 0; border-top-left-radius: 7px; border-top-right-radius: 7px;
+    padding: 8px 15px; margin-right: 3px;
+}
+QTabBar::tab:selected { color: @strong@; background: @card@; border-color: @card_border@; }
+QTabBar::tab:hover:!selected { color: @strong@; background: @button_hover@; }
+QTabBar#NetPyNEWorkspaceTabs::tab:selected,
+QTabBar#NetPyNESectionTabs::tab:selected {
+    border-bottom: 2px solid @netpyne_accent@;
+}
 QProgressBar {
     background: @progress@; border: 1px solid @progress_border@; border-radius: 5px;
     min-height: 9px; max-height: 9px; text-align: center;
