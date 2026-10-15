@@ -82,7 +82,15 @@ def verify_installed(root: Path, data: dict) -> None:
 
 HEALTH_CODE = r'''
 import json, math, sys
-import neuron
+try:
+ import neuron
+except Exception:
+ import os, pathlib, ctypes
+ hoc=sys.modules.get('neuron.hoc')
+ print('DLL_BINDING_DIAGNOSTIC',json.dumps({'environment_home':os.environ.get('NEURONHOME'),
+   'loaded_home':str(hoc.HocObject().neuronhome()) if hoc else None,
+   'binary_names':[p.name for p in (pathlib.Path(sys.executable).parent.parent/'neuron/bin').glob('*.dll')]}))
+ raise
 from neuron import h
 h.load_file('stdrun.hoc')
 s=h.Section(name='digifly_install_health_check'); s.L=20; s.diam=20; s.insert('hh')
