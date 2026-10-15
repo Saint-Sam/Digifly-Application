@@ -56,7 +56,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         assert dialog._thread is None and dialog.use_button.isEnabled(), dialog.status.text()
         dialog.grab().save(str(destination / "installed-neuron-dialog.png"))
         QTest.mouseClick(dialog.use_button, Qt.MouseButton.LeftButton)
-        python = default_install_root() / "python/python.exe"
+        python = default_install_root() / "bin/python.exe"
         assert Path(window.overview_page.python_edit.text()) == python
         assert str(python) in profile_path.read_text().replace("\\\\", "\\")
         health = check_neuron_health(python)

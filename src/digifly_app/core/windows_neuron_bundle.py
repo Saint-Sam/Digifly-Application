@@ -59,7 +59,7 @@ def validate_manifest(directory: Path) -> dict:
         raise ValueError("Official NEURON installer checksum differs")
     if (not 0 < data.get("uncompressed_bytes", 0) <= 4 * 1024**3
             or sum(r["bytes"] for r in data["files"].values()) != data["uncompressed_bytes"]
-            or not {"python/python.exe", "python/python312._pth", "python/Lib/site-packages/sitecustomize.py", "neuron/bin/nrniv.exe"} <= set(data["files"])):
+            or not {"bin/python.exe", "bin/python312._pth", "bin/Lib/site-packages/sitecustomize.py", "bin/nrniv.exe", "NEURON-PYTHON-PATH-ADAPTATION.json"} <= set(data["files"])):
         raise ValueError("Private runtime expansion size/required files differ")
     return data
 
@@ -89,7 +89,7 @@ except Exception:
  hoc=sys.modules.get('neuron.hoc')
  print('DLL_BINDING_DIAGNOSTIC',json.dumps({'environment_home':os.environ.get('NEURONHOME'),
    'loaded_home':str(hoc.HocObject().neuronhome()) if hoc else None,
-   'binary_names':[p.name for p in (pathlib.Path(sys.executable).parent.parent/'neuron/bin').glob('*.dll')]}))
+   'binary_names':[p.name for p in (pathlib.Path(sys.executable).parent.parent/'bin').glob('*.dll')]}))
  raise
 from neuron import h
 h.load_file('stdrun.hoc')
@@ -130,8 +130,8 @@ def install_included_neuron(*, directory: Path | None = None, destination: Path 
         raise ValueError("Private runtime destination must not be a link/junction")
     if destination.exists():
         verify_installed(destination, data)
-        check_neuron_health(destination / "python/python.exe")
-        return destination / "python/python.exe"
+        check_neuron_health(destination / "bin/python.exe")
+        return destination / "bin/python.exe"
     if destination.resolve().is_relative_to(directory.resolve().parents[1]):
         raise ValueError("Install the runtime outside the read-only app folder")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ def install_included_neuron(*, directory: Path | None = None, destination: Path 
     verify_installed(staging, data)
     # Validate at final location: embedded Python and NEURON must be relocatable.
     staging.rename(destination)
-    python = destination / "python/python.exe"
+    python = destination / "bin/python.exe"
     health = check_neuron_health(python)
     (destination / "digifly-install-receipt.json").write_text(json.dumps({
         "runtime_id": RUNTIME_ID, "payload_sha256": data["artifacts"]["runtime.zip"]["sha256"],

@@ -1,6 +1,7 @@
 # Digifly Workstation — current Windows tester
 
-Build 20261015.1 · Windows x86-64 · Arbor deferred
+Builds 20261015.1 (interface-only) / 20261015.2 (included NEURON edition)
+Windows x86-64 · Arbor deferred
 
 Download the Windows ZIP, right-click it and choose **Extract All**, then open
 **Digifly Workstation.exe** in the extracted folder. Keep its DLLs and folders
@@ -27,6 +28,22 @@ table does not establish contact locations or simulation readiness. You choose
 the custom experimental presets; no new experiment is run here.
 
 ## Simulator installation and current limits
+
+The included-NEURON edition supplies NEURON9.0.2, private Python3.12.10,
+NumPy, Matplotlib and the DuckDB reader offline. In Workspace, open **Find or
+install NEURON…**, choose **Install included NEURON9.0.2**, review/accept the
+private installation, then **Use selected runtimes**. It expands to your
+LocalAppData/Digifly/Runtimes folder, not the app or another installation.
+There is no separate download, administrator access, registry/file-association
+or global PATH change. Reuse that included Python for the Parquet data reader.
+The official installer EXE is retained for provenance; the normal Digifly
+button does not execute its registry/association changes. Failed/older
+installations are preserved, not overwritten or deleted.
+
+This edition still does not bundle BioNet, NetPyNE or Arbor. Installer/runtime
+and a tiny built-in-HH engineering app Run check do not establish arbitrary
+custom-channel compilation, MPI, full biological models or cross-OS equivalence.
+The interface-only .1 edition requires separately installed scientific runtimes.
 
 For native NEURON use the [official Windows installer](https://www.neuronsimulator.org/en/latest/install/install_instructions.html)
 and compatible, separately installed Python (first target: Python 3.12 x64).

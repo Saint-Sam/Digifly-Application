@@ -23,7 +23,7 @@ BOOTSTRAP = '''# Digifly private binding; no system registry, global PATH or for
 import os
 from pathlib import Path
 _base = Path(__file__).resolve().parents[3]
-_nrn = _base / 'neuron'
+_nrn = _base
 os.environ['NEURONHOME'] = str(_nrn)
 os.environ['NRNHOME'] = str(_nrn)
 os.environ.setdefault('NEURON_MODULE_OPTIONS', '-nogui')
@@ -69,9 +69,10 @@ def build(destination, work):
         raise ValueError("Official installer layout is ambiguous: " + str(candidates))
     payload = work / "payload"
     payload.mkdir()
-    neuron_root = payload / "neuron"
-    shutil.copytree(candidates[0], neuron_root, ignore=shutil.ignore_patterns("$PLUGINSDIR"))
-    py_root = payload / "python"
+    # NEURON's Windows core derives neuronhome from the executable's ../bin
+    # layout (src/oc/mswinprt.cpp:setneuronhome). Retain that official layout.
+    shutil.copytree(candidates[0], payload, dirs_exist_ok=True, ignore=shutil.ignore_patterns("$PLUGINSDIR"))
+    py_root = payload / "bin"
     extract_zip(python_zip, py_root)
     site = py_root / "Lib/site-packages"
     site.mkdir(parents=True, exist_ok=True)
@@ -83,8 +84,22 @@ def build(destination, work):
     for wheel in sorted(wheels.glob("*.whl")):
         extract_zip(wheel, site)
         wheel_records.append({"name": wheel.name, "sha256": file_hash(wheel), "source": "https://pypi.org/"})
-    (py_root / "python312._pth").write_text("python312.zip\n.\nLib/site-packages\n../neuron/lib/python\nimport site\n", "ascii")
+    (py_root / "python312._pth").write_text("python312.zip\n.\nLib/site-packages\n../lib/python\nimport site\n", "ascii")
     (site / "sitecustomize.py").write_text(BOOTSTRAP, "utf-8")
+    init = payload / "lib/python/neuron/__init__.py"
+    original = init.read_bytes()
+    old = b'path = os.path.join(n.neuronhome().replace("/", "\\\\"), b)'
+    new = b'path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")), b)'
+    if original.count(old) != 1:
+        raise ValueError("Official Windows DLL lookup source differs; do not patch blindly")
+    adapted = original.replace(old, new)
+    init.write_bytes(adapted)
+    (payload / "NEURON-PYTHON-PATH-ADAPTATION.json").write_text(json.dumps({
+        "source": "https://github.com/neuronsimulator/nrn/blob/9.0.2/share/lib/python/neuron/__init__.py",
+        "original_sha256": hashlib.sha256(original).hexdigest(), "adapted_sha256": hashlib.sha256(adapted).hexdigest(),
+        "change": "One DLL lookup path in nrn_dll_sym_nt: use the loaded module's own official-layout root rather than Cygwin neuronhome, which ctypes cannot open as a native Windows path. DLLs, mechanisms, equations, parameters and integration are unchanged.",
+        "original_line": old.decode(), "adapted_line": new.decode(), "author": "Digifly Windows packaging adaptation,2026-10-15"
+    }, indent=2) + "\n", "utf-8")
     fetch("https://raw.githubusercontent.com/neuronsimulator/nrn/9.0.2/Copyright", payload / "NEURON-Copyright.txt")
     notices = {"neuron": {"url": NRN_URL, "sha256": INSTALLER_SHA256, "license": "BSD-3-Clause with incorporated notices retained in official payload",
         "source": "https://github.com/neuronsimulator/nrn/tree/9.0.2"},

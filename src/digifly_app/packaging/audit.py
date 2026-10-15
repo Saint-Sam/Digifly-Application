@@ -400,6 +400,7 @@ def audit_artifact(
     count = total = 0
     windows_binaries = {}
     approved_neuron_archives = set()
+    approved_neuron_entries = set()
     if release_kind == "windows":
         try:
             marker_entry = next(e for e in _entries(path) if e.name == "digifly_windows_package.json")
@@ -417,12 +418,16 @@ def audit_artifact(
                 from ..core.windows_neuron_bundle import INSTALLER_SHA256, RUNTIME_ID
                 declared = json.loads(offline.data.decode("utf-8"))
                 if (declared.get("runtime_id") != RUNTIME_ID or declared.get("neuron_installer_sha256") != INSTALLER_SHA256
-                        or declared.get("schema") != "digifly-offline-neuron-v1"):
+                        or declared.get("schema") != "digifly-offline-neuron-v1"
+                        or set(declared.get("artifacts", {})) != {"runtime.zip", "NEURON-9.0.2-official-setup.exe"}
+                        or declared["artifacts"]["NEURON-9.0.2-official-setup.exe"]["sha256"] != INSTALLER_SHA256):
                     raise ValueError("Unknown bundled NEURON source identity")
+                approved_neuron_entries.add(offline.name)
                 for name, record in declared["artifacts"].items():
                     relative = "installers/neuron/" + name
                     if relative not in marker["files"] or marker["files"][relative] != record:
                         raise ValueError("Bundled NEURON artifact differs from package inventory")
+                    approved_neuron_entries.add(relative)
                     if name == "runtime.zip":
                         approved_neuron_archives.add(relative)
         except (StopIteration, KeyError, ValueError, TypeError, AttributeError):
@@ -458,7 +463,7 @@ def audit_artifact(
             and hashlib.sha256(entry.data).hexdigest() == PROJECT_LICENSE_SHA256
         ):
             project_license_entry = entry
-        vendored = None if approved_arbor_entry else _vendored_runtime_root(logical)
+        vendored = None if approved_arbor_entry or entry.name in approved_neuron_entries else _vendored_runtime_root(logical)
         if vendored is not None:
             runtime_root, detail = vendored
             if runtime_root not in vendored_roots:
