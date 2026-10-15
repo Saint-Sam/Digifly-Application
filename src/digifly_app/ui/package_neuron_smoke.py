@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import time
+import tempfile
 import traceback
 
 
@@ -27,7 +28,9 @@ def run_neuron_package_smoke(destination: Path) -> int:
     original_question, original_warning, original_critical = QMessageBox.question, QMessageBox.warning, QMessageBox.critical
     errors = []
     try:
-        os.environ["LOCALAPPDATA"] = str(destination / "Local App Data")
+        # Installation must remain outside both a source checkout and the
+        # extracted read-only app. Evidence can live in the requested folder.
+        os.environ["LOCALAPPDATA"] = str(Path(tempfile.mkdtemp(prefix="digifly-neuron-check-")) / "Local App Data")
         profile_path = destination / "workspace/config/resources.json"
         make_standalone_profile(workstation_root=destination / "workspace").save(profile_path)
         os.environ[PROFILE_PATH_ENV] = str(profile_path)
