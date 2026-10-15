@@ -61,6 +61,8 @@ def test_windows_source_selection_excludes_private_inputs_and_old_outputs():
     names = {p.relative_to(ROOT).as_posix() for p in paths}
     assert "src/digifly_app/workers/pair_graph_import_worker.py" in names
     assert "src/digifly_app/ui/package_smoke.py" in names
+    assert ".gitattributes" in names
+    assert "* -text" in (ROOT / ".gitattributes").read_text("utf-8")
     assert all(not name.startswith(("outputs/", "dist/", ".venv/", "sources/")) for name in names)
     assert all(p.suffix not in {".swc", ".parquet", ".sqlite", ".h5", ".pyc"} for p in paths)
 

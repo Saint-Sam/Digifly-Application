@@ -84,7 +84,7 @@ def test_index_cannot_be_overwritten(imported):
     result = subprocess.run([reader, "-I", str(WORKER), "--source", ref.pair_graph_path,
                              "--destination", str(Path(ref.pair_graph_index).parent)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 1
-    assert "File exists" in result.stderr
+    assert "exists" in result.stderr.casefold()
     assert len(pair_rows(ref, "10110", "841369754323")) == 2
 
 

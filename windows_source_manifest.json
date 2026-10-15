@@ -1,6 +1,10 @@
 {
   "schema": "digifly-windows-source-v1",
   "files": {
+    ".gitattributes": {
+      "sha256": "85146283f6ce523a91bc9540d8759738a2ef014f7ddba36f77d789ef993675fd",
+      "bytes": 140
+    },
     "LICENSE": {
       "sha256": "ddff84afdac51697e2bcd237ffe0a363cb2f4b25dfa0d6efa3457ac31613bc5d",
       "bytes": 1067
@@ -238,8 +242,8 @@
       "bytes": 3446
     },
     "scripts/stage_windows_source.py": {
-      "sha256": "50828377fdaa7f974a3a767f07f17b3a7f6ed105c13c45fc0c1a7cd8369258ba",
-      "bytes": 3404
+      "sha256": "70136c4ebcb2a2a55fab48756ce054585f1e4c589c250a99c2c09cbb0f03fac4",
+      "bytes": 3422
     },
     "scripts/windows_package.py": {
       "sha256": "8cd5be02f0fd5183843e65d21907f5e3c90a440a541d584ee20c4b2be1c8c645",
@@ -762,16 +766,16 @@
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "1e4e23f609ad1efdf9e73fa4ae23e56ec3ad8a5add498d19a56c8bc1a25a35a8",
-      "bytes": 3101
+      "sha256": "5aa92ae53052304eadfcfe2145c03ba70ab0d600b88ed78d44cd00ee44c9137f",
+      "bytes": 3207
     },
     "tests/test_package_foundation.py": {
       "sha256": "b237c5ef0e10e5ddcd73712c4b9871b4c6c620c8a80b44d35dd664419f8b8dba",
       "bytes": 26698
     },
     "tests/test_pair_graph.py": {
-      "sha256": "c8cde1313690bb9a33953aefa9868b50283992eb8ff3cacffbba12352ea3f765",
-      "bytes": 5787
+      "sha256": "62d3484a608cc97598a435ad8cdc389a7660a1754fda37e6643346efba640f8b",
+      "bytes": 5793
     }
   }
 }

@@ -10,7 +10,7 @@ import re
 
 
 def inputs(root: Path) -> list[Path]:
-    names = {"main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+    names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/stage_pdcm_bionet_assets.py",
              "scripts/stage_pdcm_bionet_scalable_assets.py", "docs/WINDOWS_TESTER.md"}
