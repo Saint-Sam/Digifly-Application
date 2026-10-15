@@ -7,7 +7,7 @@ import pytest
 from digifly_app.core import windows_neuron_bundle as bundle
 
 
-@pytest.mark.parametrize("name", ["../bad", "/bad", "C:/bad", "safe/../bad", "safe\\bad", "safe/ads:bad"])
+@pytest.mark.parametrize("name", ["../bad", "/bad", "C:/bad", "safe/../bad", "safe\\bad", "safe/ads:bad", "safe/CON.txt", "safe/foo.", "safe/foo "])
 def test_archive_traversal_refused(name):
     with pytest.raises(ValueError, match="Unsafe"):
         bundle.safe_member(zipfile.ZipInfo(name))

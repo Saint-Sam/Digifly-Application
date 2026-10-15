@@ -21,11 +21,21 @@ PY_SHA = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 
 BOOTSTRAP = '''# Digifly private binding; no system registry, global PATH or foreign packages.
 import os
+import ctypes
 from pathlib import Path
 _base = Path(__file__).resolve().parents[3]
 _nrn = _base
 os.environ['NEURONHOME'] = str(_nrn)
 os.environ['NRNHOME'] = str(_nrn)
+# CPython uses UCRT while the official MinGW NEURON DLLs can use MSVCRT.
+# Synchronize these process-local CRT environments, not registry/global state.
+for _crt_name in ('msvcrt', 'ucrtbase'):
+    _putenv = ctypes.CDLL(_crt_name)._putenv_s
+    _putenv.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+    _putenv.restype = ctypes.c_int
+    for _key in ('NEURONHOME', 'NRNHOME'):
+        if _putenv(_key.encode('ascii'), str(_nrn).replace('\\\\','/').encode('utf-8')):
+            raise RuntimeError('Unable to bind private NEURON CRT environment')
 os.environ.setdefault('NEURON_MODULE_OPTIONS', '-nogui')
 _dll_handles = [os.add_dll_directory(str(p)) for p in (_nrn/'bin',_nrn/'lib/python/neuron') if p.is_dir()]
 os.environ['PATH'] = str(_nrn/'bin') + os.pathsep + str(_nrn/'mingw/usr/bin') + os.pathsep + os.environ.get('PATH','')
@@ -97,7 +107,7 @@ def build(destination, work):
     (payload / "NEURON-PYTHON-PATH-ADAPTATION.json").write_text(json.dumps({
         "source": "https://github.com/neuronsimulator/nrn/blob/9.0.2/share/lib/python/neuron/__init__.py",
         "original_sha256": hashlib.sha256(original).hexdigest(), "adapted_sha256": hashlib.sha256(adapted).hexdigest(),
-        "change": "One DLL lookup path in nrn_dll_sym_nt: use the loaded module's own official-layout root rather than Cygwin neuronhome, which ctypes cannot open as a native Windows path. DLLs, mechanisms, equations, parameters and integration are unchanged.",
+        "change": "One DLL lookup path in nrn_dll_sym_nt: use the loaded module's own official-layout root rather than Cygwin neuronhome, which ctypes cannot open as a native Windows path. sitecustomize also synchronizes process-local MSVCRT/UCRT NEURONHOME for HOC libraries. DLLs, mechanisms, equations, parameters and integration are unchanged.",
         "original_line": old.decode(), "adapted_line": new.decode(), "author": "Digifly Windows packaging adaptation,2026-10-15"
     }, indent=2) + "\n", "utf-8")
     fetch("https://raw.githubusercontent.com/neuronsimulator/nrn/9.0.2/Copyright", payload / "NEURON-Copyright.txt")
