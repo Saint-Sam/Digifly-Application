@@ -12,7 +12,7 @@ import re
 def inputs(root: Path) -> list[Path]:
     names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
-             "scripts/windows_package.py", "scripts/stage_pdcm_bionet_assets.py",
+             "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
              "scripts/stage_pdcm_bionet_scalable_assets.py", "docs/WINDOWS_TESTER.md"}
     metadata = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
     for files in metadata["tool"]["setuptools"]["data-files"].values():
@@ -32,7 +32,8 @@ def stage(source: Path, destination: Path, *, release_snapshot=False) -> None:
     if release_snapshot:
         paths.extend(source / name for name in (
             ".github/workflows/windows-current-release.yml", "scripts/publish_windows_release.py",
-            "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py"))
+            "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
+            "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh"))
     records = {}
     for path in paths:
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source):

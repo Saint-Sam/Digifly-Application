@@ -44,7 +44,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           $env:DIGIFLY_TEST_PARQUET_PYTHON = (Resolve-Path .data-reader/Scripts/python.exe).Path
-          ./.venv/Scripts/python.exe -m pytest tests/test_windows_release.py tests/test_windows_package.py tests/test_pair_graph.py --junitxml=windows-tests.xml
+          ./.venv/Scripts/python.exe -m pytest tests/test_windows_release.py tests/test_windows_package.py tests/test_pair_graph.py tests/test_stage_pdcm_bionet_assets.py --junitxml=windows-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Windows regressions failed' }
       - name: Compile current Windows UI without Arbor or Docker
         shell: pwsh
@@ -95,3 +95,12 @@ jobs:
             dist/windows-publication-receipt.json
             windows-tests.xml
             windows-ui-evidence/receipt.json
+      - name: Preserve unaccepted native candidate if a later packaging check fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unaccepted-Windows-candidate-20261015
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/digifly-windows-*/deployment/main.dist/**
+            ${{ runner.temp }}/digifly-windows-*/windows_source_manifest.json

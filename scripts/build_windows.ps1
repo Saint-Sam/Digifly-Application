@@ -18,6 +18,9 @@ if ($LASTEXITCODE -ne 0) { throw "Could not create Windows icon." }
 $env:PYTHONPATH = Join-Path $stage "src"
 Push-Location $stage
 try {
+    # Reject frozen-asset inventory/path drift before the expensive compiler.
+    & $python -c "from pathlib import Path; from digifly_app.workers.pdcm_bionet_app_worker import validate_sources; from digifly_app.workers.pdcm_bionet_scalable_app_worker import validate_sources as v4; validate_sources(Path('src/digifly_app/pdcm_bionet/primary_v3')); v4(Path('src/digifly_app/pdcm_bionet/primary_v4'))"
+    if ($LASTEXITCODE -ne 0) { throw "Frozen assets failed precompile validation." }
     $nuitkaArgs = @(
         "-m", "nuitka", "main.py", "--standalone", "--enable-plugin=pyside6", "--msvc=latest",
         "--output-dir=deployment", "--assume-yes-for-downloads", "--lto=no", "--jobs=4",
@@ -55,6 +58,8 @@ try {
     foreach ($worker in $requiredWorkers) {
         if (-not (Test-Path (Join-Path $bundle "digifly_app\workers\$worker"))) { throw "Packaged simulator worker is missing: $worker" }
     }
+    & $python "scripts\collect_windows_notices.py" --bundle $bundle
+    if ($LASTEXITCODE -ne 0) { throw "Dependency license/notice inventory failed." }
     & $python "scripts\windows_package.py" seal --bundle $bundle --source $stage --version $version
     if ($LASTEXITCODE -ne 0) { throw "Windows package audit failed." }
     $archive = Join-Path $dist "Digifly-Workstation-$version-Windows-x86_64.zip"

@@ -10,6 +10,15 @@ materials retain their respective terms. A provenance manifest, local copy or
 successful simulation does not grant redistribution rights. Do not relabel
 third-party code or data as Digifly-authored MIT material.
 
+The bundled Augustin2019 `nat`, `nap` and `k` mechanisms are adaptations of
+the code identified as Extended Data1 of Augustin, Zylbertal and Partridge,
+eNeuro6(2), DOI10.1523/ENEURO.0423-18.2019. The original article is CC BY4.0;
+its Code accessibility section links ModelDB245415 and that code supplement.
+Retain the authors' copyright, attribution and change notice in
+`mechanisms/augustin_2019/NOTICE.md`. These materials are not relicensed as
+exclusively MIT. The October15 paper/full-text inspection supersedes the
+earlier incomplete review that looked only for a LICENSE in the model mirror.
+
 Before a public release, record exact versions, original licenses and required
 notices for every bundled dependency and mechanism source. In particular, the
 Qt/PySide interface runtime, optional bundled Arbor runtime, Augustin mechanism

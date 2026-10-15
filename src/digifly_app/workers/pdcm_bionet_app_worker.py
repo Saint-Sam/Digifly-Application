@@ -66,7 +66,7 @@ def inventory(root: Path) -> dict[str, str]:
         if path.is_symlink():
             raise ValueError("Bundle must not contain symlinks")
         if path.is_file():
-            result[str(path.relative_to(root))] = sha(path)
+            result[path.relative_to(root).as_posix()] = sha(path)
     return result
 
 

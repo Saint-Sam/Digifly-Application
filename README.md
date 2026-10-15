@@ -75,12 +75,14 @@ Scientific resources remain outside the application and are configured through
 the first-launch workflow. Follow the short, audited [early-testing
 flow](docs/TESTING.md) before filing a report.
 
-The Windows tester build uses Docker Desktop as its scientific runtime. Digifly
-ships a small Docker launcher and uses the versioned
-`ghcr.io/saint-sam/digifly-simulators` image containing Arbor, NEURON, and BMTK.
-Experiments mount their run folder read/write and only referenced input folders
-read-only. Connectomes, imported SWCs, saved runs, credentials, and the managed
-Data Library stay on the host and are never built into the image.
+The current Windows x86-64 tester is built from a separate, data-free current
+source snapshot. See [Windows tester instructions](docs/WINDOWS_TESTER.md).
+Opening its native interface and importing the MANC pair Parquet do not need
+Docker. Arbor is deferred. Native NEURON uses the official installer route;
+its compiler/Run qualification and user-selected cross-OS experiments remain
+separate acceptance work, not something established by an EXE build.
+Connectomes, SWCs, tokens, saved runs and external simulator environments are
+not bundled. The historical Docker image is not rebuilt by this workflow.
 
 ## What the first milestone includes
 

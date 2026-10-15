@@ -73,3 +73,11 @@ def test_windows_build_has_no_docker_or_arbor_dependency_and_gates_before_zip():
     assert "robocopy" not in script and "Remove-Item" not in script
     assert script.index('windows_package.py" seal') < script.index('windows_package.py" archive')
     assert "stage_pdcm_bionet_scalable_assets.py" in script
+
+
+def test_publication_stops_before_network_without_redistribution_review(tmp_path, monkeypatch):
+    publisher = module("publish_windows_release")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Saint-Sam/Digifly-Application")
+    with pytest.raises(ValueError, match="Public replacement held"):
+        publisher.publish(tmp_path / "no-artifact.zip")

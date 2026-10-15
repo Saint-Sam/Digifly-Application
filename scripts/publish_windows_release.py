@@ -31,7 +31,14 @@ def api(endpoint, *args):
 def publish(archive: Path):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != REPO:
         raise ValueError("Publisher is restricted to this repository's authorized CI")
-    raise ValueError("Public replacement held: Augustin/ModelDB redistribution permission and complete bundled-dependency notices remain unresolved. Build-only artifacts may be evaluated; do not bypass this release gate.")
+    review = Path(__file__).resolve().parents[1] / "docs/WINDOWS_REDISTRIBUTION_REVIEW.json"
+    if not review.is_file():
+        raise ValueError("Public replacement held: Augustin/ModelDB permission and complete bundled-dependency notices remain unresolved. Build-only evaluation is distinct from a cleared release.")
+    # This binds the human licensing review to one exact artifact. It cannot
+    # establish legal permission by itself, and no review is supplied by default.
+    approval = json.loads(review.read_text("utf-8"))
+    if approval.get("artifact_sha256") != hashlib.sha256(archive.read_bytes()).hexdigest() or not approval.get("permission_evidence"):
+        raise ValueError("Redistribution review is absent, stale or lacks permission evidence")
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     receipt = {"repository": REPO, "tag": TAG, "sha256": checksum, "versioned_asset": archive.name}
     release = api(f"repos/{REPO}/releases/tags/{TAG}")

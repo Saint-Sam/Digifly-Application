@@ -10,12 +10,12 @@
       "bytes": 1067
     },
     "README.md": {
-      "sha256": "cb9c17ce24984b74ec3120331513fb9fc77678524614b36f29f98db7ef8e6a17",
-      "bytes": 27426
+      "sha256": "61fa74e658b3201e6c58a66ba6a5ff608a1db60e699d8cb197f58a98f903374b",
+      "bytes": 27591
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "c2a22cc2e056f9723c3c0dc06a3ff910dab9edafeb2905549bc90183bba20ec7",
-      "bytes": 1791
+      "sha256": "a10ec658d4cdd9d7761afb70f328e0b16782eb83ab1f8c861112f1d55f863756",
+      "bytes": 2390
     },
     "docs/ARCHITECTURE.md": {
       "sha256": "b995d54c1160437e796dda78dc8d2019a987409c7ff2771eff499641a91b5794",
@@ -80,6 +80,10 @@
     "mechanisms/arbor_gap_junctions/source_manifest.json": {
       "sha256": "0041ca45f31d112b8c4bc0677d2d57bf6003592cc88d2825ac883ba819308e76",
       "bytes": 1361
+    },
+    "mechanisms/augustin_2019/NOTICE.md": {
+      "sha256": "2acbe434d5b4eded614d37fbc1854e71030b5eefd2f3e1f7cc0863b549cf73d7",
+      "bytes": 1577
     },
     "mechanisms/augustin_2019/k.mod": {
       "sha256": "73f5d0a0f1baaf575430c9744c6a5e060567831e6b94d1e1add2df6defd30da7",
@@ -170,8 +174,12 @@
       "bytes": 22474
     },
     "scripts/build_windows.ps1": {
-      "sha256": "dd14ac0199d85d6b735e61c707650ea5280c373123bd6bc08283511996311820",
-      "bytes": 5378
+      "sha256": "12ac2bdb9a7684d94bbe5107db06dad010677038f720d5426369a5b9935b9fd1",
+      "bytes": 6017
+    },
+    "scripts/collect_windows_notices.py": {
+      "sha256": "99b9ddb090b7fa2edc78cf8bd3c4042a1985eef5a22dd16213ea57213d8d5e48",
+      "bytes": 5979
     },
     "scripts/compare_pdcm_figure10_conditions.py": {
       "sha256": "4d52310333a94e82181ce5fe51298b36a884456097a0d142f8274453a1e22586",
@@ -242,8 +250,8 @@
       "bytes": 3446
     },
     "scripts/stage_windows_source.py": {
-      "sha256": "70136c4ebcb2a2a55fab48756ce054585f1e4c589c250a99c2c09cbb0f03fac4",
-      "bytes": 3422
+      "sha256": "0985f8b0725d545be558d7216dbfd7656ec65ea1acffa39ad762b59ea8c1aba6",
+      "bytes": 3540
     },
     "scripts/windows_package.py": {
       "sha256": "8cd5be02f0fd5183843e65d21907f5e3c90a440a541d584ee20c4b2be1c8c645",
@@ -734,8 +742,8 @@
       "bytes": 27258
     },
     "src/digifly_app/workers/pdcm_bionet_app_worker.py": {
-      "sha256": "1afac17dd948add96cf907281c54c406c7d40368b6c70d204fc3e25ce54a5d6a",
-      "bytes": 13882
+      "sha256": "5f03b7fa922143421dfa99d7b2014373b5f717a63b7f250546b56bcfaed8fc73",
+      "bytes": 13888
     },
     "src/digifly_app/workers/pdcm_bionet_scalable_app_worker.py": {
       "sha256": "695a542e51797e7ccd251b23c9048ea16be963274e0353273781e913253403fe",
@@ -754,20 +762,20 @@
       "bytes": 22922
     },
     ".github/workflows/windows-current-release.yml": {
-      "sha256": "3c1e219356cedc9d34cced51a200f70cf13f58ee3701b4d7d2778ff34020ee34",
-      "bytes": 4250
+      "sha256": "92e7acb3736e4ad2d0cd1622a66399bfe210543df3fb4616aadebe86c50b6b72",
+      "bytes": 4707
     },
     "scripts/publish_windows_release.py": {
-      "sha256": "638ed3209db1d74a1936c76bebbc10020dfe7fbf91da03d37a13eb2b1c73c48f",
-      "bytes": 5681
+      "sha256": "2fcfe899dc9a70dcc394b168242c0ce7bde2c594a79f9f958cf5a9e4b4fe4ed7",
+      "bytes": 6221
     },
     "tests/test_windows_release.py": {
       "sha256": "ed8a109be26cb9f1d0310304ba66ae4b90b37756f28e8165131e1fdcf9b084ce",
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "5aa92ae53052304eadfcfe2145c03ba70ab0d600b88ed78d44cd00ee44c9137f",
-      "bytes": 3207
+      "sha256": "d4a1ab92c493a634a7593887256c03e6ae254c2501e6ee1c01ee6a5484e67ba7",
+      "bytes": 3606
     },
     "tests/test_package_foundation.py": {
       "sha256": "b237c5ef0e10e5ddcd73712c4b9871b4c6c620c8a80b44d35dd664419f8b8dba",
@@ -776,6 +784,14 @@
     "tests/test_pair_graph.py": {
       "sha256": "62d3484a608cc97598a435ad8cdc389a7660a1754fda37e6643346efba640f8b",
       "bytes": 5793
+    },
+    "tests/test_stage_pdcm_bionet_assets.py": {
+      "sha256": "5f8bbe061c7193e9248be5fd23ee26cb6086c18b2f4694caa5e83b75c749c321",
+      "bytes": 1697
+    },
+    "scripts/build_macos.sh": {
+      "sha256": "dc1b58f3f8e2c167a37f8804d9047af5b1991e7e8ece85479f960409904935d6",
+      "bytes": 15307
     }
   }
 }
