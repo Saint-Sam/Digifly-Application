@@ -31,6 +31,7 @@ def api(endpoint, *args):
 def publish(archive: Path):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != REPO:
         raise ValueError("Publisher is restricted to this repository's authorized CI")
+    raise ValueError("Public replacement held: Augustin/ModelDB redistribution permission and complete bundled-dependency notices remain unresolved. Build-only artifacts may be evaluated; do not bypass this release gate.")
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     receipt = {"repository": REPO, "tag": TAG, "sha256": checksum, "versioned_asset": archive.name}
     release = api(f"repos/{REPO}/releases/tags/{TAG}")

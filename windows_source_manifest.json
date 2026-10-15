@@ -754,12 +754,12 @@
       "bytes": 22922
     },
     ".github/workflows/windows-current-release.yml": {
-      "sha256": "13f23d9f48c3bd149df96ba5156dc2ffaf98b794cd1c999eda8d82cd0af6d833",
-      "bytes": 4009
+      "sha256": "3c1e219356cedc9d34cced51a200f70cf13f58ee3701b4d7d2778ff34020ee34",
+      "bytes": 4250
     },
     "scripts/publish_windows_release.py": {
-      "sha256": "e435aefc83f41e46fea0815fada5f16bf250cdfd676d162883c1bf1bf9b6168a",
-      "bytes": 5458
+      "sha256": "638ed3209db1d74a1936c76bebbc10020dfe7fbf91da03d37a13eb2b1c73c48f",
+      "bytes": 5681
     },
     "tests/test_windows_release.py": {
       "sha256": "ed8a109be26cb9f1d0310304ba66ae4b90b37756f28e8165131e1fdcf9b084ce",

@@ -4,6 +4,11 @@ on:
   push:
     branches: [windows-current-20261015]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish only after component redistribution notices have been cleared
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -73,6 +78,7 @@ jobs:
             windows-ui-evidence/*.png
             windows-build-dependencies.txt
       - name: Replace Windows download with checksum-verified rollback
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
