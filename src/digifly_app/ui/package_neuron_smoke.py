@@ -1,6 +1,7 @@
 """Actual Windows bundle setup and Run controls, using a tiny software fixture."""
 from __future__ import annotations
 import csv
+import faulthandler
 import hashlib
 import json
 import math
@@ -25,9 +26,15 @@ def run_neuron_package_smoke(destination: Path) -> int:
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
     record = {"ok": False, "scope": "Windows private NEURON install plus actual app Run on tiny engineering fixture; not user-selected presets/paper/equivalence acceptance"}
-    original_question, original_warning, original_critical = QMessageBox.question, QMessageBox.warning, QMessageBox.critical
+    original_question, original_warning, original_critical, original_information = QMessageBox.question, QMessageBox.warning, QMessageBox.critical, QMessageBox.information
     errors = []
+    def checkpoint(phase: str) -> None:
+        record["phase"] = phase
+        (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
+    stacks = (destination / "thread-stacks.txt").open("w", encoding="utf-8")
+    faulthandler.dump_traceback_later(45, repeat=True, file=stacks)
     try:
+        checkpoint("prepare isolated settings")
         # Installation must remain outside both a source checkout and the
         # extracted read-only app. Evidence can live in the requested folder.
         os.environ["LOCALAPPDATA"] = str(Path(tempfile.mkdtemp(prefix="digifly-neuron-check-")) / "Local App Data")
@@ -37,10 +44,15 @@ def run_neuron_package_smoke(destination: Path) -> int:
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
         QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(destination / "settings"))
         app = QApplication.instance() or QApplication([])
+        QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Yes if len(args)>1 and args[1]=="Install included NEURON?" else QMessageBox.StandardButton.No
+        QMessageBox.warning = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
+        QMessageBox.critical = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
+        QMessageBox.information = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
         from digifly_app.ui.main_window import MainWindow, ORGANIZATION_NAME, APPLICATION_NAME
         settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
         settings.setValue("output_root", str(destination / "workspace/runs"))
         settings.setValue("workspace_root", "")
+        checkpoint("construct actual main window")
         window = MainWindow()
         window.show()
         dialog = RuntimeSetupDialog(parent=window)
@@ -50,20 +62,20 @@ def run_neuron_package_smoke(destination: Path) -> int:
         assert dialog.install_neuron_button.isVisible(), "Included setup control absent"
         # Explicit engineering CLI authorizes this isolated test installation.
         # No simulator/preflight/result is mocked or replaced.
-        QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Yes if len(args)>1 and args[1]=="Install included NEURON?" else QMessageBox.StandardButton.No
-        QMessageBox.warning = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
-        QMessageBox.critical = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
+        checkpoint("click included NEURON installation")
         QTest.mouseClick(dialog.install_neuron_button, Qt.MouseButton.LeftButton)
         deadline = time.monotonic() + 180
         while dialog._thread is not None and time.monotonic() < deadline:
             QTest.qWait(100)
         assert dialog._thread is None and dialog.use_button.isEnabled(), dialog.status.text()
+        checkpoint("installed runtime; select binding")
         dialog.grab().save(str(destination / "installed-neuron-dialog.png"))
         QTest.mouseClick(dialog.use_button, Qt.MouseButton.LeftButton)
         python = default_install_root() / "bin/python.exe"
         assert Path(window.overview_page.python_edit.text()) == python
         assert str(python) in profile_path.read_text().replace("\\\\", "\\")
         health = check_neuron_health(python)
+        checkpoint("private health passed; prepare tiny Run fixture")
         source = destination / "fixture.swc"
         source.write_text("1 1 0 0 0 5 -1\n2 1 0 0 5 5 1\n3 3 0 0 10 2 2\n4 3 0 0 50 1 3\n", "utf-8")
         sha = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -79,10 +91,13 @@ def run_neuron_package_smoke(destination: Path) -> int:
         page.set_circuit_snapshot(circuit, (morphology,))
         page.set_config(config)
         window.pages.setCurrentWidget(page)
+        checkpoint("click actual app Run; synchronous preflight")
         page.run_button.click()
+        checkpoint("await actual app worker completion")
         deadline = time.monotonic() + 90
         while page._process is not None and time.monotonic() < deadline:
             QTest.qWait(100)
+        checkpoint("worker returned; inspect saved output")
         assert not errors, errors
         assert page._process is None and page._plan is not None, page.validation_state.text()
         root = Path(page._plan.working_directory)
@@ -96,11 +111,14 @@ def run_neuron_package_smoke(destination: Path) -> int:
         record.update(ok=True, health=health, ui_install=True, ui_runtime_binding=True,
             ui_run=True, finite_voltage_samples=len(volts), min_mV=min(volts), max_mV=max(volts),
             run_root=str(root), source_unchanged=True, registry_changed=False, global_path_changed=False)
+        checkpoint("close isolated app")
         window.close()
         app.processEvents()
     except Exception:
         record["error"] = traceback.format_exc()
     finally:
-        QMessageBox.question, QMessageBox.warning, QMessageBox.critical = original_question, original_warning, original_critical
+        QMessageBox.question, QMessageBox.warning, QMessageBox.critical, QMessageBox.information = original_question, original_warning, original_critical, original_information
+        faulthandler.cancel_dump_traceback_later()
+        stacks.close()
     (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
     return 0 if record["ok"] else 1

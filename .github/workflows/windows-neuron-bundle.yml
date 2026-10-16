@@ -69,8 +69,8 @@ jobs:
           Copy-Item downloaded-runtime/* installers/neuron
           $sourcePython = (Resolve-Path .venv/Scripts/python.exe).Path
           $sourceReport = "$env:GITHUB_WORKSPACE/source-neuron-ui-evidence"
-          $sourceCheck = Start-Process -FilePath $sourcePython -ArgumentList @('-m', 'digifly_app.app', '--package-neuron-test', $sourceReport) -PassThru
-          if (-not $sourceCheck.WaitForExit(240000)) { $sourceCheck.Kill(); throw 'Source app setup/Run gate timed out before compiler' }
+          $sourceCheck = Start-Process -FilePath $sourcePython -ArgumentList @('-m', 'digifly_app.app', '--package-neuron-test', $sourceReport) -RedirectStandardOutput source-ui-stdout.txt -RedirectStandardError source-ui-stderr.txt -PassThru
+          if (-not $sourceCheck.WaitForExit(240000)) { taskkill /PID $sourceCheck.Id /T /F; Get-Content source-neuron-ui-evidence/receipt.json,source-neuron-ui-evidence/thread-stacks.txt,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate timed out before compiler' }
           if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json; throw 'Source app setup/Run gate failed before compiler' }
           ./scripts/build_windows.ps1
       - name: Extract real app and install/use included NEURON through UI
@@ -79,8 +79,8 @@ jobs:
           Expand-Archive "dist/Digifly-Workstation-$env:DIGIFLY_RELEASE_VERSION-Windows-x86_64.zip" -DestinationPath "$env:RUNNER_TEMP/extracted-app"
           $exe = "$env:RUNNER_TEMP/extracted-app/Digifly Workstation.exe"
           $report = "$env:GITHUB_WORKSPACE/neuron-ui-evidence"
-          $p = Start-Process -FilePath $exe -ArgumentList @('--package-neuron-test', $report) -PassThru
-          if (-not $p.WaitForExit(300000)) { $p.Kill(); throw 'Native packaged setup check timed out' }
+          $p = Start-Process -FilePath $exe -ArgumentList @('--package-neuron-test', $report) -RedirectStandardOutput packaged-ui-stdout.txt -RedirectStandardError packaged-ui-stderr.txt -PassThru
+          if (-not $p.WaitForExit(300000)) { taskkill /PID $p.Id /T /F; Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup check timed out' }
           if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json"; throw 'Native packaged setup/Run check failed' }
           ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/extracted-app"
           if ($LASTEXITCODE -ne 0) { throw 'Extracted final artifact changed' }
@@ -93,6 +93,11 @@ jobs:
             dist/*.zip
             dist/*.sha256
             neuron-source-tests.xml
-            source-neuron-ui-evidence/receipt.json
-            neuron-ui-evidence/receipt.json
+            source-neuron-ui-evidence/*.json
+            source-neuron-ui-evidence/*.txt
+            source-neuron-ui-evidence/*.png
+            neuron-ui-evidence/*.json
+            neuron-ui-evidence/*.txt
             neuron-ui-evidence/*.png
+            *-ui-stdout.txt
+            *-ui-stderr.txt
