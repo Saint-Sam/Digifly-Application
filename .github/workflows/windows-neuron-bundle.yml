@@ -64,6 +64,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py --junitxml=neuron-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }
+          # Offscreen is only for inert unit tests. The real MainWindow has
+          # QOpenGLWidgets and must use the native Windows platform plugin,
+          # exactly as the already-qualified interface-only package check did.
+          $env:QT_QPA_PLATFORM = 'windows'
           $env:DIGIFLY_NEURON_PAYLOAD = (Resolve-Path downloaded-runtime).Path
           New-Item -ItemType Directory installers/neuron -Force | Out-Null
           Copy-Item downloaded-runtime/* installers/neuron
@@ -71,7 +75,11 @@ jobs:
           $sourceReport = "$env:GITHUB_WORKSPACE/source-neuron-ui-evidence"
           $sourceCheck = Start-Process -FilePath $sourcePython -ArgumentList @('-m', 'digifly_app.app', '--package-neuron-test', $sourceReport) -RedirectStandardOutput source-ui-stdout.txt -RedirectStandardError source-ui-stderr.txt -PassThru
           if (-not $sourceCheck.WaitForExit(240000)) { taskkill /PID $sourceCheck.Id /T /F; Get-Content source-neuron-ui-evidence/receipt.json,source-neuron-ui-evidence/thread-stacks.txt,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate timed out before compiler' }
-          if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json; throw 'Source app setup/Run gate failed before compiler' }
+          $sourceCheck.Refresh()
+          Write-Host "Source UI exit code: $($sourceCheck.ExitCode)"
+          if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate failed before compiler' }
+          $sourceReceipt = Get-Content source-neuron-ui-evidence/receipt.json | ConvertFrom-Json
+          if (-not $sourceReceipt.ok) { throw 'Source UI receipt did not pass' }
           ./scripts/build_windows.ps1
       - name: Extract real app and install/use included NEURON through UI
         shell: pwsh
@@ -81,7 +89,11 @@ jobs:
           $report = "$env:GITHUB_WORKSPACE/neuron-ui-evidence"
           $p = Start-Process -FilePath $exe -ArgumentList @('--package-neuron-test', $report) -RedirectStandardOutput packaged-ui-stdout.txt -RedirectStandardError packaged-ui-stderr.txt -PassThru
           if (-not $p.WaitForExit(300000)) { taskkill /PID $p.Id /T /F; Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup check timed out' }
-          if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json"; throw 'Native packaged setup/Run check failed' }
+          $p.Refresh()
+          Write-Host "Packaged UI exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup/Run check failed' }
+          $receipt = Get-Content "$report/receipt.json" | ConvertFrom-Json
+          if (-not $receipt.ok) { throw 'Packaged UI receipt did not pass' }
           ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/extracted-app"
           if ($LASTEXITCODE -ne 0) { throw 'Extracted final artifact changed' }
       - uses: actions/upload-artifact@v4
