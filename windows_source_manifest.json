@@ -790,8 +790,8 @@
       "bytes": 4327
     },
     "scripts/augment_windows_notices.py": {
-      "sha256": "9e81e404352635fc44c105719cf15d174fe3355bafa0cc686a6b01389eb6cc60",
-      "bytes": 5984
+      "sha256": "47f2180f6f125c464cd4af692db6922980b9c16e27c42cb05170dbd8cc99a602",
+      "bytes": 6350
     },
     "scripts/collect_qtpdf_notices.py": {
       "sha256": "47df29515182c5b7cd3c5a3b0825578999aebc07e5874aa1400b137388257b81",
@@ -806,8 +806,8 @@
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "be195e3368351718ad74cf2fc5af8ee42b8581dd9206bc3f40d4ca9a748c5a31",
-      "bytes": 9238
+      "sha256": "42b3a74693969592706a536674b8c58e20881ebbc5ce47bb7800807fc00ea71b",
+      "bytes": 9513
     },
     "tests/test_package_foundation.py": {
       "sha256": "b237c5ef0e10e5ddcd73712c4b9871b4c6c620c8a80b44d35dd664419f8b8dba",
