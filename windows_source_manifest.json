@@ -662,8 +662,8 @@
       "bytes": 17640
     },
     "src/digifly_app/ui/runtime_setup.py": {
-      "sha256": "ef00248a60e6be867dbe7343703eb25c1b4de35f6b25d326823a6cb20d3abfd5",
-      "bytes": 18702
+      "sha256": "8ac11696d2b5b2bdb4944985c23a5ed664a53bf46f0c4411bbde199da069fa3a",
+      "bytes": 19220
     },
     "src/digifly_app/ui/snapshot.py": {
       "sha256": "ed7546fc4ac45fbc4f11648e766b79225c56ab9f746adbe9ad493f0b072441d2",
@@ -786,8 +786,8 @@
       "bytes": 8158
     },
     "tests/test_windows_neuron_bundle.py": {
-      "sha256": "a3caa83ad6eeb4a77821658859d3c7a06e5b6919ccea5d6bd548aae78a99daf7",
-      "bytes": 1907
+      "sha256": "576d8f640bea017c548070902f4b3e1eb9755be0bfebc05bf258309435f7eaf7",
+      "bytes": 4327
     },
     "scripts/augment_windows_notices.py": {
       "sha256": "9e81e404352635fc44c105719cf15d174fe3355bafa0cc686a6b01389eb6cc60",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QThread, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -260,7 +260,6 @@ class RuntimeSetupDialog(QDialog):
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._thread_finished)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         self._thread, self._worker = thread, worker
         thread.start()
 
@@ -296,7 +295,6 @@ class RuntimeSetupDialog(QDialog):
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._thread_finished)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
         thread.start()
@@ -386,8 +384,19 @@ class RuntimeSetupDialog(QDialog):
 
     @Slot()
     def _thread_finished(self) -> None:
+        thread = self._thread
+        # finished is emitted before native thread-local/deferred QObject
+        # teardown is complete. Deleting QThread immediately can deadlock with
+        # Shiboken's worker destruction (or crash on Windows). The wrapped wait
+        # releases the Python GIL while that final cleanup joins; retain both
+        # wrappers until it has completed, then schedule GUI-side deletion.
+        if thread is not None and not thread.wait(1000):
+            QTimer.singleShot(50, self._thread_finished)
+            return
         self._thread = None
         self._worker = None
+        if thread is not None:
+            thread.deleteLater()
         self.progress.setVisible(False)
         self.search_button.setEnabled(True)
         self.install_neuron_button.setEnabled(True)
