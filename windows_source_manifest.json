@@ -798,12 +798,12 @@
       "bytes": 8605
     },
     "scripts/build_windows_neuron_payload.py": {
-      "sha256": "8dfba58fdbbfe7ca5ad3bde636792cf93cbbbcd4d5820025369406d7ab8244f6",
-      "bytes": 8158
+      "sha256": "0be75bb67fab0c8e9c0eca66eacba477671bade7248cbedebbbc543c286c36f2",
+      "bytes": 10215
     },
     "tests/test_windows_neuron_bundle.py": {
-      "sha256": "8fa30e06ca8bc288573d5c230e702e1ed1a10e185bf5bcf9161d4001a4d40bb4",
-      "bytes": 4977
+      "sha256": "718c62437ba580aecdfab502647d4218dce77c76411a142fa070e38624e0975d",
+      "bytes": 6021
     },
     "scripts/augment_windows_notices.py": {
       "sha256": "47f2180f6f125c464cd4af692db6922980b9c16e27c42cb05170dbd8cc99a602",

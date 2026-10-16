@@ -19,6 +19,32 @@ NRN_URL = "https://github.com/neuronsimulator/nrn/releases/download/9.0.2/nrn-9.
 PY_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
 PY_SHA = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 
+# Exact wheels already delivered for RUNTIME_ID v1. A new transitive release
+# must not silently change that installation identity or reject an old install.
+LOCKED_WHEELS = {
+    "contourpy-1.4.0-cp312-cp312-win_amd64.whl": "6e697d94e69f499ff6bebb899cae97a58d5d14f0e1fe9568b43a0248d2f9af8c",
+    "cycler-0.12.1-py3-none-any.whl": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+    "duckdb-1.5.2-cp312-cp312-win_amd64.whl": "8d599758b4e48bf12e18c9b960cf491d219f0c4972d19a45489c05cc5ab36f83",
+    "fonttools-4.67.0-cp312-cp312-win_amd64.whl": "2bfab2f5d1d255dec82f4bd082a1c10e77df808e42210890f50a9c30bf91570e",
+    "kiwisolver-1.5.1-cp312-cp312-win_amd64.whl": "06a6917674de9e0fe3f66f5430787f59a9f2ddb64af9b714eaec547e29ef5c19",
+    "matplotlib-3.10.7-cp312-cp312-win_amd64.whl": "0d8c32b7ea6fb80b1aeff5a2ceb3fb9778e2759e899d9beff75584714afcc5ee",
+    "numpy-2.2.6-cp312-cp312-win_amd64.whl": "c1f9540be57940698ed329904db803cf7a402f3fc200bfe599334c9bd84a40b2",
+    "packaging-26.3-py3-none-any.whl": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+    "pillow-12.3.0-cp312-cp312-win_amd64.whl": "a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09",
+    "pyparsing-3.3.3-py3-none-any.whl": "ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4",
+    "python_dateutil-2.9.0.post0-py2.py3-none-any.whl": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+    "six-1.17.0-py2.py3-none-any.whl": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+}
+
+
+def validate_wheels(directory):
+    files = {p.name: p for p in directory.iterdir()}
+    if set(files) != set(LOCKED_WHEELS):
+        raise ValueError("Private runtime wheel membership differs from its locked identity")
+    for name, expected in LOCKED_WHEELS.items():
+        if files[name].is_symlink() or file_hash(files[name]) != expected:
+            raise ValueError("Private runtime wheel checksum differs: " + name)
+
 BOOTSTRAP = '''# Digifly private binding; no system registry, global PATH or foreign packages.
 import os
 import ctypes
@@ -88,8 +114,10 @@ def build(destination, work):
     site.mkdir(parents=True, exist_ok=True)
     wheels = work / "wheels"
     wheels.mkdir()
-    subprocess.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--dest", str(wheels),
-        "numpy==2.2.6", "matplotlib==3.10.7", "duckdb==1.5.2"], check=True, timeout=300)
+    requirements = ["==".join(name.split("-")[:2]) for name in sorted(LOCKED_WHEELS)]
+    subprocess.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--no-deps", "--dest", str(wheels),
+        *requirements], check=True, timeout=300)
+    validate_wheels(wheels)
     wheel_records = []
     for wheel in sorted(wheels.glob("*.whl")):
         extract_zip(wheel, site)

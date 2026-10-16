@@ -10,6 +10,27 @@ import pytest
 from digifly_app.core import windows_neuron_bundle as bundle
 
 
+def test_runtime_build_locks_complete_wheel_set_and_rejects_tamper(tmp_path, monkeypatch):
+    import hashlib
+    import importlib.util
+    script = Path(__file__).resolve().parents[1] / "scripts/build_windows_neuron_payload.py"
+    spec = importlib.util.spec_from_file_location("runtime_builder", script)
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    assert len(builder.LOCKED_WHEELS) == 12
+    assert "pillow-12.3.0-cp312-cp312-win_amd64.whl" in builder.LOCKED_WHEELS
+    data = b"inert wheel guard fixture"
+    monkeypatch.setattr(builder, "LOCKED_WHEELS", {"fixture.whl": hashlib.sha256(data).hexdigest()})
+    (tmp_path / "fixture.whl").write_bytes(data)
+    builder.validate_wheels(tmp_path)
+    (tmp_path / "fixture.whl").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="checksum"):
+        builder.validate_wheels(tmp_path)
+    (tmp_path / "extra.whl").write_bytes(data)
+    with pytest.raises(ValueError, match="membership"):
+        builder.validate_wheels(tmp_path)
+
+
 @pytest.mark.parametrize("name", ["../bad", "/bad", "C:/bad", "safe/../bad", "safe\\bad", "safe/ads:bad", "safe/CON.txt", "safe/foo.", "safe/foo "])
 def test_archive_traversal_refused(name):
     with pytest.raises(ValueError, match="Unsafe"):
