@@ -77,7 +77,7 @@ jobs:
           if (-not $sourceCheck.WaitForExit(240000)) { taskkill /PID $sourceCheck.Id /T /F; Get-Content source-neuron-ui-evidence/receipt.json,source-neuron-ui-evidence/thread-stacks.txt,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate timed out before compiler' }
           $sourceCheck.Refresh()
           Write-Host "Source UI exit code: $($sourceCheck.ExitCode)"
-          if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate failed before compiler' }
+          if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json,source-neuron-ui-evidence/thread-stacks.txt,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate failed before compiler' }
           $sourceReceipt = Get-Content source-neuron-ui-evidence/receipt.json | ConvertFrom-Json
           if (-not $sourceReceipt.ok) { throw 'Source UI receipt did not pass' }
           ./scripts/build_windows.ps1
@@ -91,7 +91,7 @@ jobs:
           if (-not $p.WaitForExit(300000)) { taskkill /PID $p.Id /T /F; Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup check timed out' }
           $p.Refresh()
           Write-Host "Packaged UI exit code: $($p.ExitCode)"
-          if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup/Run check failed' }
+          if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup/Run check failed' }
           $receipt = Get-Content "$report/receipt.json" | ConvertFrom-Json
           if (-not $receipt.ok) { throw 'Packaged UI receipt did not pass' }
           ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/extracted-app"

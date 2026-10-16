@@ -32,6 +32,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         record["phase"] = phase
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
     stacks = (destination / "thread-stacks.txt").open("w", encoding="utf-8")
+    faulthandler.enable(file=stacks, all_threads=True)
     faulthandler.dump_traceback_later(45, repeat=True, file=stacks)
     try:
         checkpoint("prepare isolated settings")
@@ -119,6 +120,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
     finally:
         QMessageBox.question, QMessageBox.warning, QMessageBox.critical, QMessageBox.information = original_question, original_warning, original_critical, original_information
         faulthandler.cancel_dump_traceback_later()
+        faulthandler.disable()
         stacks.close()
     (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
     return 0 if record["ok"] else 1
