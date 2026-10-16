@@ -145,7 +145,12 @@ def _neuprint_selection(expression: str, limit: int) -> NeuPrintSelection | None
         return NeuPrintSelection("body_ids", ", ".join(body_tokens), limit)
 
     parts = [part.strip() for part in re.split(r"[,;\n]+", expression) if part.strip()]
-    if len(parts) != 1:
+    if not parts:
+        return None
+    if len(parts) > 1:
+        selections = [_neuprint_selection(part, limit) for part in parts]
+        if all(item is not None and item.mode == "type_exact" for item in selections):
+            return NeuPrintSelection("type_exact", ", ".join(item.value for item in selections), limit)
         return None
     token = parts[0]
     if ":" in token:
@@ -194,7 +199,7 @@ def _primary_circuit_sources(
             None,
         )
     if full_manc is not None and male_cns is not None:
-        return full_manc, ConnectomeRef(
+        primary = (full_manc, ConnectomeRef(
             key=male_cns.key,
             label=(
                 "Male CNS v0.9"
@@ -203,7 +208,12 @@ def _primary_circuit_sources(
             ),
             root=male_cns.root,
             dataset=male_cns.dataset,
-        )
+        ))
+        # Cumulative libraries are intentional reusable sources, not per-search
+        # subsets. Keep the user's full local reference source as well.
+        libraries = tuple(source for source in sources if ":swc-library-" in source.key
+                          and source.key not in {item.key for item in primary})
+        return (*primary, *libraries)
     return sources
 
 
@@ -1222,7 +1232,9 @@ class CircuitBuilderPage(QWidget):
             return
 
         resource = imported[-1]
-        target_root = (resource.root / "source" / "export_swc").resolve()
+        library_manifest = json.loads(resource.manifest.read_text(encoding="utf-8"))
+        target_root = (resource.root / ("export_swc" if library_manifest.get("library_schema")
+                                      else "source/export_swc")).resolve()
         self.refresh_connectomes()
         source_index = next(
             (
@@ -1263,6 +1275,14 @@ class CircuitBuilderPage(QWidget):
         try:
             catalog = self._catalog_for(source)
             result = catalog.query(expression, limit=self.limit_spin.value())
+            if result.records and result.unmatched:
+                dataset = _neuprint_dataset(source)
+                selection = _neuprint_selection(expression, self.limit_spin.value())
+                if dataset is not None and selection is not None:
+                    # Keep the entire reviewed union so the cumulative source
+                    # can display the original and newly missing neurons together.
+                    self._missing_neuprint_request = (dataset, selection, expression)
+                    self.download_missing_button.setVisible(True)
             if not result.records:
                 detail = ", ".join(result.unmatched) if result.unmatched else expression
                 dataset = _neuprint_dataset(source)

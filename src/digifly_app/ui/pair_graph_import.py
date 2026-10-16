@@ -10,6 +10,7 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer
 from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from digifly_app.core.circuit import ConnectomeRef
+from digifly_app.core.bundled_pair_graph import included_pair_path, install_included_pair
 from digifly_app.core.paths import worker_path
 from digifly_app.core.pair_graph import validated_manifest
 from digifly_app.core.process_environment import external_runtime_launcher, sanitized_external_environment
@@ -37,6 +38,13 @@ class PairGraphImportDialog(QDialog):
         self.file_edit = QLineEdit()
         self.file_edit.setObjectName("PairGraphFile")
         self.file_edit.setPlaceholderText("Choose the existing Parquet file")
+        self._included_pair = None
+        try:
+            self._included_pair = included_pair_path()
+            if self._included_pair:
+                self.file_edit.setText(str(self._included_pair))
+        except (OSError, ValueError) as exc:
+            self.file_edit.setToolTip(str(exc))
         browse = QPushButton("Choose Parquet…")
         browse.clicked.connect(self._choose_file)
         row = QHBoxLayout()
@@ -56,7 +64,8 @@ class PairGraphImportDialog(QDialog):
         note = QLabel("The data reader needs duckdb, not NEURON. This creates a separate lookup index outside the app and registers the original file read-only. It does not copy morphologies, download data, change runtimes or interpret total_weight as µS.")
         note.setWordWrap(True)
         root.addWidget(note)
-        self.status = QLabel("Choose the file to use.")
+        self.status = QLabel("Included MANC pair Parquet selected (release unverified). Use retains a copy in your Data Library; no SWCs are included."
+                             if self._included_pair else "Choose the file to use.")
         self.status.setWordWrap(True)
         self.status.setObjectName("PairGraphImportStatus")
         root.addWidget(self.status)
@@ -87,6 +96,8 @@ class PairGraphImportDialog(QDialog):
             if not source.is_file() or source.suffix.casefold() != ".parquet":
                 raise ValueError("Choose an existing Parquet file")
             profile, _ = load_or_create_default_profile()
+            if self._included_pair and source == self._included_pair.resolve():
+                source = install_included_pair(profile, source)
             self.original_file = source
             for binding in profile.bindings(ResourceKind.DATA_SOURCE):
                 if binding.metadata.get("format") != "digifly-weighted-pair-graph-v1" or Path(binding.path).expanduser().resolve() != source:

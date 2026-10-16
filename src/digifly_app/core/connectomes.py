@@ -842,7 +842,17 @@ class ConnectomeCatalog:
         if not root.is_dir():
             raise FileNotFoundError(f"Connectome SWC root does not exist: {root}")
         chosen: dict[str, Path] = {}
-        for path in _structured_swc_paths(root):
+        manifest = root.parent / "digifly-resource.json"
+        paths = _structured_swc_paths(root)
+        if manifest.is_file():
+            library = json.loads(manifest.read_text(encoding="utf-8"))
+            if library.get("library_schema") == "digifly-dataset-swc-library-v1":
+                # Only committed entries are visible if an intake is interrupted.
+                from .data_library import load_managed_resource
+
+                load_managed_resource(manifest)  # validates portable inventory paths
+                paths = (root.parent / row["path"] for row in library["files"])
+        for path in paths:
             if any(part.startswith(".") for part in path.parts):
                 continue
             neuron_id = _infer_id(path)

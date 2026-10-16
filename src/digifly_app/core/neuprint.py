@@ -504,7 +504,15 @@ def _selection_cypher(selection: NeuPrintSelection) -> str:
         if len(values) > limit:
             raise ValueError(f"The body-ID selection exceeds its {limit}-neuron limit")
         where = f"n.bodyId IN [{','.join(str(value) for value in values)}]"
-    elif selection.mode in {"type_exact", "type_regex"}:
+    elif selection.mode in {"type_exact", "instance_exact"}:
+        field_name = "type" if selection.mode == "type_exact" else "instance"
+        terms = exact_selection_terms(selection.value)
+        if len(terms) > limit:
+            raise ValueError("The number of names exceeds the neuron selection limit")
+        values = [_cypher_string(term, field=field_name) for term in terms]
+        where = (f"n.{field_name} = {values[0]}" if len(values) == 1
+                 else f"n.{field_name} IN [{','.join(values)}]")
+    elif selection.mode == "type_regex":
         operator = "=" if selection.mode.endswith("exact") else "=~"
         where = f"n.type {operator} {_cypher_string(selection.value, field='type')}"
     elif selection.mode in {"instance_exact", "instance_regex"}:
@@ -521,6 +529,14 @@ def _selection_cypher(selection: NeuPrintSelection) -> str:
         "RETURN n.bodyId AS bodyId, n.type AS type, n.instance AS instance "
         f"ORDER BY n.bodyId LIMIT {limit}"
     )
+
+
+def exact_selection_terms(value: str) -> tuple[str, ...]:
+    """Comma/semicolon/newline-separated union, not one literal type name."""
+    terms = tuple(dict.fromkeys(part.strip() for part in re.split(r"[,;\n]+", value) if part.strip()))
+    if not terms:
+        raise ValueError("Enter at least one neuron name")
+    return terms
 
 
 def _parse_custom_rows(payload: Any) -> list[NeuPrintNeuron]:
@@ -785,6 +801,7 @@ def acquire_neuprint_bundle(
     progress: Callable[[AcquisitionProgress], None] | None = None,
     cancel: threading.Event | None = None,
     client: NeuPrintClient | None = None,
+    add_to_library: bool = False,
 ) -> ManagedResource:
     """Resume/download a reviewed neuron set, audit it, and atomically register it."""
 
@@ -1077,6 +1094,15 @@ def acquire_neuprint_bundle(
             len(request.neurons),
             fetched_at,
         )
+        if add_to_library:
+            from .swc_library import add_bundle_to_library
+
+            library = add_bundle_to_library(
+                profile, Path(profile_path), resource,
+                server=normalize_server(request.server), dataset=request.dataset,
+            )
+            emit("Complete", total_tasks)
+            return library
         binding_id = register_managed_morphology(
             profile,
             resource,
@@ -1100,7 +1126,7 @@ def acquire_neuprint_bundle(
             **{**resource.__dict__, "registered_binding": binding_id}
         )
     except Exception:
-        if promoted and destination.exists():
+        if promoted and destination.exists() and not add_to_library:
             checkpoint_at_destination = destination / NEUPRINT_CHECKPOINT_FILENAME
             if not checkpoint_at_destination.exists():
                 _write_checkpoint(checkpoint_at_destination, checkpoint)

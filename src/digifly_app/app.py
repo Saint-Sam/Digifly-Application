@@ -30,6 +30,21 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--library-ui-review":
+        import argparse
+        from digifly_app.ui.package_library_smoke import run_library_review
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--library-ui-review", type=Path, required=True)
+        parser.add_argument("--workspace", type=Path, required=True)
+        args = parser.parse_args()
+        return run_library_review(args.library_ui_review, args.workspace)
+    if len(sys.argv) > 1 and sys.argv[1] == "--package-library-test":
+        import argparse
+        from digifly_app.ui.package_library_smoke import run_library_smoke
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--package-library-test", type=Path, required=True)
+        args = parser.parse_args()
+        return run_library_smoke(args.package_library_test)
     if len(sys.argv) > 1 and sys.argv[1] == "--package-neuron-test":
         import argparse
         from digifly_app.ui.package_neuron_smoke import run_neuron_package_smoke
@@ -43,8 +58,9 @@ def main() -> int:
         parser = argparse.ArgumentParser()
         parser.add_argument("--package-smoke-test", type=Path, required=True)
         parser.add_argument("--data-reader", type=Path, required=True)
+        parser.add_argument("--included-parquet", action="store_true")
         args = parser.parse_args()
-        return run_package_smoke(args.package_smoke_test, args.data_reader)
+        return run_package_smoke(args.package_smoke_test, args.data_reader, included=args.included_parquet)
     ok, detail = _qt_smoke_test()
     if not ok:
         print(

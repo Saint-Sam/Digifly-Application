@@ -17,6 +17,7 @@ import re
 import tarfile
 from typing import Iterable, Iterator
 import zipfile
+from ..core.bundled_pair_graph import PAIR_PATH, PAIR_NOTICE, PAIR_SIZE, PAIR_SHA256, NOTICE
 
 
 DATASET_SUFFIXES = frozenset(
@@ -327,7 +328,7 @@ def _directory_entries(root: Path) -> Iterator[_Entry]:
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
         size = path.stat().st_size
-        data = path.read_bytes() if size <= 2 * 1024 * 1024 else None
+        data = path.read_bytes() if size <= 2 * 1024 * 1024 or relative.endswith(PAIR_PATH) and size == PAIR_SIZE else None
         yield _Entry(relative, size, data)
 
 
@@ -336,7 +337,7 @@ def _zip_entries(path: Path) -> Iterator[_Entry]:
         for info in sorted(archive.infolist(), key=lambda item: item.filename):
             if info.is_dir():
                 continue
-            data = archive.read(info) if info.file_size <= 2 * 1024 * 1024 else None
+            data = archive.read(info) if info.file_size <= 2 * 1024 * 1024 or info.filename.endswith(PAIR_PATH) and info.file_size == PAIR_SIZE else None
             yield _Entry(info.filename, info.file_size, data)
 
 
@@ -345,7 +346,7 @@ def _tar_entries(path: Path) -> Iterator[_Entry]:
         for info in sorted(archive.getmembers(), key=lambda item: item.name):
             if not info.isfile():
                 continue
-            stream = archive.extractfile(info) if info.size <= 2 * 1024 * 1024 else None
+            stream = archive.extractfile(info) if info.size <= 2 * 1024 * 1024 or info.name.endswith(PAIR_PATH) and info.size == PAIR_SIZE else None
             data = stream.read() if stream is not None else None
             yield _Entry(info.name, info.size, data)
 
@@ -398,6 +399,7 @@ def audit_artifact(
         in {"1", "true", "yes", "on"}
     )
     count = total = 0
+    included_pair = included_notice = None
     windows_binaries = {}
     approved_neuron_archives = set()
     approved_neuron_entries = set()
@@ -441,6 +443,13 @@ def audit_artifact(
             bundled_arbor_marker = entry
         parts = set(logical.parts)
         suffix = logical.suffix.casefold()
+        approved_pair = _ends_with_path(logical, PAIR_PATH) and entry.size == PAIR_SIZE and entry.data is not None and hashlib.sha256(entry.data).hexdigest() == PAIR_SHA256
+        if _ends_with_path(logical, PAIR_PATH):
+            included_pair = entry
+            if not approved_pair:
+                issues.append(ArtifactIssue("invalid_bundled_pair_graph", entry.name, "The sole permitted MANC Parquet must match its exact pinned size and SHA-256."))
+        if _ends_with_path(logical, PAIR_NOTICE):
+            included_notice = entry
         if release_kind is not None and any(
             part.casefold() in FORBIDDEN_RELEASE_NAMES for part in logical.parts
         ):
@@ -490,7 +499,7 @@ def audit_artifact(
                     f"{entry.size} bytes exceeds the {max_file_bytes}-byte limit.",
                 )
             )
-        if suffix in DATASET_SUFFIXES and not approved_arbor_entry:
+        if suffix in DATASET_SUFFIXES and not approved_arbor_entry and not approved_pair:
             issues.append(
                 ArtifactIssue(
                     "scientific_dataset",
@@ -510,7 +519,14 @@ def audit_artifact(
                     "Compiled binaries are forbidden outside a native application bundle.",
                 )
             )
-        if entry.data is not None and suffix in TEXT_SUFFIXES and not approved_arbor_entry:
+        # Qt framework libraries such as QtTest are extensionless Mach-O files,
+        # not text configuration. Upstream debug/source paths inside their
+        # signed binaries are not developer-machine bindings. Keep the text
+        # path guard intact for every source/config file and dataset suffix.
+        native_macho = (not suffix and entry.data is not None
+                        and entry.data[:4] in {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
+                        and _inside_native_bundle(logical, artifact_is_app=artifact_is_app))
+        if entry.data is not None and suffix in TEXT_SUFFIXES and not approved_arbor_entry and not native_macho:
             for pattern in MACHINE_PATH_PATTERNS:
                 if pattern.search(entry.data):
                     issues.append(
@@ -521,6 +537,13 @@ def audit_artifact(
                         )
                     )
                     break
+    if included_pair is not None:
+        try:
+            notice_ok = included_notice is not None and json.loads(included_notice.data) == NOTICE
+        except (ValueError, TypeError):
+            notice_ok = False
+        if not notice_ok:
+            issues.append(ArtifactIssue("invalid_bundled_pair_graph", PAIR_NOTICE, "The included scientific table requires its exact dataset/provenance/coverage notice."))
     if allow_bundled_arbor:
         try:
             marker = json.loads((bundled_arbor_marker.data if bundled_arbor_marker else b"").decode())

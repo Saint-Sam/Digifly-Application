@@ -1,4 +1,4 @@
-name: Windows with included NEURON 20261015
+name: Windows with included NEURON and shared SWC libraries
 on:
   push:
     branches: [windows-neuron-20261015]
@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261015.2
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261016.1
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,8 @@ jobs:
         run: |
           ./scripts/setup_dev.ps1
           if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
-          ./.venv/Scripts/python.exe -m pytest tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py --junitxml=neuron-source-tests.xml
+          if (Test-Path bundled_data/manc/unique_pairs_by_id.parquet) { $env:DIGIFLY_TEST_MANC_PARQUET = (Resolve-Path bundled_data/manc/unique_pairs_by_id.parquet).Path }
+          ./.venv/Scripts/python.exe -m pytest tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py --junitxml=neuron-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }
           # Offscreen is only for inert unit tests. The real MainWindow has
           # QOpenGLWidgets and must use the native Windows platform plugin,
@@ -94,6 +95,20 @@ jobs:
           if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup/Run check failed' }
           $receipt = Get-Content "$report/receipt.json" | ConvertFrom-Json
           if (-not $receipt.ok) { throw 'Packaged UI receipt did not pass' }
+          $libraryReport = "$env:GITHUB_WORKSPACE/swc-library-ui-evidence"
+          $libraryCheck = Start-Process -FilePath $exe -ArgumentList @('--package-library-test', $libraryReport) -RedirectStandardOutput packaged-library-ui-stdout.txt -RedirectStandardError packaged-library-ui-stderr.txt -PassThru
+          if (-not $libraryCheck.WaitForExit(180000)) { taskkill /PID $libraryCheck.Id /T /F; throw 'Packaged SWC library check timed out' }
+          $libraryCheck.Refresh()
+          if ($libraryCheck.ExitCode -ne 0) { Get-Content "$libraryReport/receipt.json",packaged-library-ui-stderr.txt -ErrorAction Continue; throw 'Packaged SWC library check failed' }
+          $libraryReceipt = Get-Content "$libraryReport/receipt.json" | ConvertFrom-Json
+          if (-not $libraryReceipt.ok) { throw 'Packaged SWC library receipt did not pass' }
+          $pairReport = "$env:GITHUB_WORKSPACE/included-pair-ui-evidence"
+          $pairCheck = Start-Process -FilePath $exe -ArgumentList @('--package-smoke-test', $pairReport, '--data-reader', ('"' + $receipt.installed_python + '"'), '--included-parquet') -RedirectStandardOutput packaged-pair-ui-stdout.txt -RedirectStandardError packaged-pair-ui-stderr.txt -PassThru
+          if (-not $pairCheck.WaitForExit(180000)) { taskkill /PID $pairCheck.Id /T /F; throw 'Included all-row Parquet app check timed out' }
+          $pairCheck.Refresh()
+          if ($pairCheck.ExitCode -ne 0) { Get-Content "$pairReport/receipt.json",packaged-pair-ui-stderr.txt -ErrorAction Continue; throw 'Included all-row Parquet app check failed' }
+          $pairReceipt = Get-Content "$pairReport/receipt.json" | ConvertFrom-Json
+          if (-not $pairReceipt.ok) { throw 'Included Parquet receipt did not pass' }
           ./.venv/Scripts/python.exe scripts/windows_package.py check --bundle "$env:RUNNER_TEMP/extracted-app"
           if ($LASTEXITCODE -ne 0) { throw 'Extracted final artifact changed' }
       - uses: actions/upload-artifact@v4
@@ -111,5 +126,9 @@ jobs:
             neuron-ui-evidence/*.json
             neuron-ui-evidence/*.txt
             neuron-ui-evidence/*.png
+            swc-library-ui-evidence/*.json
+            swc-library-ui-evidence/*.png
+            included-pair-ui-evidence/*.json
+            included-pair-ui-evidence/*.png
             *-ui-stdout.txt
             *-ui-stderr.txt

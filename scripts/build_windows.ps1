@@ -8,7 +8,9 @@ $dist = Join-Path $project "dist"
 if (-not (Test-Path $python)) { throw "Run scripts/setup_dev.ps1 before building." }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 # Fresh allowlisted inputs, never a recursive copy of the user's checkout.
-& $python "$PSScriptRoot\stage_windows_source.py" --source $project --destination $stage
+$stageArgs = @("$PSScriptRoot\stage_windows_source.py", "--source", $project, "--destination", $stage)
+if ($env:DIGIFLY_BUNDLED_PAIR_PARQUET) { $stageArgs += @("--pair-parquet", $env:DIGIFLY_BUNDLED_PAIR_PARQUET) }
+& $python @stageArgs
 if ($LASTEXITCODE -ne 0) { throw "Source staging failed." }
 @{ version = $version; build = $env:DIGIFLY_BUILD_NUMBER; source_commit = $env:GITHUB_SHA; platform = "Windows-x86_64"; arbor = "deferred"; native_simulators = "not_qualified" } | ConvertTo-Json | Set-Content (Join-Path $stage "digifly_build.json") -Encoding ascii
 $iconSource = Join-Path $stage "src\digifly_app\assets\digifly_icon.png"
@@ -34,6 +36,9 @@ try {
         "--include-data-file=THIRD_PARTY_NOTICES.md=THIRD_PARTY_NOTICES.md",
         "--include-data-dir=src/digifly_app/pdcm_bionet=digifly_app/pdcm_bionet"
     )
+    if (Test-Path "bundled_data\manc\unique_pairs_by_id.parquet") {
+        $nuitkaArgs += "--include-data-dir=bundled_data=bundled_data"
+    }
     Get-ChildItem "src\digifly_app\workers\*.py" | ForEach-Object {
         $nuitkaArgs += "--include-data-file=$($_.FullName)=digifly_app/workers/$($_.Name)"
     }

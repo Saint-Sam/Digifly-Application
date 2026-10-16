@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+
+def test_extensionless_native_framework_is_not_mistaken_for_text_binding(tmp_path):
+    from digifly_app.packaging.audit import audit_artifact
+    app = tmp_path / "Tester.app"
+    binary = app / "Contents/MacOS/QtTest"
+    binary.parent.mkdir(parents=True)
+    # A synthetic header exercises classification only, not real executable QA.
+    binary.write_bytes(b"\xcf\xfa\xed\xfe" + b"upstream build source /Users/upstream/qt/source")
+    assert not any(item.code == "developer_machine_path" for item in audit_artifact(app).issues)
+    text = app / "Contents/MacOS/settings.json"
+    text.write_text('{"workspace":"/Users/developer/private-data"}')
+    assert any(item.code == "developer_machine_path" for item in audit_artifact(app).issues)
+
 from io import BytesIO
 from pathlib import Path
 import hashlib

@@ -28,6 +28,24 @@ all four coexist in one user-selected external interpreter.
 
 ## Temporary bundled-Arbor exception
 
+### October16 user-selected connectivity table — explicit human override
+
+The Windows installer may include exactly `bundled_data/manc/unique_pairs_by_id.parquet`,
+12,092,298 bytes, SHA-256
+`e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099`,
+with its exact `DATA_NOTICE.json`. The source-stage and artifact audits verify
+this single-file exception; no other Parquet, dataset, SWC corpus or credential
+is permitted by it. This is the user's MANC aggregate pair table, not a
+version-certified complete connectome, morphology collection, contact geometry
+or conductance model. It is not relicensed by the app's MIT license. Public data
+redistribution provenance/licensing remains distinct from local installer tests.
+
+The app preselects the included table in its existing connectivity-import UI.
+Only an explicit Use copies it into the external managed library and builds a
+lookup index; it does not write into the install or run an experiment. Existing
+external copies must match the pin or fail without replacement. Mac and Windows
+both use the same external cumulative SWC intake; this table does not contain SWCs.
+
 ### October15 Windows NEURON bundle — explicit human override
 
 The user now requests NEURON included with the Windows download. The only new

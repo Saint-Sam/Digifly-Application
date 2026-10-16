@@ -26,6 +26,8 @@ KNOWN_ROLLBACKS = {
     OLD_SHA: BACKUP,
     "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c":
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261015-interface-only.zip",
+    "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261015-neuron.zip",
 }
 
 
@@ -121,6 +123,11 @@ def publish(archive: Path, review=None):
         build = json.loads(zipped.read("digifly_build.json"))
         notices = json.loads(zipped.read("THIRD_PARTY_COMPONENTS.json"))
         includes_neuron = "installers/neuron/DIGIFLY_NEURON_RUNTIME.json" in marker["files"]
+        from digifly_app.core.bundled_pair_graph import PAIR_PATH, PAIR_NOTICE, NOTICE
+        includes_pair = PAIR_PATH in marker["files"]
+        if includes_pair and (json.loads(zipped.read(PAIR_NOTICE)) != NOTICE
+                or approval.get("included_pair_windows_ui_passed") is not True):
+            raise ValueError("Included connectivity requires exact data notice and actual Windows app import review")
         if includes_neuron:
             runtime = json.loads(zipped.read("installers/neuron/DIGIFLY_NEURON_RUNTIME.json"))
             from digifly_app.core.windows_neuron_bundle import INSTALLER_SHA256, RUNTIME_ID
@@ -180,7 +187,7 @@ def publish(archive: Path, review=None):
     body = release.get("body") or ""
     if "<!-- current-windows-start -->" in body:
         body = body.split("<!-- current-windows-end -->", 1)[-1].lstrip()
-    note = ("<!-- current-windows-start -->\n## Current Windows tester — October 15, 2026\n\n"
+    note = ("<!-- current-windows-start -->\n## Current Windows tester — October 16, 2026\n\n"
             f"Download [{archive.name}]({current['browser_download_url']}). "
             "Extract All and open **Digifly Workstation.exe**. The old Windows link now serves this build; "
             "previous checksum-pinned builds are preserved as rollback. Mac downloads are unchanged.\n\n"
@@ -194,7 +201,9 @@ def publish(archive: Path, review=None):
                if includes_neuron else "Native Windows UI/Parquet engineering checks passed on WindowsServer2022 CI. "
                "Windows11 clean-machine/native NEURON/simulator equivalence remain unverified. ")
             + "Unsigned alpha; user-selected experiments remain unverified. Arbor deferred. "
-            "No dataset/SWC/token included; transfer your Parquet separately.\n<!-- current-windows-end -->\n\n")
+            + ("Includes the user-supplied MANC pair Parquet (exact release/completeness/weight units unverified), not SWCs or located synapses. In Data Library, use the included file with the installed private Python as reader. "
+               if includes_pair else "No dataset included; transfer your Parquet separately. ")
+            + "Downloads and SWC imports now join one library per exact dataset/server/version, with visible export_swc family/type/body-ID folders and combined-name search. No SWC corpus or token included.\n<!-- current-windows-end -->\n\n")
     notes = archive.parent / "windows-release-notes.md"
     notes.write_text(note + body, "utf-8")
     gh("release", "edit", TAG, "--repo", REPO, "--notes-file", str(notes))

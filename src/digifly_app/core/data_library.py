@@ -741,7 +741,7 @@ def list_managed_resources(
                 with_registration(_resource_from_manifest(manifest, verify=verify))
             )
             manifests_seen.add(manifest.resolve())
-    for provider_root in (root / "modeldb", root / "models"):
+    for provider_root in (root / "modeldb", root / "models", root / "neuprint", root / "swc-libraries"):
         if provider_root.is_dir():
             for manifest in provider_root.rglob(MANIFEST_FILENAME):
                 resolved = manifest.resolve()

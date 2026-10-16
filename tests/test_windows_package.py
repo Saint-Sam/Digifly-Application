@@ -64,7 +64,8 @@ def test_windows_source_selection_excludes_private_inputs_and_old_outputs():
     assert ".gitattributes" in names
     assert "* -text" in (ROOT / ".gitattributes").read_text("utf-8")
     assert all(not name.startswith(("outputs/", "dist/", ".venv/", "sources/")) for name in names)
-    assert all(p.suffix not in {".swc", ".parquet", ".sqlite", ".h5", ".pyc"} for p in paths)
+    assert all(p.suffix not in {".swc", ".parquet", ".sqlite", ".h5", ".pyc"}
+               or p.relative_to(ROOT).as_posix() == "bundled_data/manc/unique_pairs_by_id.parquet" for p in paths)
 
 
 def test_windows_build_has_no_docker_or_arbor_dependency_and_gates_before_zip():
@@ -83,7 +84,7 @@ def test_publication_stops_before_network_without_redistribution_review(tmp_path
         publisher.publish(tmp_path / "no-artifact.zip")
 
 
-@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c"])
+@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c", "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f"])
 def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch, previous):
     import hashlib
     publisher = module("publish_windows_release")

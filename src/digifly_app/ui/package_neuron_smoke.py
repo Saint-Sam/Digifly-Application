@@ -37,7 +37,8 @@ def _wait_until(predicate, timeout: float) -> bool:
 
 
 def run_neuron_package_smoke(destination: Path) -> int:
-    from PySide6.QtCore import QSettings, Qt
+    from PySide6.QtCore import Qt
+    from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox
     from digifly_app.core.resource_profile import PROFILE_PATH_ENV, make_standalone_profile, ResourceProfile
@@ -66,15 +67,14 @@ def run_neuron_package_smoke(destination: Path) -> int:
         profile_path = destination / "workspace/config/resources.json"
         make_standalone_profile(workstation_root=destination / "workspace").save(profile_path)
         os.environ[PROFILE_PATH_ENV] = str(profile_path)
-        QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(destination / "settings"))
+        os.environ[SETTINGS_ROOT_ENV] = str(destination / "settings")
         app = QApplication.instance() or QApplication([])
         QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Yes if len(args)>1 and args[1]=="Install included NEURON?" else QMessageBox.StandardButton.No
         QMessageBox.warning = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
         QMessageBox.critical = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
         QMessageBox.information = lambda *args, **kwargs: errors.append(str(args[1:])) or QMessageBox.StandardButton.Ok
         from digifly_app.ui.main_window import MainWindow, ORGANIZATION_NAME, APPLICATION_NAME
-        settings = QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
+        settings = app_settings(ORGANIZATION_NAME, APPLICATION_NAME)
         settings.setValue("output_root", str(destination / "workspace/runs"))
         settings.setValue("workspace_root", "")
         checkpoint("construct actual main window")
@@ -131,7 +131,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         window.grab().save(str(destination / "neuron-app-run.png"))
         record.update(ok=True, health=health, ui_install=True, ui_runtime_binding=True,
             ui_run=True, finite_voltage_samples=len(volts), min_mV=min(volts), max_mV=max(volts),
-            run_root=str(root), source_unchanged=True, registry_changed=False, global_path_changed=False)
+            run_root=str(root), installed_python=str(python), source_unchanged=True, registry_changed=False, global_path_changed=False)
         checkpoint("close isolated app")
         window.close()
         app.processEvents()

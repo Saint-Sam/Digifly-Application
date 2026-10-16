@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -51,11 +52,13 @@ from digifly_app.core.neuprint import (
     NeuPrintSelection,
     acquire_neuprint_bundle,
     discard_neuprint_checkpoint,
+    exact_selection_terms,
     neuprint_checkpoint_path,
     normalize_server,
     preview_destination,
 )
 from digifly_app.core.resource_profile import ResourceProfile
+from digifly_app.core.swc_library import library_root
 
 from .widgets import Card
 
@@ -64,7 +67,7 @@ TOKEN_HELP_URL = "https://neuprint.janelia.org/account"
 
 SELECTION_OPTIONS = (
     ("Body IDs", "body_ids", "Example: 10000, 10002"),
-    ("Exact neuron type", "type_exact", "Example: DNp01"),
+    ("Exact neuron types", "type_exact", "Example: DNp01, TTMn (combined search)"),
     ("Neuron type regex", "type_regex", "Example: DNp.*"),
     ("Exact instance", "instance_exact", "Example: DNp01_R"),
     ("Instance regex", "instance_regex", "Example: DNp01_.*"),
@@ -72,12 +75,12 @@ SELECTION_OPTIONS = (
 )
 
 
-class _CallWorker(QObject):
+class _CallWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, operation: Callable[[], Any]):
-        super().__init__()
+    def __init__(self, operation: Callable[[], Any], parent=None):
+        super().__init__(parent)
         self.operation = operation
 
     @Slot()
@@ -124,7 +127,13 @@ class NeuPrintImportDialog(QDialog):
 
         self.setWindowTitle("Download from neuPrint")
         self.resize(900, 760)
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         root.setContentsMargins(22, 20, 22, 20)
         root.setSpacing(13)
 
@@ -139,9 +148,23 @@ class NeuPrintImportDialog(QDialog):
         detail.setWordWrap(True)
         root.addWidget(title)
         root.addWidget(detail)
+        library_card = Card()
+        library_form = QFormLayout(library_card)
+        library_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.library_location = QLabel("Choose a dataset to see its growing SWC folder")
+        self.library_location.setWordWrap(True)
+        self.library_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.library_location.setObjectName("NeuPrintSwcLibraryLocation")
+        library_form.addRow("Dataset SWC folder", self.library_location)
+        self.open_library_button = QPushButton("Open dataset SWC folder")
+        self.open_library_button.setEnabled(False)
+        self.open_library_button.clicked.connect(self.open_library_folder)
+        library_form.addRow("", self.open_library_button)
+        root.addWidget(library_card)
 
         connection = Card()
         connection_form = QFormLayout(connection)
+        connection_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         connection_form.setContentsMargins(16, 15, 16, 15)
         connection_form.setHorizontalSpacing(16)
         connection_form.setVerticalSpacing(9)
@@ -159,7 +182,7 @@ class NeuPrintImportDialog(QDialog):
         token_layout.addWidget(help_button)
         connection_form.addRow("neuPrint credential", token_row)
         token_options = QWidget()
-        token_options_layout = QHBoxLayout(token_options)
+        token_options_layout = QVBoxLayout(token_options)
         token_options_layout.setContentsMargins(0, 0, 0, 0)
         self.environment_token = QCheckBox(
             f"Use {NEUPRINT_CREDENTIAL_ENV} from this launch"
@@ -204,6 +227,7 @@ class NeuPrintImportDialog(QDialog):
 
         selection = Card()
         selection_form = QFormLayout(selection)
+        selection_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         selection_form.setContentsMargins(16, 15, 16, 15)
         selection_form.setHorizontalSpacing(16)
         selection_form.setVerticalSpacing(9)
@@ -248,6 +272,7 @@ class NeuPrintImportDialog(QDialog):
 
         destination = Card()
         destination_form = QFormLayout(destination)
+        destination_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         destination_form.setContentsMargins(16, 15, 16, 15)
         destination_form.setHorizontalSpacing(16)
         destination_form.setVerticalSpacing(8)
@@ -264,7 +289,7 @@ class NeuPrintImportDialog(QDialog):
         naming_layout.addWidget(self.name_edit, 1)
         naming_layout.addWidget(QLabel("Snapshot"))
         naming_layout.addWidget(self.snapshot_edit, 1)
-        destination_form.addRow("Download identity", naming_row)
+        destination_form.addRow("Provenance snapshot", naming_row)
         self.connectivity_check = QCheckBox(
             "Include directed connections among the selected neurons"
         )
@@ -366,20 +391,17 @@ class NeuPrintImportDialog(QDialog):
         self._operation_kind = kind
         self._success_handler = success
         self._set_busy(True)
-        thread = QThread(self)
-        worker = _CallWorker(operation)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        # A moved QObject could be destroyed concurrently by Python's final
+        # reference and Qt's worker-thread deleteLater during finished handling.
+        # Keep the operation on one parent-owned QThread instead.
+        worker = _CallWorker(operation, self)
         worker.completed.connect(self._operation_completed)
         worker.failed.connect(self._operation_failed)
-        worker.completed.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._operation_finished)
-        self._thread = thread
+        worker.finished.connect(self._operation_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._thread = worker
         self._worker = worker
-        thread.start()
+        worker.start()
 
     @Slot(object)
     def _operation_completed(self, result: Any) -> None:
@@ -435,6 +457,7 @@ class NeuPrintImportDialog(QDialog):
         self.preview_table.setRowCount(0)
         self.download_button.setEnabled(False)
         self.destination_label.setText("Preview neurons to calculate the exact destination")
+        self._update_destination()
 
     def _token_for_connection(self) -> str:
         if self.environment_token.isChecked():
@@ -575,6 +598,14 @@ class NeuPrintImportDialog(QDialog):
             self.status.setText(
                 f"Previewed {len(neurons)} neuron(s). Uncheck any rows you do not want to download."
             )
+            if self.selection_mode.currentData() in {"type_exact", "instance_exact"}:
+                field = "neuron_type" if self.selection_mode.currentData() == "type_exact" else "instance"
+                present = {getattr(neuron, field) for neuron in neurons}
+                missing = [name for name in exact_selection_terms(self.selection_edit.text()) if name not in present]
+                if missing:
+                    self.status.setText(self.status.text() + " No returned match for: " + ", ".join(missing) + ". Check dataset/version, exact annotation and limit.")
+            if len(neurons) >= self.limit_spin.value():
+                self.status.setText(self.status.text() + " Query reached its limit; additional neurons may be omitted.")
         else:
             self.status.setText("No neurons matched this selection; no download is available.")
         self._update_destination()
@@ -603,6 +634,14 @@ class NeuPrintImportDialog(QDialog):
         )
 
     def _update_destination(self, *_args: Any) -> None:
+        dataset = str(self.dataset_combo.currentData() or "")
+        try:
+            swc_root = library_root(self.profile, normalize_server(self.server_edit.text()), dataset) / "export_swc"
+            self.library_location.setText(f"{swc_root}\nAN / DN / IN / MN / SN / UNKNOWN → type → body ID")
+            self.open_library_button.setEnabled(swc_root.is_dir())
+        except ValueError:
+            self.library_location.setText("Choose a dataset to see its growing SWC folder")
+            self.open_library_button.setEnabled(False)
         try:
             request = self._request()
             destination = preview_destination(self.profile, request)
@@ -621,6 +660,16 @@ class NeuPrintImportDialog(QDialog):
         self.discard_checkpoint_button.setVisible(bool(checkpoint_note))
         self.discard_checkpoint_button.setEnabled(self._thread is None and bool(checkpoint_note))
         self.download_button.setEnabled(self._thread is None and bool(request.neurons))
+
+    @Slot()
+    def open_library_folder(self) -> None:
+        try:
+            path = library_root(self.profile, normalize_server(self.server_edit.text()),
+                                str(self.dataset_combo.currentData() or "")) / "export_swc"
+        except ValueError:
+            return
+        if path.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     @Slot()
     def discard_checkpoint(self) -> None:
@@ -674,9 +723,11 @@ class NeuPrintImportDialog(QDialog):
             self,
             "Confirm neuPrint download",
             f"Download {count} reviewed SWC(s) from {request.dataset}?\n\n"
-            f"Destination:\n{destination}\n\n"
-            "The bundle will be checkpointed, checksummed, audited, and registered only after it "
-            f"is complete.{connectivity_note}{resume_note}{large_note}",
+            f"SWCs join this dataset library:\n{library_root(self.profile, request.server, request.dataset) / 'export_swc'}\n\n"
+            f"Original acquisition and checksums:\n{destination}\n\n"
+            "AN/DN/etc. folders grow across searches and local imports. Existing SWCs are never "
+            "silently replaced; different releases stay separate. "
+            f"The snapshot is checkpointed and audited.{connectivity_note}{resume_note}{large_note}",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -701,6 +752,7 @@ class NeuPrintImportDialog(QDialog):
                 progress=self._progress_changed,
                 cancel=self._cancel_event,
                 client=client,
+                add_to_library=True,
             ),
             self._download_complete,
         )
@@ -734,9 +786,10 @@ class NeuPrintImportDialog(QDialog):
     def _download_complete(self, resource: ManagedResource) -> None:
         self.progress.setValue(self.progress.maximum())
         self.status.setText(
-            f"Downloaded and registered {resource.swc_count} SWC(s) at {resource.root}. "
+            f"Dataset library now contains {resource.swc_count} SWC(s). SWC folder: {resource.root / 'export_swc'}. "
             "Opening the post-import quality review next."
         )
+        self.open_library_button.setEnabled((resource.root / "export_swc").is_dir())
         self.resource_imported.emit(resource)
         self._preview = ()
         self.download_button.setEnabled(False)

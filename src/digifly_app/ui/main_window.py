@@ -7,7 +7,8 @@ import sys
 from threading import Event
 from typing import Any, Mapping
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QThread, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QThread, Qt, QTimer, QUrl, Signal
+from digifly_app.core.app_settings import app_settings as QSettings
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,

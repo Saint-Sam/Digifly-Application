@@ -1,0 +1,11 @@
+{
+  "schema": "digifly-user-supplied-manc-pairs-v1",
+  "file": "unique_pairs_by_id.parquet",
+  "bytes": 12092298,
+  "sha256": "e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099",
+  "dataset": "MANC (user supplied)",
+  "release": "unverified",
+  "contents": "aggregate directed pair weights; no SWCs or located synapses",
+  "coverage": "all rows of supplied file; whole-connectome completeness and weight units unverified",
+  "licensing_scope": "User-supplied scientific data, not relicensed by Digifly's MIT software license."
+}

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
+import json
+import uuid
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtGui import QDesktopServices
@@ -34,6 +36,9 @@ from digifly_app.core.resource_profile import (
     ResourceProfile,
     load_or_create_default_profile,
 )
+from digifly_app.core.swc_library import LIBRARY_SCHEMA, add_bundle_to_library, library_root
+from digifly_app.core.bundled_pair_graph import included_pair_path
+from digifly_app.core.neuprint import DEFAULT_NEUPRINT_SERVER
 from digifly_app.core.resource_management import (
     LibraryMoveProgress,
     LibraryMoveResult,
@@ -62,7 +67,7 @@ def _human_bytes(value: int) -> str:
     return f"{value} B"
 
 
-class _ImportWorker(QObject):
+class _ImportWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
 
@@ -73,6 +78,8 @@ class _ImportWorker(QObject):
         source: Path,
         resource_id: str,
         source_version: str,
+        library_identity: tuple[str, str, dict | None] | None = None,
+        existing_bundle: ManagedResource | None = None,
     ):
         super().__init__()
         self.profile = profile
@@ -80,19 +87,27 @@ class _ImportWorker(QObject):
         self.source = source
         self.resource_id = resource_id
         self.source_version = source_version
+        self.library_identity = library_identity
+        self.existing_bundle = existing_bundle
 
     @Slot()
     def run(self) -> None:
         try:
-            resource = import_local_source(
+            resource = self.existing_bundle or import_local_source(
                 self.profile,
                 self.source,
                 provider="local",
                 resource_id=self.resource_id,
                 source_version=self.source_version,
-                profile_path=self.profile_path,
+                profile_path=None if self.library_identity else self.profile_path,
                 label=self.source.name,
+                dataset=self.library_identity[1] if self.library_identity else "",
             )
+            if self.library_identity:
+                server, dataset, convention = self.library_identity
+                resource = add_bundle_to_library(self.profile, self.profile_path, resource,
+                    server=server, dataset=dataset, coordinate_convention=convention,
+                    retire_acquisition_binding=True)
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -169,7 +184,7 @@ class DataLibraryPage(QWidget):
         action_layout.setContentsMargins(16, 15, 16, 15)
         action_layout.setSpacing(10)
         row = QHBoxLayout()
-        self.import_button = QPushButton("Import local data…")
+        self.import_button = QPushButton("Import other local data…")
         self.import_button.setProperty("primary", True)
         self.import_button.clicked.connect(self.import_local_data)
         row.addWidget(self.import_button)
@@ -185,6 +200,10 @@ class DataLibraryPage(QWidget):
         row.addStretch(1)
         action_layout.addLayout(row)
         graph_row = QHBoxLayout()
+        self.swc_intake_button = QPushButton("Add SWCs to dataset library…")
+        self.swc_intake_button.setObjectName("LibraryAddSwcsButton")
+        self.swc_intake_button.clicked.connect(self.add_swcs_to_library)
+        graph_row.addWidget(self.swc_intake_button)
         self.pair_graph_button = QPushButton("Use connectivity Parquet…")
         self.pair_graph_button.setObjectName("LibraryConnectivityParquetButton")
         self.pair_graph_button.clicked.connect(self.use_pair_graph)
@@ -192,8 +211,18 @@ class DataLibraryPage(QWidget):
         self.pair_graph_label = QLabel("Connectivity and SWC bundles are separate; no morphology is required to register a pair graph.")
         self.pair_graph_label.setObjectName("LibraryPairGraphStatus")
         self.pair_graph_label.setWordWrap(True)
+        try:
+            if included_pair_path():
+                self.pair_graph_button.setText("Use included MANC Parquet…")
+                self.pair_graph_label.setText("Your supplied MANC pair table is included (release unverified). SWCs are added separately to the dataset library.")
+        except (OSError, ValueError) as exc:
+            self.pair_graph_label.setText(str(exc))
         graph_row.addWidget(self.pair_graph_label, 1)
         action_layout.addLayout(graph_row)
+        self.consolidate_swcs_button = QPushButton("Add selected saved neuPrint bundle to dataset library")
+        self.consolidate_swcs_button.setObjectName("LibraryConsolidateSwcsButton")
+        self.consolidate_swcs_button.clicked.connect(self.consolidate_selected_swcs)
+        action_layout.addWidget(self.consolidate_swcs_button)
         progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
@@ -358,6 +387,98 @@ class DataLibraryPage(QWidget):
         )
 
     @Slot()
+    def consolidate_selected_swcs(self) -> None:
+        """Upgrade existing per-search downloads without another network request."""
+        if self._thread is not None:
+            return
+        try:
+            profile, profile_path = self._profile()
+            resource = self._selected_resource()
+            if resource is None or not resource.swc_count or resource.provider != "neuprint":
+                raise ValueError("Select an existing neuPrint SWC download in the table first")
+            payload = json.loads(resource.manifest.read_text(encoding="utf-8"))
+            server, dataset = payload["server"], payload["dataset"]
+            destination = library_root(profile, server, dataset) / "export_swc"
+            answer = QMessageBox.question(self, "Consolidate this saved SWC download",
+                f"Add {resource.swc_count:,} saved SWCs to the growing {dataset} library?\n\n{destination}\n\n"
+                "No download or coordinate conversion is needed. The original bundle and provenance remain. "
+                "Its separate morphology-source entry is replaced by the dataset library only after intake succeeds; "
+                "different existing SWC bytes stop intake without replacement.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._start_local_import(profile, profile_path, resource.root, "saved-intake", "retained",
+                (server, dataset, payload.get("swc_coordinate_convention")), resource)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Cannot consolidate saved SWCs", str(exc))
+
+    @Slot()
+    def add_swcs_to_library(self) -> None:
+        """App-owned local intake, using the same library as neuPrint downloads."""
+        if self._thread is not None:
+            return
+        try:
+            profile, profile_path = self._profile()
+            libraries = [item for item in list_managed_resources(profile)
+                         if json.loads(item.manifest.read_text(encoding="utf-8")).get("library_schema") == LIBRARY_SCHEMA]
+            labels = [json.loads(item.manifest.read_text(encoding="utf-8"))["dataset"] for item in libraries]
+            if len(set(labels)) != len(labels):
+                labels = [f"{label} — {json.loads(item.manifest.read_text(encoding='utf-8'))['server']}"
+                          for label, item in zip(labels, libraries)]
+            choice, ok = QInputDialog.getItem(self, "Dataset SWC library", "Destination dataset/version",
+                                              [*labels, "New dataset library…"], 0, False)
+            if not ok:
+                return
+            if choice == "New dataset library…":
+                dataset, ok = QInputDialog.getText(self, "Exact dataset/version", "Dataset (for example manc:v1.2.1 or male-cns:v0.9)")
+                if not ok:
+                    return
+                if ":v" not in dataset or not dataset.strip():
+                    raise ValueError("Specify the exact dataset release, not a generic MANC/Male CNS label")
+                dataset = dataset.strip()
+                server = DEFAULT_NEUPRINT_SERVER
+                # Never infer units from filenames. A raw v0.9 import must be
+                # explicitly declared before it can share official downloads.
+                convention = None
+                if dataset == "male-cns:v0.9":
+                    units, ok = QInputDialog.getItem(self, "SWC coordinates", "How are these SWC coordinates stored?",
+                        ["Raw official Male CNS v0.9 (8 nm units)", "Other / not established"], 1, False)
+                    if not ok:
+                        return
+                    if units.startswith("Raw official"):
+                        convention = {"input_units": "8nm", "scale_to_um": 0.008,
+                                      "frame": "male-cns-v0.9-native", "raw_bytes_preserved": True}
+            else:
+                payload = json.loads(libraries[labels.index(choice)].manifest.read_text(encoding="utf-8"))
+                server, dataset = payload["server"], payload["dataset"]
+                convention = payload.get("swc_coordinate_convention")
+            mode, ok = QInputDialog.getItem(self, "Import SWCs", "Import source", ["SWC file", "Folder (preserve family/type labels)"], 0, False)
+            if not ok:
+                return
+            if mode == "SWC file":
+                selected, _ = QFileDialog.getOpenFileName(self, "Choose SWC (numeric body-ID filename)", "", "SWC files (*.swc)")
+            else:
+                selected = QFileDialog.getExistingDirectory(self, "Choose SWC export folder")
+            if not selected:
+                return
+            source = Path(selected).resolve()
+            preview = preview_local_source(source)
+            if not preview.swc_count:
+                raise ValueError("The selected input has no SWCs")
+            destination = library_root(profile, server, dataset) / "export_swc"
+            answer = QMessageBox.question(self, "Confirm dataset SWC intake",
+                f"Add {preview.swc_count:,} SWCs to {dataset}?\n\n{destination}\n\n"
+                "Confirm these neurons belong to this exact dataset/version and share its coordinate units. "
+                "No scaling or topology repair is applied. Family/type labels come from the supplied folder; "
+                "unlabelled files go in UNKNOWN. Source bytes and originals are preserved. "
+                "Conflicting existing body IDs stop intake instead of replacing files.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            identity = (server, dataset, convention)
+            self._start_local_import(profile, profile_path, source, "swc-intake", "import-" + uuid.uuid4().hex, identity)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "SWC intake could not start", str(exc))
+
+    @Slot()
     def import_local_data(self) -> None:
         if self._thread is not None:
             return
@@ -400,25 +521,25 @@ class DataLibraryPage(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        self._start_local_import(profile, profile_path, source, resource_id, source_version)
+
+    def _start_local_import(self, profile, profile_path, source, resource_id, source_version, library_identity=None, existing_bundle=None):
         self.import_button.setEnabled(False)
+        self.swc_intake_button.setEnabled(False)
+        self.consolidate_swcs_button.setEnabled(False)
         self.register_button.setEnabled(False)
         self.progress.setVisible(True)
         self.action_status.setText(f"Staging and validating {source}…")
-        thread = QThread(self)
-        worker = _ImportWorker(profile, profile_path, source, resource_id, source_version)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        worker = _ImportWorker(profile, profile_path, source, resource_id, source_version, library_identity, existing_bundle)
+        worker.setParent(self)
         worker.completed.connect(self._import_completed)
         worker.failed.connect(self._import_failed)
-        worker.completed.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._worker_thread_finished)
-        self._thread = thread
+        worker.finished.connect(self._worker_thread_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._thread = worker
         self._worker = worker
         self._worker_kind = "local_import"
-        thread.start()
+        worker.start()
 
     @Slot(object)
     def _import_completed(self, resource: ManagedResource) -> None:
@@ -446,6 +567,8 @@ class DataLibraryPage(QWidget):
         self.cancel_move_button.setVisible(False)
         self.cancel_move_button.setEnabled(True)
         self.import_button.setEnabled(True)
+        self.swc_intake_button.setEnabled(True)
+        self.consolidate_swcs_button.setEnabled(True)
         self.register_button.setEnabled(True)
         self.neuprint_button.setEnabled(True)
         self.modeldb_button.setEnabled(True)
