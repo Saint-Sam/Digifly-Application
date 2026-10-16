@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import QSettings
 
 from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
@@ -9,7 +11,7 @@ def test_explicit_gui_test_file_is_not_native_preferences(tmp_path, monkeypatch)
     monkeypatch.setenv(SETTINGS_ROOT_ENV, str(tmp_path))
     isolated = app_settings("digifly", "Digifly Workstation")
     assert isolated.format() == QSettings.Format.IniFormat
-    assert isolated.fileName().startswith(str(tmp_path))
+    assert Path(isolated.fileName()).resolve().is_relative_to(tmp_path.resolve())
     assert isolated.fileName() != native.fileName()
     isolated.setValue("output_root", "fixture-only")
     isolated.sync()

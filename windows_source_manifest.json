@@ -10,8 +10,8 @@
       "bytes": 1067
     },
     "README.md": {
-      "sha256": "61fa74e658b3201e6c58a66ba6a5ff608a1db60e699d8cb197f58a98f903374b",
-      "bytes": 27591
+      "sha256": "b1ba2e1e8eb1ee4d556f2d36aac71543abe48095b2d685c0f73525cf6b12930f",
+      "bytes": 27808
     },
     "THIRD_PARTY_NOTICES.md": {
       "sha256": "f70e39fd695bcc431a8c0ff92c043cd9575c76e786fc30bfc4cbc0ca8afc3116",
@@ -306,8 +306,8 @@
       "bytes": 19990
     },
     "src/digifly_app/core/connectomes.py": {
-      "sha256": "f5e8c62616931b68446f93ad9ff2f290279ab0ac625fcb8cafc38b79ff015675",
-      "bytes": 37809
+      "sha256": "4781f6846157b6a1b885070c38655e32c3cfc71751df8fb152fb7f86e061d4de",
+      "bytes": 37893
     },
     "src/digifly_app/core/credentials.py": {
       "sha256": "b066a88bd60de36ac422eaea1ff904ea1fbe3e62b5552dba7be8daecba5d4465",
@@ -818,8 +818,8 @@
       "bytes": 52426
     },
     "tests/test_app_settings.py": {
-      "sha256": "540c0ed0593bf7dfc82e704974b5535c0b0e177b581efa6726aee55a36b4cf50",
-      "bytes": 1211
+      "sha256": "dd3566e257141e2ad5d0be098abb422d100ab6e5f1a744311e8b76f9cdb3a272",
+      "bytes": 1262
     },
     "tests/test_swc_library.py": {
       "sha256": "290a9144f304d132425a2e239634cd2283c4a20d563b3be86572173fb6d086ce",

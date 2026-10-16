@@ -788,7 +788,7 @@ def _structured_swc_paths(root: Path) -> Iterable[Path]:
         try:
             return entry.is_file(follow_symlinks=True)
         except OSError as exc:
-            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR} or getattr(exc, "winerror", None) == 1921:
                 return False
             raise
 
@@ -796,7 +796,7 @@ def _structured_swc_paths(root: Path) -> Iterable[Path]:
         try:
             return entry.is_dir(follow_symlinks=True)
         except OSError as exc:
-            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+            if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR} or getattr(exc, "winerror", None) == 1921:
                 return False
             raise
 

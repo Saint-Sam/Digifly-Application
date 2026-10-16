@@ -75,14 +75,17 @@ Scientific resources remain outside the application and are configured through
 the first-launch workflow. Follow the short, audited [early-testing
 flow](docs/TESTING.md) before filing a report.
 
-The current Windows x86-64 tester is built from a separate, data-free current
-source snapshot. See [Windows tester instructions](docs/WINDOWS_TESTER.md).
+The current Windows x86-64 tester is built from an allowlisted current-source
+snapshot. It includes the exact user-selected MANC pair Parquet under a pinned
+single-file packaging exception. See [Windows tester instructions](docs/WINDOWS_TESTER.md).
 Opening its native interface and importing the MANC pair Parquet do not need
-Docker. Arbor is deferred. Native NEURON uses the official installer route;
-its compiler/Run qualification and user-selected cross-OS experiments remain
-separate acceptance work, not something established by an EXE build.
-Connectomes, SWCs, tokens, saved runs and external simulator environments are
-not bundled. The historical Docker image is not rebuilt by this workflow.
+Docker. Arbor is deferred. Offline NEURON9.0.2 and private Python are included
+with explicit per-user installation consent. Native compiler/full-feature and
+user-selected cross-OS experiments remain separate acceptance work, not
+something established by an EXE build. No SWC corpus, token or saved run is
+bundled. The included pair table's release/completeness/weight units remain
+unverified; it is not morphology or contact geometry. The historical Docker
+image is not rebuilt by this workflow.
 
 ## What the first milestone includes
 
