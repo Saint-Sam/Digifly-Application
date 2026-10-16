@@ -12,6 +12,30 @@ import tempfile
 import traceback
 
 
+def _wait_until(predicate, timeout: float) -> bool:
+    """Let Qt release the GIL normally while Python workers perform IO.
+
+    Repeated QTest.qWait calls from a compiled polling loop can starve its
+    Python background installer. A real event loop matches normal app use.
+    """
+    from PySide6.QtCore import QEventLoop, QTimer
+    if predicate():
+        return True
+    loop = QEventLoop()
+    timer = QTimer()
+    deadline = time.monotonic() + timeout
+    def poll():
+        if predicate() or time.monotonic() >= deadline:
+            loop.quit()
+    timer.timeout.connect(poll)
+    timer.start(25)
+    try:
+        loop.exec()
+    finally:
+        timer.stop()
+    return bool(predicate())
+
+
 def run_neuron_package_smoke(destination: Path) -> int:
     from PySide6.QtCore import QSettings, Qt
     from PySide6.QtTest import QTest
@@ -65,9 +89,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         # No simulator/preflight/result is mocked or replaced.
         checkpoint("click included NEURON installation")
         QTest.mouseClick(dialog.install_neuron_button, Qt.MouseButton.LeftButton)
-        deadline = time.monotonic() + 180
-        while dialog._thread is not None and time.monotonic() < deadline:
-            QTest.qWait(100)
+        _wait_until(lambda: dialog._thread is None, 180)
         assert dialog._thread is None and dialog.use_button.isEnabled(), dialog.status.text()
         checkpoint("installed runtime; select binding")
         dialog.grab().save(str(destination / "installed-neuron-dialog.png"))
@@ -95,9 +117,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         checkpoint("click actual app Run; synchronous preflight")
         page.run_button.click()
         checkpoint("await actual app worker completion")
-        deadline = time.monotonic() + 90
-        while page._process is not None and time.monotonic() < deadline:
-            QTest.qWait(100)
+        _wait_until(lambda: page._process is None, 90)
         checkpoint("worker returned; inspect saved output")
         assert not errors, errors
         assert page._process is None and page._plan is not None, page.validation_state.text()

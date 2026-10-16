@@ -100,3 +100,17 @@ print('20 successful and one refused inert transport/cleanup controls')
         text=True, timeout=15, env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "20 successful and one refused" in result.stdout
+
+
+def test_gui_wait_uses_live_event_loop_with_success_and_timeout():
+    # No engine, install or filesystem mutation. Exercise actual timer dispatch
+    # and the same bounded wait used by the compiled-app check.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    from digifly_app.ui.package_neuron_smoke import _wait_until
+    app = QApplication.instance() or QApplication([])
+    completed = []
+    QTimer.singleShot(30, lambda: completed.append(True))
+    assert _wait_until(lambda: bool(completed), 1)
+    assert not _wait_until(lambda: False, 0.03)

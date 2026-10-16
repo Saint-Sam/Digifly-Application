@@ -638,8 +638,8 @@
       "bytes": 34438
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
-      "sha256": "3e4ac31969cd978844633a41a40e6f81b37635cb24fed37e010219238e4cc0ff",
-      "bytes": 7867
+      "sha256": "5b78de460c0e50ee4063de54401ae1ba0374a3731e23253e98d68dc90f4e664a",
+      "bytes": 8393
     },
     "src/digifly_app/ui/package_smoke.py": {
       "sha256": "f99d891a908da5fffb58597e359227feb80aac88846fd11d967298a2b48dff01",
@@ -786,12 +786,12 @@
       "bytes": 8158
     },
     "tests/test_windows_neuron_bundle.py": {
-      "sha256": "576d8f640bea017c548070902f4b3e1eb9755be0bfebc05bf258309435f7eaf7",
-      "bytes": 4327
+      "sha256": "8fa30e06ca8bc288573d5c230e702e1ed1a10e185bf5bcf9161d4001a4d40bb4",
+      "bytes": 4977
     },
     "scripts/augment_windows_notices.py": {
-      "sha256": "9e81e404352635fc44c105719cf15d174fe3355bafa0cc686a6b01389eb6cc60",
-      "bytes": 5984
+      "sha256": "47f2180f6f125c464cd4af692db6922980b9c16e27c42cb05170dbd8cc99a602",
+      "bytes": 6350
     },
     "scripts/collect_qtpdf_notices.py": {
       "sha256": "47df29515182c5b7cd3c5a3b0825578999aebc07e5874aa1400b137388257b81",
@@ -806,8 +806,8 @@
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "be195e3368351718ad74cf2fc5af8ee42b8581dd9206bc3f40d4ca9a748c5a31",
-      "bytes": 9238
+      "sha256": "42b3a74693969592706a536674b8c58e20881ebbc5ce47bb7800807fc00ea71b",
+      "bytes": 9513
     },
     "tests/test_package_foundation.py": {
       "sha256": "b237c5ef0e10e5ddcd73712c4b9871b4c6c620c8a80b44d35dd664419f8b8dba",

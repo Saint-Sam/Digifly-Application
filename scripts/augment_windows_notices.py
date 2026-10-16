@@ -19,7 +19,7 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def augment(base, extra, destination, additional=None):
+def augment(base, extra, destination, additional=None, neuron_notices=None):
     if destination.exists():
         raise ValueError("New notice-complete archive must not overwrite an artifact")
     report = audit_artifact(base)
@@ -47,8 +47,11 @@ def augment(base, extra, destination, additional=None):
         added.append({"component": component, "version": version, "license": license_id,
                       "notices": [{"path": path, "sha256": sha(data), "source_url": url}],
                       "version_provenance": "CPython3.12.10 Windows PCbuild/python.props upstream dependency declaration; not an independent binary ABI measurement"})
-    if additional:
-        manifest = json.loads((additional / "notices_manifest.json").read_text("utf-8"))
+    for notice_root, package_prefix in ((additional, "licenses/Qt-PDF-6.10.3/"),
+                                        (neuron_notices, "licenses/NEURON-9.0.2-dependencies/")):
+        if not notice_root:
+            continue
+        manifest = json.loads((notice_root / "notices_manifest.json").read_text("utf-8"))
         if manifest.get("schema") != "digifly-extra-license-notices-v1":
             raise ValueError("Additional notices require a versioned source/hash inventory")
         notices = []
@@ -56,8 +59,8 @@ def augment(base, extra, destination, additional=None):
             file = record["file"]
             if Path(file).name != file:
                 raise ValueError("Additional notice must be a plain file name")
-            data = (additional / file).read_bytes()
-            path = "licenses/Qt-PDF-6.10.3/" + file
+            data = (notice_root / file).read_bytes()
+            path = package_prefix + file
             if sha(data) != record["sha256"] or path in payload:
                 raise ValueError("Additional notice checksum/collision")
             payload[path] = data
@@ -68,7 +71,8 @@ def augment(base, extra, destination, additional=None):
     payload["THIRD_PARTY_COMPONENTS.json"] = (json.dumps(inventory, indent=2) + "\n").encode()
     provenance = {"schema": "digifly-windows-license-overlay-v1", "base_archive_sha256": sha(base.read_bytes()),
         "base_source_manifest_sha256": marker["source_manifest_sha256"],
-        "scope": "License/copyright notice additions only. Every original file except this notice inventory and package marker is byte-identical; no recompilation, scientific source change, simulator or new preset.",
+        "overlay_script_sha256": sha(Path(__file__).read_bytes()),
+        "scope": "License/copyright notice additions only. Every original file except this notice inventory and package marker is byte-identical; no recompilation, scientific source change, simulator execution or new preset.",
         "upstream_python_dependency_record": "https://github.com/python/cpython/blob/v3.12.10/PCbuild/python.props",
         "added": added}
     payload["windows_license_overlay.json"] = (json.dumps(provenance, indent=2) + "\n").encode()
@@ -97,5 +101,6 @@ if __name__ == "__main__":
     p.add_argument("--extra", type=Path, required=True)
     p.add_argument("--destination", type=Path, required=True)
     p.add_argument("--additional", type=Path)
+    p.add_argument("--neuron-notices", type=Path)
     a = p.parse_args()
-    print(json.dumps(augment(a.base, a.extra, a.destination, a.additional), indent=2))
+    print(json.dumps(augment(a.base, a.extra, a.destination, a.additional, a.neuron_notices), indent=2))

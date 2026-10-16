@@ -142,7 +142,8 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
     assert mutations.index(("upload", archive.name)) < mutations.index(("rename", publisher.OLD, backup))
 
 
-def test_notice_only_overlay_preserves_original_payload_and_rejects_changed_notice(tmp_path):
+@pytest.mark.parametrize("include_neuron_notices", [False, True])
+def test_notice_only_overlay_preserves_original_payload_and_rejects_changed_notice(tmp_path, include_neuron_notices):
     import hashlib
     import zipfile
     gate, overlay = module("windows_package"), module("augment_windows_notices")
@@ -166,8 +167,10 @@ def test_notice_only_overlay_preserves_original_payload_and_rejects_changed_noti
         "license": "fixture", "scope": "software test only", "notices": [{"file": "notice.html",
         "sha256": hashlib.sha256(data).hexdigest(), "source_url": "https://example.invalid/fixture"}]}))
     final = tmp_path / "Digifly-Workstation-final-Windows-x86_64.zip"
-    assert overlay.augment(base, extra, final, additional)["audit"]["ok"]
+    assert overlay.augment(base, extra, final, additional,
+                           additional if include_neuron_notices else None)["audit"]["ok"]
     with zipfile.ZipFile(base) as old, zipfile.ZipFile(final) as new:
+        assert ("licenses/NEURON-9.0.2-dependencies/notice.html" in new.namelist()) == include_neuron_notices
         for name in old.namelist():
             if name not in {"THIRD_PARTY_COMPONENTS.json", "digifly_windows_package.json"}:
                 assert old.read(name) == new.read(name)
