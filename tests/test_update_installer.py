@@ -210,6 +210,7 @@ def test_windows_installed_identity_uses_loaded_module_not_python_context(tmp_pa
 @pytest.mark.parametrize("failure", [None, "size", "copy"])
 def test_mac_loaded_module_path_ignores_compiler_python_context(tmp_path, monkeypatch, failure):
     import ctypes
+    from types import SimpleNamespace
     actual = tmp_path / "Digifly.app/Contents/MacOS/main"
     encoded = os.fsencode(actual) + b"\x00"
     class GetPath:
@@ -224,6 +225,9 @@ def test_mac_loaded_module_path_ignores_compiler_python_context(tmp_path, monkey
     class Dyld:
         _NSGetExecutablePath = GetPath()
     monkeypatch.setattr(installer.platform, "system", lambda: "Darwin")
+    # Patch only this module's OS view. Changing global os.name would break
+    # pathlib on a Windows runner; leaving it nt selects the real Win32 branch.
+    monkeypatch.setattr(installer, "os", SimpleNamespace(name="posix", fsdecode=os.fsdecode))
     monkeypatch.setattr(installer.ctypes, "CDLL", lambda name: Dyld())
     monkeypatch.setattr(installer.sys, "executable", str(tmp_path / "wrong-python"))
     if failure:

@@ -50,8 +50,8 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "9139d3f8a8106fbe8075265a64b94f4e9d9cd2e4058755e4da42d24831331d9f",
-      "bytes": 6301
+      "sha256": "73f08e3c012b7ba6fa6c5d41f1c4fb81999e0c5d31b1bb66300e6bf5b6fc5f78",
+      "bytes": 7559
     },
     "docs/WINDOWS_TESTER.md": {
       "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350",
@@ -838,8 +838,8 @@
       "bytes": 5287
     },
     "tests/test_update_installer.py": {
-      "sha256": "5516b9cb38d328f161cfc874ebafd9fbd055d604017db503297f0d4a3dcf2193",
-      "bytes": 11047
+      "sha256": "939097b357fd5245d82ecb759f39fc9af76ced3836539e9c284069e097527dee",
+      "bytes": 11335
     },
     "tests/test_updater_gate.py": {
       "sha256": "43606ec803d4ab7d1ef23f85f45685cbb3cc01c58c684a6e588f7a3c683ec5e4",

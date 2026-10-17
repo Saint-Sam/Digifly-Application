@@ -1,5 +1,23 @@
 # Windows updater completion gate
 
+October17 paired-platform continuation: the human requires the same fixes in
+the Mac app. Its first candidate.20261017.3 passed the compiled neuron-list UI
+but failed actual disposable updater startup acknowledgement. Runtime context
+and the visible error prove `sys.executable` names nonexistent
+`Contents/MacOS/python`, not the actual `main`. The old app and backup were
+retained; the helper correctly refused to move/kill the still-live unacknowledged
+GUI. The owned test error/window was closed manually, preserving evidence.
+This candidate is not the delivered successor.
+
+The repair uses dyld's `_NSGetExecutablePath` with its required-size negotiation,
+then resolves the returned path. [Apple's API contract](https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld.h)
+describes this size/path behavior. Windows keeps its existing loaded-module API.
+Both new candidates must pass native install/reopen and startup-failure rollback,
+not only the source test or a successful package build. The paired handoff and
+`scripts/check_paired_app_fix.py` retain and recheck both artifacts/evidence.
+This source change does not establish live cross-version public upgrades or
+Developer ID/notarization; those remain distinct qualification.
+
 This is the updater lane of `../codex.md`, not a new workflow authority.
 The October17 human reports a verified download followed by a disabled-install
 message. Inspection confirms the shipped handler had no installer helper;
