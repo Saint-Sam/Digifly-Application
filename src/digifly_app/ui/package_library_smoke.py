@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import time
 import traceback
 
@@ -46,10 +47,10 @@ def run_library_review(destination: Path, workspace: Path) -> int:
 def run_library_smoke(destination: Path) -> int:
     from PySide6.QtCore import Qt
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
-    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea
     from PySide6.QtTest import QTest
     from digifly_app.core.resource_profile import PROFILE_PATH_ENV, ResourceProfile, ResourceKind, make_standalone_profile
-    from digifly_app.core.neuprint import NeuPrintDataset, NeuPrintNeuron
+    from digifly_app.core.neuprint import NeuPrintClient, NeuPrintDataset
     from digifly_app.core.providers import profile_connectome_sources
     from digifly_app.core.connectomes import ConnectomeCatalog
     from digifly_app.ui.neuprint_import import NeuPrintImportDialog
@@ -90,16 +91,30 @@ def run_library_smoke(destination: Path) -> int:
         QTest.qWait(400)
 
         swc = b"1 1 0 0 0 5 -1\n2 3 1 0 0 1 1\n"
-        class FakeClient:
+        # Keep the production query builder and parser in this packaged UI
+        # test. Only HTTP is replaced; the former fake preview bypassed both.
+        queries = []
+        fixture_rows = ((42, "DNp01", "DNp01_R"), (43, "TTMn", "TTMn_R"), (45, "PSI", "PSI_L"))
+        def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+            if "/api/skeletons/skeleton/" in url:
+                return swc
+            body = json.loads(payload)
+            if body["dataset"] != "manc:v1.2.1":
+                raise ValueError("The query switched datasets")
+            query = body["cypher"]
+            queries.append(query)
+            literals = [json.loads(value) for value in re.findall(r'STARTS WITH ("(?:[^"\\]|\\.)*")', query)]
+            if literals:
+                rows = [row for row in fixture_rows if any(
+                    row[1].lower().startswith(term) or row[2].lower().startswith(term) for term in literals)]
+            else:
+                rows = [row for row in fixture_rows if f'n.type = "{row[1]}"' in query]
+            return json.dumps({"columns": ["bodyId", "type", "instance"], "data": rows}).encode()
+        class FakeClient(NeuPrintClient):
             def __init__(self, *args, **kwargs):
-                pass
+                super().__init__(*args, **kwargs, transport=transport)
             def validate_and_list_datasets(self, **kwargs):
                 return (NeuPrintDataset("manc:v1.2.1", "Engineering fixture", "fixture"),)
-            def preview_neurons(self, selection, **kwargs):
-                all_neurons = (NeuPrintNeuron(42, "DNp01"), NeuPrintNeuron(43, "TTMn"))
-                return tuple(item for item in all_neurons if item.neuron_type in selection.value)
-            def fetch_skeleton(self, body_id, **kwargs):
-                return swc
 
         def wait_for(predicate, detail):
             deadline = time.monotonic() + 30
@@ -115,7 +130,7 @@ def run_library_smoke(destination: Path) -> int:
         resources = []
         class NoCredentialStore:
             available = False
-        for name in ("DNp01", "TTMn"):
+        for name in ("DNp01", "TTMn", "DNp01, TTMn, PSI"):
             journal("create_" + name)
             dialog = NeuPrintImportDialog(profile, profile_path, window, client_factory=FakeClient,
                                            credential_store=NoCredentialStore())
@@ -127,14 +142,27 @@ def run_library_smoke(destination: Path) -> int:
             wait_for(lambda: not dialog.operation_in_progress, "Connection worker did not finish")
             if not dialog.dataset_combo.currentData():
                 raise ValueError("Dataset fixture did not become available: " + dialog.status.text())
-            dialog.selection_mode.setCurrentIndex(dialog.selection_mode.findData("type_exact"))
+            if name != "DNp01, TTMn, PSI":
+                dialog.selection_mode.setCurrentIndex(dialog.selection_mode.findData("type_exact"))
+            elif dialog.selection_mode.currentData() != "name_list":
+                raise ValueError("Normal search did not default to a neuron list")
             dialog.selection_edit.setText(name)
             dialog.connectivity_check.setChecked(False)
             QTest.mouseClick(dialog.preview_button, Qt.MouseButton.LeftButton)
             journal("preview_" + name)
             wait_for(lambda: not dialog.operation_in_progress, "Preview worker did not finish")
-            if dialog.preview_table.rowCount() != 1:
+            expected = 3 if name == "DNp01, TTMn, PSI" else 1
+            if dialog.preview_table.rowCount() != expected:
                 raise ValueError("Preview did not contain the intended neuron")
+            if expected == 3 and not all(term + ": 1" in dialog.status.text() for term in ("DNp01", "TTMn", "PSI")):
+                raise ValueError("Preview did not report all three requested names")
+            if expected == 3:
+                dialog.findChild(QScrollArea).ensureWidgetVisible(dialog.preview_table)
+                QTest.qWait(120)
+                if not dialog.grab().save(str(destination / "combined-list-preview.png")):
+                    raise ValueError("Could not capture the combined query preview")
+                record["combined_preview_status"] = dialog.status.text()
+                record["combined_selection"] = dialog._request().selection.to_dict()
             before = len(resources)
             QTest.mouseClick(dialog.download_button, Qt.MouseButton.LeftButton)
             journal("download_" + name)
@@ -146,7 +174,7 @@ def run_library_smoke(destination: Path) -> int:
             dialog.grab().save(str(destination / f"download-{name}.png"))
             dialog.accept()
             journal("finished_" + name)
-        if resources[0].root != resources[1].root or resources[-1].swc_count != 2:
+        if len({resource.root for resource in resources}) != 1 or resources[-1].swc_count != 3:
             raise ValueError("Separate downloads did not join one library")
 
         # Exercise the actual local-import action and its threaded production
@@ -165,21 +193,23 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError("More than one dataset library binding was registered")
         source, = profile_connectome_sources(restored)
         catalog = ConnectomeCatalog.scan(source)
-        if set(catalog.by_id) != {"42", "43", "44"} or catalog.query("DNp01, TTMn").unmatched:
+        if set(catalog.by_id) != {"42", "43", "44", "45"} or catalog.query("DNp01, TTMn, PSI").unmatched:
             raise ValueError("Combined loading lost a separately downloaded/imported neuron")
         window.circuit_builder_page.refresh_connectomes()
         builder = window.circuit_builder_page
         window.pages.setCurrentWidget(builder)
         builder.connectome_combo.setCurrentIndex(builder.connectome_combo.findData(source.key))
-        builder.query_edit.setText("DNp01, TTMn")
+        builder.query_edit.setText("DNp01, TTMn, PSI")
         builder.assemble_circuit()
         QTest.qWait(300)
-        if set(builder.loaded_morphologies) != {"42", "43"}:
+        if set(builder.loaded_morphologies) != {"42", "43", "45"}:
             raise ValueError("Actual Circuit Builder did not visibly load the combined cell set")
         if not window.grab().save(str(destination / "combined-circuit.png")):
             raise ValueError("Could not capture the actual packaged Circuit Builder")
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
+                      combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],
+                      production_query_builder_used=True, queries=queries,
                       combined_visible_neurons=sorted(builder.loaded_morphologies), library_root=str(resources[-1].root))
     except Exception:
         record["error"] = traceback.format_exc()

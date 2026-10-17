@@ -59,3 +59,37 @@ Use the loaded Windows module path (canonicalized for short names), not a
 compiler's possibly retained `sys.executable` name, to identify the installed
 app and its acknowledged executable hash. Exact native runtime context is
 retained in the disposable packaged checks; no credential contents are logged.
+
+## October17 measured delivery
+
+Windows `0.1.0-alpha.20261017.1`, source
+`a15bc3338e69c98412c91333f4fbb7e22e118fbd`, passed native CI39044154231:
+145 source cases and one non-Windows negative skip, actual compiled EXE runtime
+setup/Run/Results, SWC intake, full supplied Parquet and the three updater gates
+(unmarked original refusal, disposable install/reopen, failed-startup rollback/reopen).
+The actual directory identities, full app trees, draft and external sentinels
+were checked. Root viewed both reopened MainWindow PNGs, including their distinct
+installed/restored status messages; CI-size label clipping remains visible.
+
+Native runtime context confirms `sys.executable` was the app folder's
+`python.exe`, while the actual loaded process module is `Digifly Workstation.exe`.
+The Windows API identity repair is measured, not just a source-level inference.
+The native updater uses an offline verified-archive fixture and same-build
+disposable copies, not a full live cross-version public archive upgrade.
+
+Final415outer/3425runtime files pass full CRC/path/hash/source/notice checks.
+All387original payload files survive the notice-only overlay; installed runtime
+files and25 full reused notices match the preceding published edition. The
+published ZIP is225331078bytes, SHA256
+`6ef9124779f8bf51836b8890d35ec238616065b028f4ef5f0cee70bcb339a768`.
+Independent public postflight preserves all16prior asset IDs/bytes/digests, only
+renames the old stable Windows pair to rollback, and leaves Mac assets intact.
+Real public discovery chooses the new build for.16 and offers no update for.17;
+public checksum transport passes. Existing download-only apps need the one-time
+manual Extract All/bootstrap. Windows11/SmartScreen/macOS-helper/full scientific
+qualification and live-hang automatic recovery are not claimed.
+
+Evidence: `outputs/workstation/windows-updater-delivery-review-20261017-v1.json`,
+`windows-updater-full-audit-20261017-v1.json`,
+`windows-updater-publication-postflight-20261017-v1.json` and native receipts below
+`windows-updater-ci-20261017-v4/`, all relative to `outputs/workstation/`.

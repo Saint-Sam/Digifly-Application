@@ -44,6 +44,7 @@ DEFAULT_MAX_CONNECTIVITY_BYTES = 128 * 1024 * 1024
 DEFAULT_MAX_CONNECTIVITY_ROWS = 250_000
 NEUPRINT_CHECKPOINT_FILENAME = "digifly-neuprint-checkpoint.json"
 SELECTION_MODES = {
+    "name_list",
     "body_ids",
     "type_exact",
     "type_regex",
@@ -504,6 +505,21 @@ def _selection_cypher(selection: NeuPrintSelection) -> str:
         if len(values) > limit:
             raise ValueError(f"The body-ID selection exceeds its {limit}-neuron limit")
         where = f"n.bodyId IN [{','.join(str(value) for value in values)}]"
+    elif selection.mode == "name_list":
+        terms = name_selection_terms(selection.value)
+        if len(terms) > limit:
+            raise ValueError("The number of names exceeds the neuron selection limit")
+        clauses = []
+        for term in terms:
+            if term.isascii() and term.isdecimal():
+                clauses.append(f"n.bodyId = {int(term)}")
+            else:
+                literal = _cypher_string(term.lower(), field="neuron name")
+                clauses.append(
+                    f'(toLower(coalesce(n.type, "")) STARTS WITH {literal} OR '
+                    f'toLower(coalesce(n.instance, "")) STARTS WITH {literal})'
+                )
+        where = "(" + " OR ".join(clauses) + ")"
     elif selection.mode in {"type_exact", "instance_exact"}:
         field_name = "type" if selection.mode == "type_exact" else "instance"
         terms = exact_selection_terms(selection.value)
@@ -537,6 +553,23 @@ def exact_selection_terms(value: str) -> tuple[str, ...]:
     if not terms:
         raise ValueError("Enter at least one neuron name")
     return terms
+
+
+def name_selection_terms(value: str) -> tuple[str, ...]:
+    """Literal names, or numeric body IDs; delimiters mean union, never regex."""
+    terms = []
+    for term in exact_selection_terms(value):
+        parts = term.split() if re.fullmatch(r"[0-9]+(?:\s+[0-9]+)+", term) else (term,)
+        terms.extend(parts)
+    return tuple(dict.fromkeys(terms))
+
+
+def neuron_matches_name(neuron: NeuPrintNeuron, term: str) -> bool:
+    """Match the displayed name-list policy, including instance-only labels."""
+    if term.isascii() and term.isdecimal():
+        return neuron.body_id == int(term)
+    literal = term.lower()
+    return neuron.neuron_type.lower().startswith(literal) or neuron.instance.lower().startswith(literal)
 
 
 def _parse_custom_rows(payload: Any) -> list[NeuPrintNeuron]:

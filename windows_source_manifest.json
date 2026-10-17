@@ -50,8 +50,8 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "4ccfc4adcd92e4c2e14b93151672a11fbb4feacb9bcdb74797e18afa920c966d",
-      "bytes": 4192
+      "sha256": "9139d3f8a8106fbe8075265a64b94f4e9d9cd2e4058755e4da42d24831331d9f",
+      "bytes": 6301
     },
     "docs/WINDOWS_TESTER.md": {
       "sha256": "9de04456d1674f39896e01c2b83d20e85cd8dc3ed20d97ed443d452bc2bbdf01",
@@ -358,8 +358,8 @@
       "bytes": 14276
     },
     "src/digifly_app/core/neuprint.py": {
-      "sha256": "8a6eff6f175a01e236b90b83329ba4e3cd914549fc3aff90e8bab60352a7e000",
-      "bytes": 45110
+      "sha256": "daa09df4d3f50fed197026fdb2010bddff0a6af838437bc9348caa0c591f3755",
+      "bytes": 46577
     },
     "src/digifly_app/core/pair_graph.py": {
       "sha256": "746e620f5767355f744efb8da9ee99cb7b21fa3d5b2f364d11eed76cb9ccdbcd",
@@ -658,12 +658,12 @@
       "bytes": 29871
     },
     "src/digifly_app/ui/neuprint_import.py": {
-      "sha256": "4bd7684e46f074abb55c61cf6ed6be4e4832615dfb2dfe72d171d6f4bdbe4b53",
-      "bytes": 37965
+      "sha256": "1e60e0401992c23a0381c18a4df9bcb191de4e357a3ef6d293d1a5160f5b4fc1",
+      "bytes": 41363
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "482dc96f1dc74dfe032bb27cd59749f912d29e5f8a380abdf4e9dd0912564c36",
-      "bytes": 11047
+      "sha256": "12b74ad7ec033d09a5d5d29a65e582124cae4ff80abfeaa787b0dca23cd6b5bc",
+      "bytes": 13157
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -806,11 +806,11 @@
       "bytes": 4707
     },
     "scripts/publish_windows_release.py": {
-      "sha256": "f82202ab13cca3c36b684a490473a1f3f332d86375c99b1070022d58a730313f",
-      "bytes": 15669
+      "sha256": "dee96aed9e8a9eccf72ce63a6f4bbdbb3605b8a7883a65eab1fbd800e41bdbba",
+      "bytes": 16044
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "c099cdd65eba3bcc88831142cef4862344fdcde185ecad82bca0bdefb59c3b66",
+      "sha256": "7348a2faae232bc4556c48b79d6f1ac4925e8e1867957deeac8c9d93fbea6753",
       "bytes": 9774
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -866,12 +866,12 @@
       "bytes": 2812
     },
     "tests/test_neuprint_acquisition.py": {
-      "sha256": "7f427c902db7995a2a5f3924d46a16ccab190e936606d02ec79b3bf47a4a3851",
-      "bytes": 17926
+      "sha256": "4e8c643ed158f6e51311e9aa2c485d1f0169f00787881a41ac13bfc2e1eef31b",
+      "bytes": 19456
     },
     "tests/test_neuprint_ui.py": {
-      "sha256": "58b398361fa517804418267d0b3213c29f703173241c2a53c81dbab8f006046b",
-      "bytes": 7343
+      "sha256": "a322dfdafbef384c66e3ed4e90dc83fc853630c184afebe117d202e14e34d559",
+      "bytes": 9499
     },
     "tests/test_data_library.py": {
       "sha256": "217f2d122d8d451613bdf0fc4f901598b85c6209a8562cfd7e141cb68c516f79",
@@ -886,8 +886,8 @@
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "941ba0e8eb2eb272ca4f400ef1531084201f6b63ef7459cbf953b347ecfaaf60",
-      "bytes": 11229
+      "sha256": "dfb2b0fbf3eb5e39ed0a2ab04feab50ad1708b3e823466bdd8dee9407e7eb6f2",
+      "bytes": 11297
     },
     "tests/test_package_foundation.py": {
       "sha256": "7456bd647e0decf975b595743402e7ee2a9c89b888adfd2ca3e720df036f7f66",

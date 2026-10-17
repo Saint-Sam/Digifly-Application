@@ -84,7 +84,7 @@ def test_publication_stops_before_network_without_redistribution_review(tmp_path
         publisher.publish(tmp_path / "no-artifact.zip")
 
 
-@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c", "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f", "b998fcbdb5fe0dde0499fef7d49ec8c036b598682b72020c6d58a158db1b4924"])
+@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c", "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f", "b998fcbdb5fe0dde0499fef7d49ec8c036b598682b72020c6d58a158db1b4924", "6ef9124779f8bf51836b8890d35ec238616065b028f4ef5f0cee70bcb339a768"])
 def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch, previous):
     import hashlib
     publisher = module("publish_windows_release")

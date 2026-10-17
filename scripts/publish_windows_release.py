@@ -31,6 +31,8 @@ KNOWN_ROLLBACKS = {
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261015-neuron.zip",
     "b998fcbdb5fe0dde0499fef7d49ec8c036b598682b72020c6d58a158db1b4924":
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261016-shared-library.zip",
+    "6ef9124779f8bf51836b8890d35ec238616065b028f4ef5f0cee70bcb339a768":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261017-updater.zip",
 }
 
 
@@ -217,7 +219,7 @@ def publish(archive: Path, review=None):
             + "Unsigned alpha; user-selected experiments remain unverified. Arbor deferred. "
             + ("Includes the user-supplied MANC pair Parquet (exact release/completeness/weight units unverified), not SWCs or located synapses. In Data Library, use the included file with the installed private Python as reader. "
                if includes_pair else "No dataset included; transfer your Parquet separately. ")
-            + "Downloads and SWC imports join one library per exact dataset/server/version, with visible export_swc family/type/body-ID folders and combined-name search. No SWC corpus or token included. "
+            + "Downloads default to Neuron names / IDs (list): enter DNp01, TTMn, PSI together for a bounded union of literal type/instance-prefix matches, with per-name counts and missing/limit warnings. Exact and advanced regex modes remain separate. Downloads and SWC imports join one library per exact dataset/server/version, with visible export_swc family/type/body-ID folders. No SWC corpus or token included. "
             + "Built-in updates now offer Install and Restart, retain the previous app and a recovery draft, and restore the old app on early startup failure. Actual packaged install/reopen and injected failed-startup rollback passed Windows CI with external-data sentinels. Older download-only builds need this one-time manual Extract All bootstrap. Live unresponsive startup is not force-killed; its backup is retained for recovery.\n<!-- current-windows-end -->\n\n")
     notes = archive.parent / "windows-release-notes.md"
     notes.write_text(note + body, "utf-8")

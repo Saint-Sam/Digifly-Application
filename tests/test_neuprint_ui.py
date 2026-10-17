@@ -108,14 +108,15 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
     )
     try:
         assert dialog.token_edit.echoMode() == QLineEdit.EchoMode.Password
-        assert dialog.selection_mode.count() == 6
+        assert dialog.selection_mode.count() == 7
+        assert dialog.selection_mode.currentData() == "name_list"
         assert dialog.limit_spin.maximum() == 500
         assert dialog.connectivity_check.isChecked()
         assert not dialog.remember_token.isEnabled()
         dialog._active_token = "fixture-token"
         dialog.dataset_combo.addItem("manc:v1.2.1", "manc:v1.2.1")
         dialog.dataset_combo.setEnabled(True)
-        dialog.selection_mode.setCurrentIndex(1)
+        dialog.selection_mode.setCurrentIndex(dialog.selection_mode.findData("type_exact"))
         dialog.selection_edit.setText("DNp01")
         dialog._preview_ready((NeuPrintNeuron(42, "DNp01", "DNp01_R"),))
         application.processEvents()
@@ -131,6 +132,40 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         dialog.close()
         application.processEvents()
 
+
+def test_default_list_preview_reports_each_name_instance_matches_and_missing_terms(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    profile = make_default_profile(workspace_root=tmp_path, output_root=tmp_path / "runs",
+                                   managed_data_root=tmp_path / "library")
+    path = profile.save(tmp_path / "profile.json")
+    dialog = NeuPrintImportDialog(profile, path, credential_store=_NoCredentialStore())
+    try:
+        dialog._active_token = "fixture-token"
+        dialog.dataset_combo.addItem("manc:v1.0", "manc:v1.0")
+        dialog.selection_edit.setText("DNp01, TTMn, PSI, absent")
+        dialog._preview_ready((NeuPrintNeuron(42, "DNp01", "DNp01_R"),
+                               NeuPrintNeuron(43, "TTMn"), NeuPrintNeuron(45, "", "PSI_L")))
+        assert dialog._request().selection.mode == "name_list"
+        assert [n.body_id for n in dialog._request().neurons] == [42, 43, 45]
+        assert "DNp01: 1; TTMn: 1; PSI: 1; absent: 0" in dialog.status.text()
+        assert "No returned match for: absent" in dialog.status.text()
+        assert "type or instance" in dialog.selection_help.text()
+        dialog.limit_spin.setValue(3)
+        dialog.selection_edit.setText("DNp01, TTMn, PSI")
+        dialog._preview_ready((NeuPrintNeuron(42, "DNp01"), NeuPrintNeuron(43, "TTMn"),
+                               NeuPrintNeuron(45, "", "PSI_L")))
+        assert "Query reached its limit" in dialog.status.text()
+        dialog._set_busy(True)
+        assert not dialog.selection_edit.isEnabled() and not dialog.dataset_combo.isEnabled()
+        assert not dialog.selection_mode.isEnabled()
+        dialog._set_busy(False)
+        assert dialog.selection_edit.isEnabled() and dialog.dataset_combo.isEnabled()
+        dialog.selection_mode.setCurrentIndex(dialog.selection_mode.findData("type_regex"))
+        assert "Commas are literal" in dialog.selection_help.text()
+        assert not dialog.download_button.isEnabled()
+    finally:
+        dialog.close()
+        app.processEvents()
 
 def test_neuprint_dialog_prefills_circuit_builder_dataset_and_selection(tmp_path: Path):
     application = QApplication.instance() or QApplication([])

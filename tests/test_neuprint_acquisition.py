@@ -487,6 +487,7 @@ def test_acquisition_request_rejects_duplicates_and_nonopaque_credential_refs():
     ("mode", "value", "expected"),
     [
         ("body_ids", "42, 43", "n.bodyId IN [42,43]"),
+        ("name_list", "DNp01, TTMn, PSI", 'toLower(coalesce(n.instance, "")) STARTS WITH "psi"'),
         ("type_regex", "DNp.*", 'n.type =~ "DNp.*"'),
         ("instance_exact", "DNp01_R", 'n.instance = "DNp01_R"'),
         ("roi", "legNp(T1)(R)", "n.`legNp(T1)(R)`"),
@@ -519,3 +520,27 @@ def test_body_id_selection_rejects_mixed_free_text_instead_of_extracting_digits(
     )
     with pytest.raises(ValueError, match="numeric"):
         client.preview_neurons(NeuPrintSelection("body_ids", "body 42", 5))
+
+
+def test_name_list_is_literal_union_with_one_total_bound_and_no_dataset_switch():
+    from digifly_app.core.neuprint import _selection_cypher, name_selection_terms, neuron_matches_name
+    terms = name_selection_terms("DNp01, TTMn; PSI\n42 43; DNp01")
+    assert terms == ("DNp01", "TTMn", "PSI", "42", "43")
+    query = _selection_cypher(NeuPrintSelection("name_list", "DNp01, TTMn, PSI, 42", 8))
+    assert query.count("STARTS WITH") == 6
+    for name in ("dnp01", "ttmn", "psi"):
+        assert f'STARTS WITH "{name}"' in query
+    assert " OR n.bodyId = 42)" in query
+    assert query.endswith("ORDER BY n.bodyId LIMIT 8")
+    assert "=~" not in query
+    escaped = _selection_cypher(NeuPrintSelection("name_list", 'DNp.*, x" MATCH (z)', 8))
+    assert 'STARTS WITH "dnp.*"' in escaped and 'x\\" match (z)' in escaped
+    with pytest.raises(ValueError, match="exceeds"):
+        _selection_cypher(NeuPrintSelection("name_list", "DNp01, TTMn, PSI", 2))
+    with pytest.raises(ValueError, match="Invalid"):
+        _selection_cypher(NeuPrintSelection("name_list", "x" * 257, 8))
+    assert neuron_matches_name(NeuPrintNeuron(42, "", "PSI_R"), "psi")
+    assert neuron_matches_name(NeuPrintNeuron(42, "TTMn"), "TTM")
+    assert neuron_matches_name(NeuPrintNeuron(42, "DNp01"), "00042")
+    assert not neuron_matches_name(NeuPrintNeuron(42, "DNp01"), "DNp.*")
+    assert not neuron_matches_name(NeuPrintNeuron(43, "DNp01"), "42")

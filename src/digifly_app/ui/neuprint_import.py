@@ -53,6 +53,8 @@ from digifly_app.core.neuprint import (
     acquire_neuprint_bundle,
     discard_neuprint_checkpoint,
     exact_selection_terms,
+    name_selection_terms,
+    neuron_matches_name,
     neuprint_checkpoint_path,
     normalize_server,
     preview_destination,
@@ -66,11 +68,12 @@ from .widgets import Card
 TOKEN_HELP_URL = "https://neuprint.janelia.org/account"
 
 SELECTION_OPTIONS = (
+    ("Neuron names / IDs (list)", "name_list", "DNp01, TTMn, PSI — comma or semicolon separated"),
     ("Body IDs", "body_ids", "Example: 10000, 10002"),
     ("Exact neuron types", "type_exact", "Example: DNp01, TTMn (combined search)"),
-    ("Neuron type regex", "type_regex", "Example: DNp.*"),
+    ("Advanced: type regex", "type_regex", "One regex, e.g. DNp01|TTMn|PSI (not a comma list)"),
     ("Exact instance", "instance_exact", "Example: DNp01_R"),
-    ("Instance regex", "instance_regex", "Example: DNp01_.*"),
+    ("Advanced: instance regex", "instance_regex", "One regex, e.g. DNp01_.*|TTMn_.* (not a comma list)"),
     ("ROI membership", "roi", "Example: legNp(T1)(R)"),
 )
 
@@ -233,6 +236,8 @@ class NeuPrintImportDialog(QDialog):
         selection_form.setVerticalSpacing(9)
         self.dataset_combo = QComboBox()
         self.dataset_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.dataset_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.dataset_combo.setMinimumContentsLength(20)
         self.dataset_combo.setAccessibleName("NeuPrint dataset and version")
         self.dataset_combo.setToolTip("Exact NeuPrint dataset/version. Alt+D focuses this selector.")
         self.dataset_focus_shortcut = QShortcut(QKeySequence("Alt+D"), self)
@@ -262,7 +267,14 @@ class NeuPrintImportDialog(QDialog):
         self.preview_button.clicked.connect(self.preview_neurons)
         selection_layout.addWidget(self.preview_button)
         selection_form.addRow("Bounded selection", selection_row)
+        self.selection_help = QLabel()
+        self.selection_help.setWordWrap(True)
+        self.selection_help.setMinimumHeight(self.selection_help.fontMetrics().lineSpacing() * 4)
+        self.selection_help.setObjectName("Muted")
+        selection_form.addRow("Search behavior", self.selection_help)
+        self._update_selection_help()
         self.preview_table = QTableWidget(0, 4)
+        self.preview_table.setMinimumHeight(150)
         self.preview_table.setHorizontalHeaderLabels(("Download", "Body ID", "Type", "Instance"))
         self.preview_table.horizontalHeader().setStretchLastSection(True)
         self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -342,6 +354,8 @@ class NeuPrintImportDialog(QDialog):
             selection_index = self.selection_mode.findData(initial_selection.mode)
             if selection_index >= 0:
                 self.selection_mode.setCurrentIndex(selection_index)
+                self.selection_edit.setPlaceholderText(SELECTION_OPTIONS[selection_index][2])
+                self._update_selection_help()
             self.selection_edit.setText(initial_selection.value)
             self.limit_spin.setValue(initial_selection.limit)
         if initial_resource_id:
@@ -372,6 +386,13 @@ class NeuPrintImportDialog(QDialog):
         return detail.replace(self._active_token, "[redacted]") if self._active_token else detail
 
     def _set_busy(self, busy: bool) -> None:
+        # Keep the reviewed query/dataset identical to the acquisition manifest.
+        # Previously edits during a worker could relabel an old preview as a new query.
+        for control in (self.server_edit, self.token_edit, self.selection_mode,
+                        self.selection_edit, self.limit_spin, self.name_edit,
+                        self.snapshot_edit, self.connectivity_check):
+            control.setEnabled(not busy)
+        self.dataset_combo.setEnabled(not busy and bool(self._active_token) and self.dataset_combo.count() > 0)
         self.connect_button.setEnabled(not busy)
         self.preview_button.setEnabled(not busy and bool(self._active_token) and self.dataset_combo.count() > 0)
         self.download_button.setEnabled(not busy and bool(self._selected_neurons()))
@@ -450,7 +471,22 @@ class NeuPrintImportDialog(QDialog):
 
     def _selection_mode_changed(self, index: int) -> None:
         self.selection_edit.setPlaceholderText(SELECTION_OPTIONS[index][2])
+        self._update_selection_help()
         self._preview_invalidated()
+
+    def _update_selection_help(self) -> None:
+        mode = self.selection_mode.currentData()
+        if mode == "name_list":
+            text = ("Fetch the combined matches for every name in your list. Names match type or instance "
+                    "prefixes, ignoring case; numeric IDs match exactly. Review the rows before downloading. "
+                    "The limit applies to the whole list, not each name.")
+        elif mode in {"type_regex", "instance_regex"}:
+            text = ("Advanced: this is one complete regular expression. Commas are literal, not list separators. "
+                    "For DNp01, TTMn, PSI choose ‘Neuron names / IDs (list)’ instead.")
+        else:
+            text = ("Exact type/instance fields accept comma- or semicolon-separated names; body IDs must be numeric. "
+                    "All matches stay within the selected dataset/version and the total limit.")
+        self.selection_help.setText(text)
 
     def _clear_preview(self) -> None:
         self._preview = ()
@@ -590,7 +626,7 @@ class NeuPrintImportDialog(QDialog):
             self.preview_table.setItem(row, 3, QTableWidgetItem(neuron.instance or "—"))
         self.preview_table.blockSignals(False)
         if neurons:
-            if self.selection_mode.currentData() == "type_exact":
+            if self.selection_mode.currentData() in {"name_list", "type_exact"}:
                 try:
                     self.name_edit.setText(safe_component(self.selection_edit.text()))
                 except ValueError:
@@ -598,7 +634,16 @@ class NeuPrintImportDialog(QDialog):
             self.status.setText(
                 f"Previewed {len(neurons)} neuron(s). Uncheck any rows you do not want to download."
             )
-            if self.selection_mode.currentData() in {"type_exact", "instance_exact"}:
+            if self.selection_mode.currentData() == "name_list":
+                terms = name_selection_terms(self.selection_edit.text())
+                counts = [(term, sum(neuron_matches_name(neuron, term) for neuron in neurons)) for term in terms]
+                self.status.setText(self.status.text() + " Returned matches: " + "; ".join(
+                    f"{term}: {count}" for term, count in counts) + ".")
+                missing = [term for term, count in counts if not count]
+                if missing:
+                    self.status.setText(self.status.text() + " No returned match for: " + ", ".join(missing)
+                                        + ". Check dataset/version, annotation and total limit.")
+            elif self.selection_mode.currentData() in {"type_exact", "instance_exact"}:
                 field = "neuron_type" if self.selection_mode.currentData() == "type_exact" else "instance"
                 present = {getattr(neuron, field) for neuron in neurons}
                 missing = [name for name in exact_selection_terms(self.selection_edit.text()) if name not in present]
@@ -607,7 +652,9 @@ class NeuPrintImportDialog(QDialog):
             if len(neurons) >= self.limit_spin.value():
                 self.status.setText(self.status.text() + " Query reached its limit; additional neurons may be omitted.")
         else:
-            self.status.setText("No neurons matched this selection; no download is available.")
+            self.status.setText("No neurons matched this selection; no download is available. "
+                                "For a list such as DNp01, TTMn, PSI use ‘Neuron names / IDs (list)’. "
+                                "Check the selected dataset/version and its annotations.")
         self._update_destination()
 
     def _selected_neurons(self) -> tuple[NeuPrintNeuron, ...]:
