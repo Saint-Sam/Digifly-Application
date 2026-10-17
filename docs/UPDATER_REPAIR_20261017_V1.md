@@ -37,7 +37,10 @@ Acceptance on the actual Windows deliverable:
   updates controls and workers against an offline verified-archive fixture.
   Both disposable install/reopen and startup-failure/restore/reopen must pass,
   with exact tree hashes, external-state sentinels, unchanged draft and visible
-  window PNGs. It never replaces the supplied original app. This is not live
+  window PNGs. The actual EXE must refuse the automatic engineering route on
+  an unmarked original app, before Qt or staging writes; only the runner's
+  explicitly marked disposable copies can use it. It never replaces the
+  supplied original app. This is not live
   GitHub transport, Windows11, SmartScreen or scientific validation.
 - The Windows workflow fails before artifact acceptance when this runner fails;
   its evidence validator rejects missing/stale archive/executable receipts.

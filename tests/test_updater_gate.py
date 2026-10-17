@@ -17,7 +17,7 @@ def fixture(tmp_path):
     exe.write_bytes(b"fixture executable")
     data = {"schema": "digifly-native-updater-gate-v1", "ok": True, "platform": gate.platform.system(),
             "archive_sha256": gate.file_hash(archive), "source_app_executable_sha256": gate.file_hash(exe),
-            "original_app_unchanged": True, "cases": {}}
+            "original_app_unchanged": True, "unmarked_original_app_refused": True, "cases": {}}
     for name, status in (("install", "installed"), ("rollback", "rolled_back")):
         image = tmp_path / (name + "-window.png")
         image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fixture" * 30)

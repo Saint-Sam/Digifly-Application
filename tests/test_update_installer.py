@@ -165,3 +165,35 @@ def test_receipt_publication_is_atomic_and_never_overwrites(tmp_path):
     with pytest.raises(FileExistsError):
         installer.write_new(path, {"good": False})
     assert json.loads(path.read_text()) == {"good": True}
+
+
+def test_engineering_route_refuses_unmarked_app_and_wrong_target(tmp_path, monkeypatch):
+    monkeypatch.delenv(installer.DISPOSABLE_TEST_ENV, raising=False)
+    with pytest.raises(ValueError, match="disposable"):
+        installer.require_disposable_test()
+    target = tmp_path / "app"
+    target.mkdir()
+    monkeypatch.setattr(installer, "installation_root", lambda: target)
+    marker = tmp_path / ".digifly-updater-disposable.json"
+    installer.write_new(marker, {"disposable": True, "target": str(target)})
+    monkeypatch.setenv(installer.DISPOSABLE_TEST_ENV, str(marker))
+    installer.require_disposable_test()
+    marker.write_text(json.dumps({"disposable": True, "target": str(tmp_path / "another-app")}))
+    with pytest.raises(ValueError, match="another app"):
+        installer.require_disposable_test()
+
+
+def test_broad_install_root_refused_before_scanning_user_files(tmp_path, monkeypatch):
+    home = tmp_path / "user-home"
+    target = home / "Desktop"
+    target.mkdir(parents=True)
+    transaction = tmp_path / "cache"
+    transaction.mkdir()
+    draft = transaction / "draft.json"
+    draft.write_text("draft")
+    archive = transaction / "app.zip"
+    archive.write_bytes(b"placeholder")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(installer, "validate_app", lambda *a: pytest.fail("broad user files scanned"))
+    with pytest.raises(ValueError, match="own extracted app folder"):
+        installer.prepare_install(archive, target, transaction, draft)

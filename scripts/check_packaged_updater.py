@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import time
 
-from digifly_app.core.update_installer import executable_in, file_hash, tree_inventory
+from digifly_app.core.update_installer import DISPOSABLE_TEST_ENV, executable_in, file_hash, tree_inventory
 
 
 def validate_evidence(receipt_path: Path, archive: Path, executable: Path) -> dict:
@@ -29,7 +29,8 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
             or record.get("platform") != system
             or record.get("archive_sha256") != archive_sha256
             or record.get("source_app_executable_sha256") != executable_sha256
-            or record.get("original_app_unchanged") is not True):
+            or record.get("original_app_unchanged") is not True
+            or record.get("unmarked_original_app_refused") is not True):
         raise ValueError("Missing, unsuccessful or stale native updater evidence.")
     for name, status in (("install", "installed"), ("rollback", "rolled_back")):
         case = record["cases"][name]
@@ -58,6 +59,15 @@ def check(application: Path, archive: Path, output: Path) -> dict:
               "platform": system, "archive_sha256": file_hash(archive),
               "source_app_executable_sha256": file_hash(executable_in(application, system)),
               "scope": "actual packaged app, offline verified-archive fixture, GUI update controls/workers, external copied-app helper, replacement and MainWindow/draft restart; explicit startup fault for rollback; not live GitHub transport, Windows11, SmartScreen or scientific acceptance", "cases": {}}
+    refusal = output / "unmarked-must-not-be-created"
+    environment = {k: v for k, v in os.environ.items() if k != DISPOSABLE_TEST_ENV}
+    with (output / "unmarked-refusal.log").open("xb") as log:
+        refused = subprocess.run([str(executable_in(application, system)), "--package-update-test", str(refusal),
+                                  "--update-archive", str(archive)], env=environment, cwd=output,
+                                 stdout=log, stderr=log, timeout=30)
+    if refused.returncode == 0 or refusal.exists() or tree_inventory(application) != before:
+        raise ValueError("The engineering route did not refuse the unmarked original app.")
+    record["unmarked_original_app_refused"] = True
     for name, failure in (("install", False), ("rollback", True)):
         case = output / name
         case.mkdir()
@@ -67,6 +77,9 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         else:
             shutil.copytree(application, target)
         original_directory_id = target.stat().st_ino
+        disposable_marker = case / ".digifly-updater-disposable.json"
+        with disposable_marker.open("x", encoding="utf-8") as handle:
+            json.dump({"disposable": True, "target": str(target)}, handle)
         # Bounded external user-state controls, never real credentials/data.
         sentinels = case / "external-user-files"
         sentinels.mkdir()
@@ -77,7 +90,8 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         if failure:
             args.append("--fail-new-startup")
         with (case / "parent.log").open("xb") as log:
-            process = subprocess.Popen(args, cwd=case, stdout=log, stderr=log)
+            process = subprocess.Popen(args, cwd=case, stdout=log, stderr=log,
+                                       env={**os.environ, DISPOSABLE_TEST_ENV: str(disposable_marker)})
         process.wait(timeout=270)
         if process.returncode:
             raise ValueError(f"Native updater parent failed: {case}")

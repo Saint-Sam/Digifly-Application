@@ -135,6 +135,7 @@ jobs:
             included-pair-ui-evidence/*.json
             included-pair-ui-evidence/*.png
             updater-evidence/receipt.json
+            updater-evidence/*.log
             updater-evidence/*-window.png
             updater-evidence/*/parent.log
             updater-evidence/*/gui/ui-failure.json

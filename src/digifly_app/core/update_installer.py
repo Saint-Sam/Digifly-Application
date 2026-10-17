@@ -26,6 +26,7 @@ import zipfile
 
 SCHEMA = "digifly-update-transaction-v1"
 MARKER = "digifly_windows_package.json"
+DISPOSABLE_TEST_ENV = "DIGIFLY_UPDATER_DISPOSABLE_MARKER"
 
 
 def write_new(path: Path, value: dict) -> None:
@@ -62,6 +63,20 @@ def installation_root(executable: Path | None = None) -> Path:
 
 def executable_in(root: Path, system: str) -> Path:
     return root / ("Digifly Workstation.exe" if system == "Windows" else "Contents/MacOS/main")
+
+
+def require_disposable_test() -> None:
+    """The auto-consenting engineering route must never target a normal app."""
+    value = os.environ.get(DISPOSABLE_TEST_ENV, "")
+    if not value:
+        raise ValueError("The updater test requires an explicitly marked disposable app copy.")
+    marker = Path(value).absolute()
+    target = installation_root()
+    if marker.name != ".digifly-updater-disposable.json" or marker.parent.resolve() != target.parent or marker.is_symlink():
+        raise ValueError("The updater test marker is not beside its disposable app copy.")
+    document = json.loads(marker.read_text("utf-8"))
+    if document.get("disposable") is not True or Path(document.get("target", "")).resolve() != target:
+        raise ValueError("The updater test marker identifies another app.")
 
 
 def tree_inventory(root: Path) -> dict:
@@ -116,7 +131,7 @@ def checked_members(archive: zipfile.ZipFile, system: str) -> list[zipfile.ZipIn
         # the raw central-directory spelling as well, before accepting paths.
         name = entry.orig_filename.rstrip("/")
         path = PurePosixPath(name)
-        if (not name or path.is_absolute() or ".." in path.parts or "\\" in name
+        if (not name or any(ord(ch) < 32 for ch in name) or path.is_absolute() or ".." in path.parts or "\\" in name
                 or ":" in name or any(part in {"", "."} for part in name.split("/"))):
             raise ValueError("Unsafe path in update archive.")
         if system == "Windows" and any(part != part.rstrip(" .") or part.split(".")[0].upper() in
@@ -160,12 +175,14 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
         raise ValueError("Update staging and draft must be outside the installed app.")
     if not draft.is_file() or not archive.is_file() or not target.is_dir():
         raise ValueError("App, verified archive or saved draft is missing.")
+    if len(target.parts) < 3 or target.parent == Path.home() or target == Path.home():
+        raise ValueError("Keep Digifly in its own extracted app folder. The updater will not replace your home, Desktop or Downloads folder.")
     # Check the checksum again after the UI/download-worker boundary.
     checksum = archive.with_name(archive.name + ".sha256").read_text("ascii").split()[0].lower()
     if file_hash(archive) != checksum:
         raise ValueError("The staged update failed its integrity check.")
     original = validate_app(target, system)
-    if not original or len(target.parts) < 3 or target.parent == Path.home() or target == Path.home():
+    if not original:
         raise ValueError("Refusing an ambiguous installation target.")
     transaction.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as bundle:

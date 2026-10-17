@@ -105,7 +105,7 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
     native = tmp_path / "updater-evidence.json"
     exe_sha = hashlib.sha256((bundle / "Digifly Workstation.exe").read_bytes()).hexdigest()
     evidence = {"schema": "digifly-native-updater-gate-v1", "ok": True, "platform": "Windows",
-        "archive_sha256": sha, "source_app_executable_sha256": exe_sha, "original_app_unchanged": True, "cases": {}}
+        "archive_sha256": sha, "source_app_executable_sha256": exe_sha, "original_app_unchanged": True, "unmarked_original_app_refused": True, "cases": {}}
     for name, status in (("install", "installed"), ("rollback", "rolled_back")):
         image = tmp_path / (name + "-window.png")
         image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"software fixture, not GUI acceptance" * 10)

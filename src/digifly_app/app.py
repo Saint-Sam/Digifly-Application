@@ -44,6 +44,8 @@ def main() -> int:
         return install_transaction(Path(sys.argv[2]).resolve())
     if len(sys.argv) > 1 and sys.argv[1] == "--package-update-test":
         import argparse
+        from digifly_app.core.update_installer import require_disposable_test
+        require_disposable_test()  # before Qt, automatic consent or any writes
         from digifly_app.ui.package_update_smoke import run_update_smoke
         parser = argparse.ArgumentParser()
         parser.add_argument("--package-update-test", type=Path, required=True)
