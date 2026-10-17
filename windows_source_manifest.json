@@ -54,8 +54,8 @@
       "bytes": 6301
     },
     "docs/WINDOWS_TESTER.md": {
-      "sha256": "9de04456d1674f39896e01c2b83d20e85cd8dc3ed20d97ed443d452bc2bbdf01",
-      "bytes": 4732
+      "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350",
+      "bytes": 5635
     },
     "main.py": {
       "sha256": "ae53f950eca206683358eed365b0ca8388996bb35562bbd0dacbee36f6f0d5b2",
@@ -454,8 +454,8 @@
       "bytes": 4493
     },
     "src/digifly_app/core/update_installer.py": {
-      "sha256": "2df5eb4c3e8b5cf86ccbd4b92c8283415dd22fbeb742fb7aa27eb944c614ceec",
-      "bytes": 21728
+      "sha256": "e57b894e450fa6037078b33c15a33a3569f34330acf111aaf04a9b387c02bdd6",
+      "bytes": 22574
     },
     "src/digifly_app/core/updates.py": {
       "sha256": "48e60f542deb67bf25987afd27ba6f0ded2a41d3fa24fe2ae00b6786b02e857f",
@@ -806,11 +806,11 @@
       "bytes": 4707
     },
     "scripts/publish_windows_release.py": {
-      "sha256": "dee96aed9e8a9eccf72ce63a6f4bbdbb3605b8a7883a65eab1fbd800e41bdbba",
-      "bytes": 16044
+      "sha256": "16f8a39069a7ed0919907857189b155231a7406932f09f381474906345e05fce",
+      "bytes": 16210
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "7348a2faae232bc4556c48b79d6f1ac4925e8e1867957deeac8c9d93fbea6753",
+      "sha256": "3aaee5a691368a12bd93e48d4bcf263116e336ff9d5259de6b911acefa0bca8b",
       "bytes": 9774
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -838,8 +838,8 @@
       "bytes": 5287
     },
     "tests/test_update_installer.py": {
-      "sha256": "ed77b7eb4265f3366d656463467251cc72b47bfbd3d6846c62db80ce1d199d36",
-      "bytes": 9724
+      "sha256": "5516b9cb38d328f161cfc874ebafd9fbd055d604017db503297f0d4a3dcf2193",
+      "bytes": 11047
     },
     "tests/test_updater_gate.py": {
       "sha256": "43606ec803d4ab7d1ef23f85f45685cbb3cc01c58c684a6e588f7a3c683ec5e4",
@@ -886,8 +886,8 @@
       "bytes": 551
     },
     "tests/test_windows_package.py": {
-      "sha256": "dfb2b0fbf3eb5e39ed0a2ab04feab50ad1708b3e823466bdd8dee9407e7eb6f2",
-      "bytes": 11297
+      "sha256": "7d0d666cb90da5f35ab55c4c699dc07504f6d41a0f97868b8c34c6cedc9a2432",
+      "bytes": 11365
     },
     "tests/test_package_foundation.py": {
       "sha256": "7456bd647e0decf975b595743402e7ee2a9c89b888adfd2ca3e720df036f7f66",

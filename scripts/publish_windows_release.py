@@ -33,6 +33,8 @@ KNOWN_ROLLBACKS = {
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261016-shared-library.zip",
     "6ef9124779f8bf51836b8890d35ec238616065b028f4ef5f0cee70bcb339a768":
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261017-updater.zip",
+    "e140dec1a57ea053c28f6ad05071a81e298b94a867cdfe77a7e3f7b27baa4e21":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261017-neuron-list.zip",
 }
 
 

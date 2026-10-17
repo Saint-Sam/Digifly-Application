@@ -59,6 +59,20 @@ def running_executable() -> Path:
         if not size or size >= len(buffer):
             raise OSError("Windows could not identify the running app executable.")
         return Path(buffer.value).resolve()
+    if platform.system() == "Darwin":
+        # Nuitka can retain Contents/MacOS/python in sys.executable on macOS
+        # too. Ask dyld for the actual loaded main module, not argv or Python.
+        get_path = ctypes.CDLL(None)._NSGetExecutablePath
+        get_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        get_path.restype = ctypes.c_int
+        size = ctypes.c_uint32(0)
+        get_path(None, ctypes.byref(size))
+        if not 0 < size.value <= 1024 * 1024:
+            raise OSError("macOS could not identify the running app executable.")
+        buffer = ctypes.create_string_buffer(size.value)
+        if get_path(buffer, ctypes.byref(size)) != 0 or not buffer.value:
+            raise OSError("macOS could not identify the running app executable.")
+        return Path(os.fsdecode(buffer.value)).resolve()
     return Path(sys.executable).absolute()
 
 

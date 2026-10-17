@@ -205,3 +205,34 @@ def test_windows_installed_identity_uses_loaded_module_not_python_context(tmp_pa
     monkeypatch.setattr(installer.sys, "executable", str(tmp_path / "compiler-python.exe"))
     monkeypatch.setattr(installer, "running_executable", lambda: root / "Digifly Workstation.exe")
     assert installer.installation_root() == root
+
+
+@pytest.mark.parametrize("failure", [None, "size", "copy"])
+def test_mac_loaded_module_path_ignores_compiler_python_context(tmp_path, monkeypatch, failure):
+    import ctypes
+    actual = tmp_path / "Digifly.app/Contents/MacOS/main"
+    encoded = os.fsencode(actual) + b"\x00"
+    class GetPath:
+        def __call__(self, buffer, size):
+            if buffer is None:
+                size._obj.value = 0 if failure == "size" else len(encoded)
+                return -1
+            if failure == "copy":
+                return -1
+            ctypes.memmove(buffer, encoded, len(encoded))
+            return 0
+    class Dyld:
+        _NSGetExecutablePath = GetPath()
+    monkeypatch.setattr(installer.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(installer.ctypes, "CDLL", lambda name: Dyld())
+    monkeypatch.setattr(installer.sys, "executable", str(tmp_path / "wrong-python"))
+    if failure:
+        with pytest.raises(OSError, match="macOS could not identify"):
+            installer.running_executable()
+    else:
+        assert installer.running_executable() == actual.resolve()
+
+
+@pytest.mark.skipif(installer.platform.system() != "Darwin", reason="Actual dyld API is macOS-only")
+def test_real_mac_loaded_module_path_is_an_existing_executable():
+    assert installer.running_executable().is_file()

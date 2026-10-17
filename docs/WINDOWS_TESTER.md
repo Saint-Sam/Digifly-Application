@@ -1,6 +1,6 @@
 # Digifly Workstation — current Windows tester
 
-Build 20261016.1 (included NEURON, MANC pair table and shared SWC libraries)
+Build 20261017.2 (combined neuron lists, working updater, included NEURON and shared SWC libraries)
 Windows x86-64 · Arbor deferred
 
 Download the Windows ZIP, right-click it and choose **Extract All**, then open
@@ -39,10 +39,24 @@ library for the exact server/dataset/release. The visible download location and
 `<Data Library>/swc-libraries/<server>/<release-and-ID>/export_swc/`, containing
 `AN`, `DN`, `IN`, `MN`, `SN` and `UNKNOWN`, then type, body ID and SWC file.
 Separate searches no longer require separate selectable bundles. You can enter
-`DNp01, TTMn` together. The original download/import snapshots are retained for
+`DNp01, TTMn, PSI` together in **Neuron names / IDs (list)**, the default bounded
+selection. Each name searches type and instance prefixes ignoring case; IDs match
+exactly. Preview shows per-name returned counts and warns about missing names or
+the total limit. Exact matching and advanced regex remain separate options;
+commas inside a regex are literal, not a name list. Review the checked rows, then
+download. The original download/import snapshots are retained for
 provenance; different releases and changed bytes for an existing body are never
 silently merged. Existing saved bundles can be explicitly added through Data
 Library without downloading again. Missing family labels stay UNKNOWN.
+
+## Updating this tester
+
+Build20261017.1 and later offer **Check for updates → Install and Restart**,
+with a recovery draft, retained previous app and early-startup rollback. Older
+download-only editions need one manual Extract All/open of the current build.
+The native install/rollback checks use disposable same-build copies and offline
+archives; a full live cross-version upgrade and clean Windows11 remain separate
+qualification. Keep workspaces/SWCs outside the installation folder.
 
 ## Simulator installation and current limits
 
