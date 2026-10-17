@@ -197,3 +197,11 @@ def test_broad_install_root_refused_before_scanning_user_files(tmp_path, monkeyp
     monkeypatch.setattr(installer, "validate_app", lambda *a: pytest.fail("broad user files scanned"))
     with pytest.raises(ValueError, match="own extracted app folder"):
         installer.prepare_install(archive, target, transaction, draft)
+
+
+def test_windows_installed_identity_uses_loaded_module_not_python_context(tmp_path, monkeypatch):
+    root = fake_app(tmp_path / "packaged")
+    monkeypatch.setattr(installer.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(installer.sys, "executable", str(tmp_path / "compiler-python.exe"))
+    monkeypatch.setattr(installer, "running_executable", lambda: root / "Digifly Workstation.exe")
+    assert installer.installation_root() == root

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 import traceback
 
@@ -18,6 +19,10 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False) ->
 
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
+    from digifly_app.core.update_installer import running_executable
+    (destination / "runtime-context.json").write_text(json.dumps({
+        "runtime_executable": sys.executable, "loaded_module_executable": str(running_executable()),
+        "argv0": sys.argv[0]}, indent=2), "utf-8")
     profile_path = destination / "workspace/config/resources.json"
     profile = make_standalone_profile(workstation_root=destination / "workspace")
     profile.save(profile_path)

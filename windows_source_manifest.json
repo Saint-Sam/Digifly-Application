@@ -50,8 +50,8 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "024843706a8697c0e7b66c1f65fd2ddb560e35cb8948975500b0f8dd3c901e40",
-      "bytes": 3447
+      "sha256": "4ccfc4adcd92e4c2e14b93151672a11fbb4feacb9bcdb74797e18afa920c966d",
+      "bytes": 4192
     },
     "docs/WINDOWS_TESTER.md": {
       "sha256": "9de04456d1674f39896e01c2b83d20e85cd8dc3ed20d97ed443d452bc2bbdf01",
@@ -454,8 +454,8 @@
       "bytes": 4493
     },
     "src/digifly_app/core/update_installer.py": {
-      "sha256": "dc9d3f3a2465ed5167804d1a56130c91a123a4c29c42d579cd369a04c4dc37d8",
-      "bytes": 20878
+      "sha256": "2df5eb4c3e8b5cf86ccbd4b92c8283415dd22fbeb742fb7aa27eb944c614ceec",
+      "bytes": 21728
     },
     "src/digifly_app/core/updates.py": {
       "sha256": "48e60f542deb67bf25987afd27ba6f0ded2a41d3fa24fe2ae00b6786b02e857f",
@@ -674,8 +674,8 @@
       "bytes": 6000
     },
     "src/digifly_app/ui/package_update_smoke.py": {
-      "sha256": "d2cc7f41af2a89756be21f18583927d61bbd064b41c8ef66adf1a6c84843d7c7",
-      "bytes": 2856
+      "sha256": "b3f38b4fa35a4835cb78de03dec48666317bb3a20b5c2074a395534ec446d83e",
+      "bytes": 3155
     },
     "src/digifly_app/ui/pair_graph_import.py": {
       "sha256": "9fd3369970c943a0917658795bf6e48911b849b8a32c874f6ed2270b3495726b",
@@ -810,8 +810,8 @@
       "bytes": 15669
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "2da60d183a453e33f7efa0c82443584dd423bdb23033fc5cd91f037c3106d4e4",
-      "bytes": 9718
+      "sha256": "c099cdd65eba3bcc88831142cef4862344fdcde185ecad82bca0bdefb59c3b66",
+      "bytes": 9774
     },
     "scripts/build_windows_neuron_payload.py": {
       "sha256": "0be75bb67fab0c8e9c0eca66eacba477671bade7248cbedebbbc543c286c36f2",
@@ -838,8 +838,8 @@
       "bytes": 5287
     },
     "tests/test_update_installer.py": {
-      "sha256": "f2b7d1751e5443f720f2ca4ac1754481faed0532cbdda7a75a2ea5298a991098",
-      "bytes": 9268
+      "sha256": "ed77b7eb4265f3366d656463467251cc72b47bfbd3d6846c62db80ce1d199d36",
+      "bytes": 9724
     },
     "tests/test_updater_gate.py": {
       "sha256": "43606ec803d4ab7d1ef23f85f45685cbb3cc01c58c684a6e588f7a3c683ec5e4",

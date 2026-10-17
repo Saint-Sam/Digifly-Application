@@ -50,3 +50,12 @@ Acceptance on the actual Windows deliverable:
 Current state/evidence: `workstation_active_v1.json` updater lane. Existing public
 Windows and Mac downloads remain unchanged until their successor passes its
 applicable gates. macOS implementation is not newly qualified by Windows CI.
+
+Windows process identity/wait APIs follow Microsoft's primary documentation:
+[GetModuleFileNameW](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulefilenamew),
+[OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
+and [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
+Use the loaded Windows module path (canonicalized for short names), not a
+compiler's possibly retained `sys.executable` name, to identify the installed
+app and its acknowledged executable hash. Exact native runtime context is
+retained in the disposable packaged checks; no credential contents are logged.

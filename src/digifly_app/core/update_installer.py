@@ -46,11 +46,27 @@ def file_hash(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def running_executable() -> Path:
+    # Compiler/runtime values can retain an interpreter or pre-rename name.
+    # Windows' loaded process module is the installation identity, not argv.
+    if os.name == "nt":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+        kernel.GetModuleFileNameW.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = kernel.GetModuleFileNameW(None, buffer, len(buffer))
+        if not size or size >= len(buffer):
+            raise OSError("Windows could not identify the running app executable.")
+        return Path(buffer.value).resolve()
+    return Path(sys.executable).absolute()
+
+
 def installation_root(executable: Path | None = None) -> Path:
-    executable = (executable or Path(sys.executable)).absolute()
+    executable = (executable or running_executable()).absolute()
     if executable.is_symlink():
         raise ValueError("Run the installed app itself, not an executable symlink, to update.")
-    if platform.system() == "Windows" and executable.name == "Digifly Workstation.exe":
+    if platform.system() == "Windows" and executable.name.casefold() == "digifly workstation.exe":
         root = executable.parent
         if (root / MARKER).is_file():
             return root.resolve()
@@ -58,7 +74,7 @@ def installation_root(executable: Path | None = None) -> Path:
         root = executable.parent.parent.parent
         if root.suffix == ".app" and (root / "Contents/Info.plist").is_file():
             return root.resolve()
-    raise ValueError("Installation requires the packaged Digifly app, not a source launcher.")
+    raise ValueError(f"Installation requires the packaged Digifly app, not a source launcher. Running executable: {executable}")
 
 
 def executable_in(root: Path, system: str) -> Path:
@@ -380,5 +396,5 @@ def acknowledge_startup(request_path: Path, *, project_path: Path) -> None:
     if installation_root() != Path(request["target"]) or project_path.resolve() != Path(request["draft"]):
         raise ValueError("The updated app did not restore the saved update draft.")
     write_new(request_path.parent / "started.json", {"token": request["token"], "pid": os.getpid(),
-              "executable_sha256": file_hash(Path(sys.executable)), "draft_sha256": file_hash(project_path),
+              "executable_sha256": file_hash(running_executable()), "draft_sha256": file_hash(project_path),
               "window_ready": True, "draft_restored": True})
