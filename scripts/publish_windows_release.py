@@ -6,6 +6,7 @@ upload digest is checked before touching the old entry. Mac assets stay intact.
 from __future__ import annotations
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -126,10 +127,12 @@ def publish(archive: Path, review=None):
         # Download integrity is not installer acceptance. The actual native
         # two-case receipt must bind to this CI ZIP (or its notice-only base)
         # and the exact delivered executable; missing/stale evidence blocks.
-        from check_packaged_updater import validate_release_evidence
+        gate_spec = importlib.util.spec_from_file_location("digifly_updater_release_gate", Path(__file__).with_name("check_packaged_updater.py"))
+        updater_gate = importlib.util.module_from_spec(gate_spec)
+        gate_spec.loader.exec_module(updater_gate)
         if not approval.get("updater_native_evidence"):
             raise ValueError("Native updater install/relaunch/rollback evidence is required")
-        validate_release_evidence(Path(approval["updater_native_evidence"]),
+        updater_gate.validate_release_evidence(Path(approval["updater_native_evidence"]),
             archive_sha256=marker.get("license_overlay_base_sha256") or hashlib.sha256(archive.read_bytes()).hexdigest(),
             executable_sha256=marker["files"]["Digifly Workstation.exe"]["sha256"])
         notices = json.loads(zipped.read("THIRD_PARTY_COMPONENTS.json"))

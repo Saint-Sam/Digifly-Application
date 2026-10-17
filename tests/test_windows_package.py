@@ -84,7 +84,7 @@ def test_publication_stops_before_network_without_redistribution_review(tmp_path
         publisher.publish(tmp_path / "no-artifact.zip")
 
 
-@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c", "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f"])
+@pytest.mark.parametrize("previous", ["cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851", "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c", "f0cc3bcaa9c87d02c7fbb7b92efe6b11742a5cc0a2d4aeeb75a88f54df97a36f", "b998fcbdb5fe0dde0499fef7d49ec8c036b598682b72020c6d58a158db1b4924"])
 def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monkeypatch, previous):
     import hashlib
     publisher = module("publish_windows_release")
@@ -102,9 +102,22 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
     archive = tmp_path / "Digifly-Workstation-fixture-Windows-x86_64.zip"
     gate.archive(bundle, archive)
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    native = tmp_path / "updater-evidence.json"
+    exe_sha = hashlib.sha256((bundle / "Digifly Workstation.exe").read_bytes()).hexdigest()
+    evidence = {"schema": "digifly-native-updater-gate-v1", "ok": True, "platform": "Windows",
+        "archive_sha256": sha, "source_app_executable_sha256": exe_sha, "original_app_unchanged": True, "cases": {}}
+    for name, status in (("install", "installed"), ("rollback", "rolled_back")):
+        image = tmp_path / (name + "-window.png")
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"software fixture, not GUI acceptance" * 10)
+        evidence["cases"][name] = {"status": status, "external_files_unchanged": True, "draft_unchanged": True,
+            "exact_tree_and_retained_backup_verified": True, "screenshot_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+            "startup": {"window_ready": True, "draft_restored": True, "executable_sha256": exe_sha},
+            "expected_failure": "fixture startup failure" if name == "rollback" else None}
+    native.write_text(json.dumps(evidence))
     review = tmp_path / "review.json"
     review.write_text(json.dumps({"artifact_sha256": sha, "permission_evidence": "software fixture, not a licensing opinion",
-        "technical_windows_package_passed": True, "ci_run_id": 1, "ci_source_commit": "fixture-source", "previous_alias_sha256": previous}))
+        "technical_windows_package_passed": True, "ci_run_id": 1, "ci_source_commit": "fixture-source", "previous_alias_sha256": previous,
+        "updater_native_evidence": str(native)}))
     assets = {
         publisher.OLD: {"id": 10, "name": publisher.OLD, "digest": "sha256:" + previous},
         publisher.OLD + ".sha256": {"id": 11, "name": publisher.OLD + ".sha256", "digest": "old-checksum-fixture"},
@@ -134,6 +147,14 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
         assert args[:2] == ("release", "edit")
         return ""
     monkeypatch.setattr(publisher, "gh", fake_gh)
+    original_review = review.read_text()
+    missing = json.loads(original_review)
+    del missing["updater_native_evidence"]
+    review.write_text(json.dumps(missing))
+    with pytest.raises(ValueError, match="Native updater"):
+        publisher.publish(archive, review)
+    assert mutations == []
+    review.write_text(original_review)
     publisher.publish(archive, review)
     backup = publisher.KNOWN_ROLLBACKS[previous]
     assert assets[backup]["id"] == 10

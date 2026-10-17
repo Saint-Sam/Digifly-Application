@@ -112,7 +112,9 @@ def checked_members(archive: zipfile.ZipFile, system: str) -> list[zipfile.ZipIn
     members, names, links = [], set(), set()
     total = 0
     for entry in archive.infolist():
-        name = entry.filename.rstrip("/")
+        # On Windows ZipInfo.filename already normalizes backslashes. Inspect
+        # the raw central-directory spelling as well, before accepting paths.
+        name = entry.orig_filename.rstrip("/")
         path = PurePosixPath(name)
         if (not name or path.is_absolute() or ".." in path.parts or "\\" in name
                 or ":" in name or any(part in {"", "."} for part in name.split("/"))):

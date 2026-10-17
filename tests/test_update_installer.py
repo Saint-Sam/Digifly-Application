@@ -45,11 +45,13 @@ def transaction(tmp_path, monkeypatch):
     return request, data
 
 
-@pytest.mark.parametrize("name", ["../escape", "/escape", "C:stream", "x\\escape", "a/./b", "a//b"])
+@pytest.mark.parametrize("name", ["../escape", "/escape", "C:stream", "x\\escape", "a/./b", "a//b", "CON.txt", "x/foo."])
 def test_unsafe_archive_path_refused(tmp_path, name):
     archive = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.writestr(name, "bad")
+        entry = zipfile.ZipInfo(name)
+        entry.filename = name  # deliberately retain a raw Windows backslash
+        bundle.writestr(entry, "bad")
     with zipfile.ZipFile(archive) as bundle, pytest.raises(ValueError, match="Unsafe"):
         installer.checked_members(bundle, "Windows")
 

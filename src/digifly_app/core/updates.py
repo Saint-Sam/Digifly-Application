@@ -133,7 +133,7 @@ def check_for_update(*, release_api: str = RELEASE_API) -> UpdateStatus:
         checksum_url=str(checksum["browser_download_url"]),
         updated_at=str(selected.get("updated_at", "")),
         version=version,
-        digest=str(selected.get("digest", "")),
+        digest=str(selected.get("digest") or ""),
     )
     current = build_info()
     local_key = _version_key(str(current.get("version", "")), str(current.get("build", "")))

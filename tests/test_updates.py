@@ -92,3 +92,10 @@ def test_update_checksum_must_name_selected_archive(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "_download", lambda url, destination, **kw: destination.write_text("0" * 64 + "  wrong.zip"))
     with pytest.raises(ValueError, match="identify"):
         updates.download_verified_update(updates.UpdateAsset("app.zip", "archive", "sha", ""))
+
+
+@pytest.mark.parametrize("url", ["file:///tmp/app.zip", "http://github.com/Saint-Sam/Digifly-Application/releases/download/v/app.zip", "https://example.org/app.zip", "https://github.com/unrelated/project/releases/download/v/app.zip"])
+def test_nonofficial_update_origin_is_rejected_before_open(monkeypatch, tmp_path, url):
+    monkeypatch.setattr(updates, "urlopen", lambda *a, **kw: pytest.fail("untrusted origin opened"))
+    with pytest.raises(ValueError, match="official"):
+        updates._download(url, tmp_path / "app.zip", maximum=1024)

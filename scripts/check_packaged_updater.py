@@ -66,6 +66,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
             subprocess.run(["/usr/bin/ditto", str(application), str(target)], check=True)
         else:
             shutil.copytree(application, target)
+        original_directory_id = target.stat().st_ino
         # Bounded external user-state controls, never real credentials/data.
         sentinels = case / "external-user-files"
         sentinels.mkdir()
@@ -101,6 +102,10 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         retained = Path(transaction["failed"] if failure else transaction["backup"])
         if tree_inventory(retained) != (transaction["candidate_inventory"] if failure else transaction["original"]):
             raise ValueError("The preserved previous/failed app changed.")
+        if (target.stat().st_ino == original_directory_id) != failure:
+            raise ValueError("The actual installation directory was not replaced/restored as expected.")
+        if not failure and retained.stat().st_ino != original_directory_id:
+            raise ValueError("The retained backup is not the original installation directory.")
         if tree_inventory(sentinels) != user_before or file_hash(Path(transaction["draft"])) != transaction["draft_sha256"]:
             raise ValueError("External data or saved draft changed.")
         # Make compact evidence portable out of the native runner.
@@ -109,6 +114,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
                 "draft_unchanged": True, "exact_tree_and_retained_backup_verified": True,
                 "startup": result.get("startup"), "expected_failure": result.get("error"),
                 "transaction": str(request_path), "screenshot": name + "-window.png"}
+        record["cases"][name]["actual_directory_identity_transition_verified"] = True
         record["cases"][name]["screenshot_sha256"] = file_hash(output / (name + "-window.png"))
     if tree_inventory(application) != before:
         raise ValueError("The supplied original app was modified by the gate.")
