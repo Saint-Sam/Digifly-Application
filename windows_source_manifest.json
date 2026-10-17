@@ -186,8 +186,8 @@
       "bytes": 9374
     },
     "scripts/collect_windows_notices.py": {
-      "sha256": "99b9ddb090b7fa2edc78cf8bd3c4042a1985eef5a22dd16213ea57213d8d5e48",
-      "bytes": 5979
+      "sha256": "78293c624f5f93beb7cc31a6cd8dbc3bd65fddb1d19c773eeca9d4cbe063ea23",
+      "bytes": 6633
     },
     "scripts/compare_pdcm_figure10_conditions.py": {
       "sha256": "4d52310333a94e82181ce5fe51298b36a884456097a0d142f8274453a1e22586",
@@ -810,8 +810,8 @@
       "bytes": 16210
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "3aaee5a691368a12bd93e48d4bcf263116e336ff9d5259de6b911acefa0bca8b",
-      "bytes": 9774
+      "sha256": "5c2feceb8ecbdadbd150f3ff0c771c107cc2e35ae0d6a132d4281dc5e123daa3",
+      "bytes": 9814
     },
     "scripts/build_windows_neuron_payload.py": {
       "sha256": "0be75bb67fab0c8e9c0eca66eacba477671bade7248cbedebbbc543c286c36f2",
@@ -882,8 +882,8 @@
       "bytes": 4012
     },
     "tests/test_windows_release.py": {
-      "sha256": "ed8a109be26cb9f1d0310304ba66ae4b90b37756f28e8165131e1fdcf9b084ce",
-      "bytes": 551
+      "sha256": "22da0b6f3590124ce9cfa565f318b876f8885c2ae485f569a21034b22083f18d",
+      "bytes": 2296
     },
     "tests/test_windows_package.py": {
       "sha256": "7d0d666cb90da5f35ab55c4c699dc07504f6d41a0f97868b8c34c6cedc9a2432",

@@ -9,13 +9,26 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from importlib import metadata
 import json
+import os
 from pathlib import Path, PurePosixPath
 import sys
+import urllib.parse
 import urllib.request
 
 
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Digifly-Windows-license-notices"})
+    # CI has a short-lived read-only token. Use it only for these public Qt
+    # inventories, never for raw files or redirects and never save its value.
+    parsed = urllib.parse.urlsplit(url)
+    inventories = {
+        f"/repos/{repo}/git/trees/v6.10.3"
+        for repo in ("qt/qtbase", "qt/qtsvg", "qt/qtimageformats", "pyside/pyside-setup")
+    }
+    token = os.environ.get("GH_TOKEN")
+    if (token and parsed.scheme == "https" and parsed.netloc == "api.github.com"
+            and parsed.path in inventories and parsed.query == "recursive=1"):
+        req.add_unredirected_header("Authorization", "Bearer " + token)
     with urllib.request.urlopen(req, timeout=30) as response:
         return response.read()
 
