@@ -30,6 +30,27 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--finish-update":
+        from digifly_app.core.update_installer import read_request
+        request = read_request(Path(sys.argv[2]).resolve())
+        if request.get("engineering_test") == "exit-before-startup":
+            # Meaningful rollback injection in disposable app checks. Normal
+            # transactions do not contain this explicitly test-only field.
+            return 73
+    if len(sys.argv) == 3 and sys.argv[1] == "--install-update":
+        # Runs from a complete external copy of the app: no installed DLL,
+        # Qt event loop or separately installed Python is held open here.
+        from digifly_app.core.update_installer import install_transaction
+        return install_transaction(Path(sys.argv[2]).resolve())
+    if len(sys.argv) > 1 and sys.argv[1] == "--package-update-test":
+        import argparse
+        from digifly_app.ui.package_update_smoke import run_update_smoke
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--package-update-test", type=Path, required=True)
+        parser.add_argument("--update-archive", type=Path, required=True)
+        parser.add_argument("--fail-new-startup", action="store_true")
+        args = parser.parse_args()
+        return run_update_smoke(args.package_update_test, args.update_archive, fail_startup=args.fail_new_startup)
     if len(sys.argv) > 1 and sys.argv[1] == "--library-ui-review":
         import argparse
         from digifly_app.ui.package_library_smoke import run_library_review

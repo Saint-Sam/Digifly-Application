@@ -47,7 +47,9 @@ class DigiflyProject:
             raise ValueError(
                 f"Unsupported Digifly project schema {version}; expected 1 or {PROJECT_SCHEMA_VERSION}."
             )
-        required = ("name", "digifly_public_root", "output_root")
+        # A standalone Windows installation has a managed library/output root
+        # but no developer's Digifly Public checkout. Such drafts must reopen.
+        required = ("name", "output_root")
         missing = [key for key in required if not str(payload.get(key, "")).strip()]
         if missing:
             raise ValueError(f"Project is missing required fields: {', '.join(missing)}")
@@ -78,7 +80,7 @@ class DigiflyProject:
             selected_workflow = "experiment_builder_v1"
         return cls(
             name=str(payload["name"]),
-            digifly_public_root=str(payload["digifly_public_root"]),
+            digifly_public_root=str(payload.get("digifly_public_root") or ""),
             output_root=str(payload["output_root"]),
             python_executable=str(payload.get("python_executable") or "/opt/anaconda3/bin/python"),
             selected_engine=str(payload.get("selected_engine") or "neuron"),

@@ -14,6 +14,7 @@ def inputs(root: Path) -> list[Path]:
     names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
+             "scripts/check_packaged_updater.py", "docs/UPDATER_REPAIR_20261017_V1.md",
              "scripts/stage_pdcm_bionet_scalable_assets.py", "docs/WINDOWS_TESTER.md"}
     metadata = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
     for files in metadata["tool"]["setuptools"]["data-files"].values():
@@ -39,6 +40,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             ".github/workflows/windows-neuron-bundle.yml", "scripts/build_windows_neuron_payload.py",
             "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
             "tests/test_generic_experiment.py",
+            "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",
             "tests/test_app_settings.py",
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",
             "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py",

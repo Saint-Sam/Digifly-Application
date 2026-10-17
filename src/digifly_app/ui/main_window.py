@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
+import time
 from threading import Event
 from typing import Any, Mapping
 
@@ -87,6 +89,10 @@ from digifly_app.core.updates import (
     UpdateStatus,
     check_for_update,
     download_verified_update,
+    update_cache_root,
+)
+from digifly_app.core.update_installer import (
+    acknowledge_startup, installation_root, prepare_install, read_request, start_helper,
 )
 from digifly_app.core.paths import (
     bundled_arbor_python,
@@ -171,6 +177,21 @@ class UpdateWorker(QThread):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
+
+
+class UpdatePreparationWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, archive: Path, target: Path, transaction: Path, draft: Path, parent: QWidget):
+        super().__init__(parent)
+        self.arguments = archive, target, transaction, draft
+
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(prepare_install(*self.arguments))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class PDCMRunWorker(QThread):
@@ -3142,18 +3163,89 @@ class MainWindow(QMainWindow):
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
         archive = Path(str(result))
-        QMessageBox.information(
-            self,
-            "Update verified",
-            "The update was downloaded and passed its integrity check. "
-            "Automatic replacement will be enabled after the platform installer helper is validated.\n\n"
-            f"Staged file: {archive}",
+        if self._update_busy():
+            QMessageBox.information(self, "Update downloaded", "Finish or safely stop the active run/import first. "
+                                    f"The verified download is retained at:\n{archive}")
+            return
+        answer = QMessageBox.question(
+            self, "Install update and restart?",
+            "The update passed its integrity check. Install it and restart Digifly now?\n\n"
+            "A separate copy of this draft and the previous app will be kept. Your SWCs, runs, "
+            "credentials and installed simulators will not be replaced. If the new app exits before "
+            "opening the draft, the installer restores the previous app. A running but unresponsive "
+            "new app is never force-closed; its backup stays available.",
         )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            target = installation_root()
+            cache = update_cache_root().resolve()
+            cache.mkdir(parents=True, exist_ok=True)
+            transaction = Path(tempfile.mkdtemp(prefix="install-", dir=cache))
+            draft = transaction / "recovered-draft.digifly.json"
+            self._save_update_draft(draft)
+        except Exception as exc:
+            self._update_failed(str(exc))
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Preparing installation…")
+        self._update_worker = UpdatePreparationWorker(archive, target, transaction, draft, self)
+        self._update_worker.succeeded.connect(self._update_prepared)
+        self._update_worker.failed.connect(self._update_failed)
+        self._update_worker.finished.connect(self._update_worker.deleteLater)
+        self._update_worker.start()
+
+    def _update_busy(self) -> bool:
+        replication = getattr(self.netpyne_page, "replication_panel", None)
+        pdcm = self.netpyne_page._pdcm_worker
+        return bool((replication is not None and replication.active) or
+                    (pdcm is not None and pdcm.isRunning()) or self.data_library_page.import_in_progress or
+                    getattr(self.experiment_page, "_process", None) is not None)
+
+    def _save_update_draft(self, destination: Path) -> None:
+        # Separate file: never overwrite the user's open project on restart.
+        current = self.pages.currentWidget()
+        editor = current if current in (self.circuit_builder_page, self.experiment_page) else self._last_editor_page
+        DigiflyProject(
+            name="Recovered update draft",
+            digifly_public_root=self.overview_page.workspace_edit.text(),
+            output_root=self.overview_page.output_edit.text(),
+            python_executable=self.overview_page.python_edit.text(),
+            selected_engine=self.circuit_builder_page.selected_engine_key(),
+            selected_workflow=CIRCUIT_BUILDER_WORKFLOW if editor is self.circuit_builder_page else EXPERIMENT_BUILDER_WORKFLOW,
+            circuit=self.circuit_builder_page.circuit_spec().to_dict(),
+            experiment=self.experiment_page.config().to_dict(),
+            notes=f"Update recovery copy. Previous project: {self.current_project_path or '(unsaved)'}",
+        ).save(destination)
+
+    def _update_prepared(self, result: object) -> None:
+        request_path = Path(str(result))
+        try:
+            self._update_installer = start_helper(request_path)
+        except Exception as exc:
+            self._update_failed(str(exc))
+            return
+        deadline = time.monotonic() + 30
+        self._update_ready_timer = QTimer(self)
+        def ready():
+            marker = request_path.parent / "ready.json"
+            if marker.is_file():
+                self._update_ready_timer.stop()
+                valid = json.loads(marker.read_text("utf-8")).get("token") == read_request(request_path)["token"]
+                if not valid or self._update_busy() or not self.close():
+                    (request_path.parent / "cancel").touch(exist_ok=False)
+                    self._update_failed("Installation cancelled because Digifly could not close safely. Your app is unchanged.")
+            elif self._update_installer.poll() is not None or time.monotonic() > deadline:
+                self._update_ready_timer.stop()
+                (request_path.parent / "cancel").touch(exist_ok=True)
+                self._update_failed(f"The installer could not start. Your app is unchanged. Details: {request_path.parent}")
+        self._update_ready_timer.timeout.connect(ready)
+        self._update_ready_timer.start(200)
 
     def _update_failed(self, message: str) -> None:
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
-        QMessageBox.warning(self, "Could not check for updates", message)
+        QMessageBox.warning(self, "Update could not finish", message)
 
     def _apply_theme(self, theme: object, *, persist: bool = True) -> None:
         self.theme = normalize_theme(theme)
@@ -3266,13 +3358,12 @@ class MainWindow(QMainWindow):
         self._last_editor_page = self.circuit_builder_page
         self.show_page(0)
 
-    def open_project(self) -> None:
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Digifly project",
-            str(_workspace_home()),
-            "Digifly projects (*.digifly.json);;JSON files (*.json)",
-        )
+    def open_project(self, selected: str | None = None) -> None:
+        if not selected:
+            selected, _ = QFileDialog.getOpenFileName(
+                self, "Open Digifly project", str(_workspace_home()),
+                "Digifly projects (*.digifly.json);;JSON files (*.json)",
+            )
         if not selected:
             return
         try:
@@ -3473,6 +3564,16 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: Any) -> None:
+        update = getattr(self, "_update_worker", None)
+        if update is not None:
+            try:
+                update_running = update.isRunning()
+            except RuntimeError:  # Qt deleted an already-finished worker
+                update_running = False
+            if update_running:
+                QMessageBox.warning(self, "Update work is active", "Wait for the update download or preparation to finish before closing.")
+                event.ignore()
+                return
         replication = getattr(self.netpyne_page, "replication_panel", None)
         if replication is not None and replication.active:
             QMessageBox.warning(
@@ -3539,6 +3640,29 @@ def launch(argv: list[str] | None = None) -> int:
     application.setFont(font)
     window = MainWindow()
     window.show()
+    arguments = argv or []
+    if len(arguments) == 3 and arguments[1] in {"--finish-update", "--update-rolled-back"}:
+        request_path = Path(arguments[2]).resolve()
+        def finish_update():
+            try:
+                request = read_request(request_path)
+                draft = Path(request["draft"])
+                window.open_project(str(draft))
+                if arguments[1] == "--finish-update":
+                    if window.current_project_path != draft or not window.isVisible():
+                        raise ValueError("The recovered draft could not be opened.")
+                    acknowledge_startup(request_path, project_path=draft)
+                    window.statusBar().showMessage(f"Update installed. Previous app retained: {request['backup']}")
+                else:
+                    window.statusBar().showMessage(f"Update failed; previous app restored. Details: {request_path.parent}")
+                if request.get("engineering_test"):
+                    # Explicit disposable packaged-updater test only; never set
+                    # by the normal updater. Preserve a real visible-window PNG.
+                    window.grab().save(str(request_path.parent / "reopened-window.png"))
+                    QTimer.singleShot(1200, window.close)
+            except Exception as exc:
+                QMessageBox.critical(window, "Update needs attention", str(exc))
+        QTimer.singleShot(500, finish_update)
     return application.exec()
 
 
