@@ -658,8 +658,8 @@
       "bytes": 29871
     },
     "src/digifly_app/ui/neuprint_import.py": {
-      "sha256": "1e60e0401992c23a0381c18a4df9bcb191de4e357a3ef6d293d1a5160f5b4fc1",
-      "bytes": 41363
+      "sha256": "22fcb89ac953c7ddd81d83bac159bc22336cfca4b2f6ff8d0d3005685bb46c9c",
+      "bytes": 41518
     },
     "src/digifly_app/ui/package_library_smoke.py": {
       "sha256": "12b74ad7ec033d09a5d5d29a65e582124cae4ff80abfeaa787b0dca23cd6b5bc",

@@ -230,6 +230,7 @@ class NeuPrintImportDialog(QDialog):
 
         selection = Card()
         selection_form = QFormLayout(selection)
+        selection_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         selection_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         selection_form.setContentsMargins(16, 15, 16, 15)
         selection_form.setHorizontalSpacing(16)
@@ -271,7 +272,7 @@ class NeuPrintImportDialog(QDialog):
         self.selection_help.setWordWrap(True)
         self.selection_help.setMinimumHeight(self.selection_help.fontMetrics().lineSpacing() * 4)
         self.selection_help.setObjectName("Muted")
-        selection_form.addRow("Search behavior", self.selection_help)
+        selection_form.addRow(self.selection_help)
         self._update_selection_help()
         self.preview_table = QTableWidget(0, 4)
         self.preview_table.setMinimumHeight(150)
@@ -279,7 +280,8 @@ class NeuPrintImportDialog(QDialog):
         self.preview_table.horizontalHeader().setStretchLastSection(True)
         self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.preview_table.itemChanged.connect(self._update_destination)
-        selection_form.addRow("Preview", self.preview_table)
+        selection_form.addRow(QLabel("Matching neurons — review before downloading"))
+        selection_form.addRow(self.preview_table)
         root.addWidget(selection, 1)
 
         destination = Card()
