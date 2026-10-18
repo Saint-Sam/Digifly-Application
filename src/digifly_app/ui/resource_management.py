@@ -106,7 +106,7 @@ class ManifestDialog(QDialog):
                 f"Showing the first 200 of {len(files):,} inventory records. "
                 f"The complete manifest remains at {resource.manifest}."
             )
-        raw_label = QLabel("Provenance manifest (read-only inventory preview)")
+        raw_label = QLabel("Source file list (read-only)")
         raw_label.setObjectName("Muted")
         root.addWidget(raw_label)
         self.raw = QPlainTextEdit()

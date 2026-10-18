@@ -1413,7 +1413,7 @@ class ExperimentBuilderPage(QWidget):
 
         self.run_log.clear()
         self.run_log.setVisible(True)
-        self.run_log.appendPlainText(f"Job provenance: {job_dir}\n")
+        self.run_log.appendPlainText(f"Run files: {job_dir}\n")
         for check in report.checks:
             self.run_log.appendPlainText(
                 f"[{check.state.value.upper()}] {check.title} · {check.detail}"
@@ -1472,7 +1472,7 @@ class ExperimentBuilderPage(QWidget):
                     f"\nCancellation marker published: {marker.name}"
                 )
         self.run_log.appendPlainText(
-            "\nCancellation requested; preserving provenance and partial artifacts…"
+            "\nCancellation requested; preserving source history and partial artifacts…"
         )
         self.cancel_button.setEnabled(False)
         self._cancel_requested = True
@@ -1601,7 +1601,7 @@ class ExperimentBuilderPage(QWidget):
         self.validation_state.setText(
             "Experiment completed · opened in Results"
             if state == "completed"
-            else "Experiment cancelled · partial artifacts and provenance were preserved"
+            else "Experiment cancelled · partial artifacts and source history were preserved"
             if state == "cancelled"
             else f"Experiment failed · inspect the preserved run log (exit {exit_code})"
         )

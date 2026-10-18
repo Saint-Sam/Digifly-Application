@@ -125,8 +125,10 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         assert dialog.download_button.isEnabled()
         assert str(profile.managed_data_root) in dialog.destination_label.text()
         assert "neuprint.janelia.org" in dialog.destination_label.text()
-        assert "dnp01" in dialog.destination_label.text()
-        assert dialog.snapshot_edit.text().casefold() in dialog.destination_label.text().casefold()
+        assert "DN/DNp01/42/42.swc" in dialog.destination_label.text()
+        assert "export_swc" in dialog.destination_label.text()
+        assert dialog.snapshot_edit.text().casefold() not in dialog.destination_label.text().casefold()
+        assert dialog.name_edit.isHidden() and dialog.snapshot_edit.isHidden()
         assert dialog._request().include_connectivity
     finally:
         dialog.close()

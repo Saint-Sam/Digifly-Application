@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 import os
 from pathlib import Path
 import threading
@@ -56,11 +57,12 @@ from digifly_app.core.neuprint import (
     name_selection_terms,
     neuron_matches_name,
     neuprint_checkpoint_path,
+    matching_library_checkpoint,
     normalize_server,
     preview_destination,
 )
 from digifly_app.core.resource_profile import ResourceProfile
-from digifly_app.core.swc_library import library_root
+from digifly_app.core.swc_library import library_root, inspect_existing_swcs, _labels
 
 from .widgets import Card
 
@@ -96,6 +98,60 @@ class _CallWorker(QThread):
         self.completed.emit(result)
 
 
+class ExistingNeuronDialog(QDialog):
+    """Explicit per-neuron replacement choices; keeping files is the default."""
+    def __init__(self, dataset: str, existing: dict[str, dict], neurons, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("These neurons are already downloaded")
+        self.setObjectName("ExistingNeuronReview")
+        self.resize(850, 440)
+        self.replacement_ids = ()
+        self._bodies = sorted(existing, key=int)
+        layout = QVBoxLayout(self)
+        label = QLabel(f"Found {len(existing)} existing neuron file(s) in {dataset}.\n"
+            "Keep them, or check only the neurons you want to download again and replace. "
+            "Replaced files are backed up first. Nothing is replaced without your choice.")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        names = {str(neuron.body_id): neuron.neuron_type for neuron in neurons}
+        self.table = QTableWidget(len(self._bodies), 4)
+        self.table.setHorizontalHeaderLabels(("Replace", "Body ID", "Type", "Existing file"))
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for row, body in enumerate(self._bodies):
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            check.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(row, 0, check)
+            for column, value in enumerate((body, names[body], existing[body]["path"]), 1):
+                item = QTableWidgetItem(value)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setToolTip(value)
+                self.table.setItem(row, column, item)
+        layout.addWidget(self.table)
+        actions = QHBoxLayout()
+        self.keep_button = QPushButton("Keep all existing files")
+        self.keep_button.setDefault(True)
+        self.keep_button.clicked.connect(self.accept)
+        self.replace_button = QPushButton("Download and replace checked files")
+        self.replace_button.setEnabled(False)
+        self.replace_button.clicked.connect(self._replace_checked)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        for button in (self.keep_button, self.replace_button, self.cancel_button):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+        self.table.itemChanged.connect(lambda *_: self.replace_button.setEnabled(bool(self._checked())))
+
+    def _checked(self):
+        return tuple(int(body) for row, body in enumerate(self._bodies)
+                     if self.table.item(row, 0).checkState() == Qt.CheckState.Checked)
+
+    def _replace_checked(self):
+        self.replacement_ids = self._checked()
+        if self.replacement_ids:
+            self.accept()
+
+
 class NeuPrintImportDialog(QDialog):
     resource_imported = Signal(object)
 
@@ -125,6 +181,8 @@ class NeuPrintImportDialog(QDialog):
         self._preview: tuple[NeuPrintNeuron, ...] = ()
         self._cancel_event = threading.Event()
         self._operation_kind = ""
+        self._after_operation = None
+        self._reviewed_request = None
         self._preferred_dataset = str(preferred_dataset).strip()
         self._worker_progress.connect(self._show_progress)
 
@@ -294,16 +352,12 @@ class NeuPrintImportDialog(QDialog):
         managed_root.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         managed_root.setWordWrap(True)
         destination_form.addRow("Managed library root", managed_root)
-        naming_row = QWidget()
-        naming_layout = QHBoxLayout(naming_row)
-        naming_layout.setContentsMargins(0, 0, 0, 0)
-        self.name_edit = QLineEdit("neuprint-selection")
-        self.snapshot_edit = QLineEdit(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
-        naming_layout.addWidget(QLabel("Folder name"))
-        naming_layout.addWidget(self.name_edit, 1)
-        naming_layout.addWidget(QLabel("Snapshot"))
-        naming_layout.addWidget(self.snapshot_edit, 1)
-        destination_form.addRow("Provenance snapshot", naming_row)
+        # These identifiers only bind partial-download receipts. They no longer
+        # create or name visible SWC folders, so they are not user-facing fields.
+        self.name_edit = QLineEdit("neuprint-selection", self)
+        self.snapshot_edit = QLineEdit(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), self)
+        self.name_edit.hide()
+        self.snapshot_edit.hide()
         self.connectivity_check = QCheckBox(
             "Include directed connections among the selected neurons"
         )
@@ -316,7 +370,12 @@ class NeuPrintImportDialog(QDialog):
         self.destination_label.setObjectName("Muted")
         self.destination_label.setWordWrap(True)
         self.destination_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        destination_form.addRow("Exact destination", self.destination_label)
+        destination_form.addRow("Neuron files", self.destination_label)
+        self.storage_help = QLabel("Every search uses the same dataset folder: family → type → body ID → SWC. "
+            "Before downloading, the app checks this folder and asks which existing files you want to replace. "
+            "Download details and any connectivity table are saved separately; no new search-named SWC folder is created.")
+        self.storage_help.setWordWrap(True)
+        destination_form.addRow("", self.storage_help)
         self.discard_checkpoint_button = QPushButton("Discard saved partial download…")
         self.discard_checkpoint_button.setVisible(False)
         self.discard_checkpoint_button.clicked.connect(self.discard_checkpoint)
@@ -455,6 +514,10 @@ class NeuPrintImportDialog(QDialog):
         if not was_download:
             self.progress.setVisible(False)
         self._set_busy(False)
+        continuation = self._after_operation
+        self._after_operation = None
+        if continuation is not None:
+            continuation()
 
     def _connection_invalidated(self, *_args: Any) -> None:
         if self._thread is not None:
@@ -491,6 +554,7 @@ class NeuPrintImportDialog(QDialog):
         self.selection_help.setText(text)
 
     def _clear_preview(self) -> None:
+        self._reviewed_request = None
         self._preview = ()
         self.preview_table.setRowCount(0)
         self.download_button.setEnabled(False)
@@ -693,19 +757,25 @@ class NeuPrintImportDialog(QDialog):
             self.open_library_button.setEnabled(False)
         try:
             request = self._request()
-            destination = preview_destination(self.profile, request)
+            destination = swc_root
         except ValueError:
-            self.destination_label.setText("Complete the preview and naming fields to see the destination")
+            self.destination_label.setText("Preview and select neurons to see their dataset folders")
             self.discard_checkpoint_button.setVisible(False)
             self.download_button.setEnabled(False)
             return
-        checkpoint = neuprint_checkpoint_path(self.profile, request)
+        checkpoint_request = self._reviewed_request or request
+        checkpoint = neuprint_checkpoint_path(self.profile, checkpoint_request)
         checkpoint_note = (
             "\nA saved partial download matches this request and will resume automatically."
             if (checkpoint / "digifly-neuprint-checkpoint.json").is_file()
             else ""
         )
-        self.destination_label.setText(f"{destination}{checkpoint_note}")
+        examples = []
+        for neuron in request.neurons[:4]:
+            family, kind = _labels(Path(), str(neuron.body_id), {"type": neuron.neuron_type})
+            examples.append(f"{family}/{kind}/{neuron.body_id}/{neuron.body_id}.swc")
+        extra = f"\n… and {len(request.neurons) - 4} more neuron files" if len(request.neurons) > 4 else ""
+        self.destination_label.setText(f"{destination}\n" + "\n".join(examples) + extra + checkpoint_note)
         self.discard_checkpoint_button.setVisible(bool(checkpoint_note))
         self.discard_checkpoint_button.setEnabled(self._thread is None and bool(checkpoint_note))
         self.download_button.setEnabled(self._thread is None and bool(request.neurons))
@@ -723,7 +793,7 @@ class NeuPrintImportDialog(QDialog):
     @Slot()
     def discard_checkpoint(self) -> None:
         try:
-            request = self._request()
+            request = self._reviewed_request or self._request()
             checkpoint = neuprint_checkpoint_path(self.profile, request)
         except ValueError as exc:
             QMessageBox.warning(self, "Partial download is unavailable", str(exc))
@@ -752,10 +822,30 @@ class NeuPrintImportDialog(QDialog):
     def start_download(self) -> None:
         try:
             request = self._request()
-            destination = preview_destination(self.profile, request)
         except ValueError as exc:
             QMessageBox.warning(self, "Download details are incomplete", str(exc))
             return
+        self.status.setText("Checking this dataset's SWC folders for existing neurons…")
+        def ready(existing):
+            self._after_operation = lambda: self._review_download(request, existing)
+        self._start_operation("existing-file check", lambda: inspect_existing_swcs(
+            self.profile, request.server, request.dataset, (neuron.body_id for neuron in request.neurons)), ready)
+
+    def _review_download(self, request, existing):
+        replacements = ()
+        if existing:
+            review = ExistingNeuronDialog(request.dataset, existing, request.neurons, self)
+            if review.exec() != QDialog.DialogCode.Accepted:
+                self.status.setText("Download cancelled. Existing files were not changed.")
+                return
+            replacements = review.replacement_ids
+        request = replace(request, library_review=existing, replacement_ids=replacements)
+        try:
+            request = matching_library_checkpoint(self.profile, request)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Saved download needs review", str(exc))
+            return
+        self._reviewed_request = request
         count = len(request.neurons)
         connectivity_note = (
             " A bounded selected-to-selected connectivity CSV will also be included."
@@ -771,12 +861,12 @@ class NeuPrintImportDialog(QDialog):
         answer = QMessageBox.question(
             self,
             "Confirm neuPrint download",
-            f"Download {count} reviewed SWC(s) from {request.dataset}?\n\n"
-            f"SWCs join this dataset library:\n{library_root(self.profile, request.server, request.dataset) / 'export_swc'}\n\n"
-            f"Original acquisition and checksums:\n{destination}\n\n"
-            "AN/DN/etc. folders grow across searches and local imports. Existing SWCs are never "
-            "silently replaced; different releases stay separate. "
-            f"The snapshot is checkpointed and audited.{connectivity_note}{resume_note}{large_note}",
+            f"{request.dataset}: {count - len(existing)} new neuron(s), {len(replacements)} approved replacement(s), "
+            f"{len(existing) - len(replacements)} existing file(s) kept without another download.\n\n"
+            f"Neuron folder:\n{library_root(self.profile, request.server, request.dataset) / 'export_swc'}\n\n"
+            "Each file follows family/type/body-ID/body-ID.swc. Previous files are backed up before an "
+            "approved replacement. Different datasets and releases stay separate. "
+            f"Download details and connectivity are saved separately.{connectivity_note}{resume_note}{large_note}",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return

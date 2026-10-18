@@ -772,7 +772,7 @@ def import_model_source(
             shutil.copy2(reviewed.source, original, follow_symlinks=False)
             original_sha256 = _sha256(original)
             if original_sha256 != reviewed.source_sha256:
-                raise ModelImportError("The archive changed while its provenance copy was made")
+                raise ModelImportError("The archive changed while its source details copy was made")
             inventory.append(
                 {
                     "path": f"original/{reviewed.source.name}",

@@ -13,7 +13,7 @@ def _now() -> str:
 
 
 class JobStore:
-    """File-backed job provenance independent of the simulator output tree."""
+    """File-backed job source details independent of the simulator output tree."""
 
     def __init__(self, output_root: str | Path):
         self.output_root = Path(output_root).expanduser().resolve()

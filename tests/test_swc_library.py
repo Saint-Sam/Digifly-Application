@@ -12,7 +12,7 @@ from digifly_app.core.neuprint import (NeuPrintAcquisitionRequest, NeuPrintNeuro
                                       _selection_cypher, acquire_neuprint_bundle)
 from digifly_app.core.providers import profile_connectome_sources
 from digifly_app.core.resource_profile import ResourceKind, ResourceProfile, make_standalone_profile
-from digifly_app.core.swc_library import add_bundle_to_library, library_root
+from digifly_app.core.swc_library import add_bundle_to_library, library_root, inspect_existing_swcs
 
 SERVER = "https://neuprint.janelia.org"
 DATASET = "manc:v1.2.1"
@@ -63,7 +63,8 @@ def test_separate_searches_and_local_import_share_one_source(state, tmp_path):
     assert len(manifest["acquisitions"]) == 3
     assert all(Path(item["manifest"]).is_file() for item in manifest["acquisitions"])
     assert "fixture-secret" not in three.manifest.read_text() + path.read_text()
-    assert sum(item.provider == "neuprint" for item in list_managed_resources(restored)) == 2
+    assert sum(item.provider == "neuprint" for item in list_managed_resources(restored)) == 0
+    assert not (profile.managed_data_root / "neuprint").exists()
 
 
 def test_identical_intake_is_idempotent_conflicting_bytes_do_not_replace(state, tmp_path):
@@ -79,6 +80,155 @@ def test_identical_intake_is_idempotent_conflicting_bytes_do_not_replace(state, 
         add_bundle_to_library(profile, path, conflict, server=SERVER, dataset=DATASET)
     assert resource.manifest.read_bytes() == saved_manifest and path.read_bytes() == saved_profile
     assert conflict.manifest.is_file()
+
+
+def _download(profile, path, *, body=42, kind="DNp01", version="one", data=SWC,
+              review=None, replacements=(), fetched=None):
+    class Client:
+        def fetch_skeleton(self, body_id, **kwargs):
+            if fetched is not None:
+                fetched.append(body_id)
+            return data
+    request = NeuPrintAcquisitionRequest(SERVER, DATASET, "list-or-single", version,
+        NeuPrintSelection("name_list", kind), (NeuPrintNeuron(body, kind),), "fixture-token",
+        library_review=review, replacement_ids=replacements)
+    return acquire_neuprint_bundle(profile, path, request, client=Client(), add_to_library=True)
+
+
+def test_download_duplicate_keep_skips_http_and_replacement_keeps_backup(state):
+    profile, path = state
+    fetched = []
+    first = _download(profile, path, fetched=fetched)
+    existing = inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+    assert existing["42"]["path"] == "export_swc/DN/DNp01/42/42.swc"
+    changed = SWC.replace(b"0 5", b"0 6")
+    kept = _download(profile, path, version="two", data=changed, review=existing, fetched=fetched)
+    assert fetched == [42]
+    target = kept.root / existing["42"]["path"]
+    assert target.read_bytes() == SWC
+    replaced = _download(profile, path, version="three", data=changed,
+                         review=existing, replacements=(42,), fetched=fetched)
+    assert fetched == [42, 42] and target.read_bytes() == changed
+    receipt = json.loads(Path(json.loads(replaced.manifest.read_text())["acquisitions"][-1]["manifest"]).read_text())
+    assert receipt["actions"][0]["action"] == "replaced"
+    assert (replaced.root / receipt["actions"][0]["backup"]).read_bytes() == SWC
+    assert len(list((replaced.root / "export_swc").rglob("*.swc"))) == 1
+    assert not (profile.managed_data_root / "neuprint").exists()
+    assert not list((profile.managed_data_root / ".staging").rglob("*.swc"))
+
+
+def test_existing_detection_checks_unindexed_folder_bytes_and_keeps_them(state):
+    profile, path = state
+    root = library_root(profile, SERVER, DATASET)
+    target = root / "export_swc/MN/TTMn/43/43.swc"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(SWC)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (43,))
+    fetched = []
+    result = _download(profile, path, body=43, kind="TTMn", review=review, fetched=fetched)
+    assert fetched == [] and target.read_bytes() == SWC
+    assert json.loads(result.manifest.read_text())["files"][0]["path"] == "export_swc/MN/TTMn/43/43.swc"
+
+
+def test_stale_replacement_approval_refuses_before_fetch_or_overwrite(state):
+    profile, path = state
+    first = _download(profile, path)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+    target = first.root / review["42"]["path"]
+    changed = SWC.replace(b"0 5", b"0 7")
+    target.write_bytes(changed)
+    fetched = []
+    with pytest.raises(ValueError, match="changed after review"):
+        _download(profile, path, version="two", review=review, replacements=(42,), fetched=fetched)
+    assert fetched == [] and target.read_bytes() == changed
+
+
+def test_approved_replacement_rollback_restores_files_index_and_profile(state, monkeypatch):
+    profile, path = state
+    first = _download(profile, path)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+    before_index, before_profile = first.manifest.read_bytes(), path.read_bytes()
+    def fail(*args, **kwargs):
+        raise OSError("fixture profile save failed")
+    monkeypatch.setattr(ResourceProfile, "save", fail)
+    with pytest.raises(OSError, match="profile save failed"):
+        _download(profile, path, version="two", data=SWC.replace(b"0 5", b"0 6"),
+                  review=review, replacements=(42,))
+    assert (first.root / review["42"]["path"]).read_bytes() == SWC
+    assert first.manifest.read_bytes() == before_index and path.read_bytes() == before_profile
+    assert not (first.root / ".intake-lock").exists()
+    failed, = first.root.glob(".history/*/failed-download.json")
+    assert json.loads(failed.read_text())["status"] == "not_committed"
+
+
+def test_file_changed_during_fetch_is_not_replaced(state):
+    profile, path = state
+    first = _download(profile, path)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+    target = first.root / review['42']['path']
+    changed = SWC.replace(b'0 5', b'0 9')
+    class Client:
+        def fetch_skeleton(self, *args, **kwargs):
+            target.write_bytes(changed)
+            return SWC
+    request = NeuPrintAcquisitionRequest(SERVER, DATASET, 'race', 'one',
+        NeuPrintSelection('name_list', 'DNp01'), (NeuPrintNeuron(42, 'DNp01'),), 'fixture',
+        library_review=review, replacement_ids=(42,))
+    with pytest.raises(ValueError, match='changed after review'):
+        acquire_neuprint_bundle(profile, path, request, client=Client(), add_to_library=True)
+    assert target.read_bytes() == changed
+
+
+def test_recovery_preserves_external_changes_and_original_backup(state, monkeypatch):
+    profile, path = state
+    first = _download(profile, path)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+    target = first.root / review['42']['path']
+    external = SWC.replace(b'0 5', b'0 9')
+    def fail(*args, **kwargs):
+        target.write_bytes(external)
+        raise OSError('fixture changed concurrently')
+    monkeypatch.setattr(ResourceProfile, 'save', fail)
+    with pytest.raises(ValueError, match='during recovery'):
+        _download(profile, path, version='two', data=SWC.replace(b'0 5', b'0 6'),
+                  review=review, replacements=(42,))
+    assert target.read_bytes() == external
+    backups = list(first.root.glob('.history/*/previous/**/*.swc'))
+    assert len(backups) == 1 and backups[0].read_bytes() == SWC
+
+
+def test_cancelled_library_download_resumes_after_reopening_without_new_names(state):
+    import threading
+    from digifly_app.core.neuprint import AcquisitionCancelled
+    profile, path = state
+    cancel = threading.Event()
+    fetched = []
+    class Client:
+        def fetch_skeleton(self, body_id, **kwargs):
+            fetched.append(body_id)
+            if body_id == 42:
+                cancel.set()
+            return SWC
+    request = NeuPrintAcquisitionRequest(SERVER, DATASET, 'original', 'one',
+        NeuPrintSelection('name_list', 'DNp01, TTMn'),
+        (NeuPrintNeuron(42, 'DNp01'), NeuPrintNeuron(43, 'TTMn')), 'fixture', library_review={})
+    with pytest.raises(AcquisitionCancelled):
+        acquire_neuprint_bundle(profile, path, request, client=Client(), cancel=cancel, add_to_library=True)
+    cancel.clear()
+    result = acquire_neuprint_bundle(profile, path, replace(request, resource_id='reopened', source_version='two'),
+                                    client=Client(), add_to_library=True)
+    assert fetched == [42, 43] and result.swc_count == 2
+    assert not list((profile.managed_data_root / '.staging').rglob('*.swc'))
+
+
+def test_duplicate_files_in_tree_do_not_choose_an_arbitrary_replacement(state):
+    profile, path = state
+    first = _download(profile, path)
+    extra = first.root / "export_swc/UNKNOWN/Other/42/42.swc"
+    extra.parent.mkdir(parents=True)
+    extra.write_bytes(SWC)
+    with pytest.raises(ValueError, match="multiple files"):
+        inspect_existing_swcs(profile, SERVER, DATASET, (42,))
 
 
 def test_releases_origins_and_coordinate_units_are_not_merged(state, tmp_path):

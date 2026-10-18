@@ -1,8 +1,7 @@
-"""Additive, dataset/version-specific SWC libraries shared by Mac and Windows.
+"""Dataset/version-specific SWC libraries shared by Mac and Windows.
 
-Acquisition bundles remain immutable provenance. Only the library manifest and
-its single profile binding change; different bytes for an existing body never
-silently replace a morphology. No coordinate or topology conversion occurs.
+Explicit reviewed replacements retain previous bytes; local imports remain
+additive. No coordinate or topology conversion occurs.
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import uuid
 from urllib.parse import urlsplit
 
 from .data_library import MANIFEST_FILENAME, ManagedResource, load_managed_resource, safe_component
@@ -86,6 +86,226 @@ def _labels(path: Path, body: str, neuron: dict) -> tuple[str, str]:
             family = part.upper()
             break
     return family, kind
+
+
+def inspect_existing_swcs(profile: ResourceProfile, server: str, dataset: str,
+                          body_ids) -> dict[str, dict]:
+    """Read the actual dataset tree, including files absent from its index."""
+    root = library_root(profile, server, dataset)
+    _plain_path(root, profile.managed_data_root)
+    wanted = {str(body) for body in body_ids}
+    if any(not body.isdigit() for body in wanted):
+        raise ValueError("Existing-neuron checks require numeric body IDs")
+    found = {}
+    export = root / "export_swc"
+    if not export.exists():
+        return found
+    from .connectomes import _infer_id
+    for path in export.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("The dataset SWC folder contains a symbolic link; review it before downloading")
+        if not path.is_file() or path.suffix.casefold() != ".swc":
+            continue
+        body = str(_infer_id(path.relative_to(export)) or "")
+        if body not in wanted:
+            continue
+        _plain_path(path, profile.managed_data_root)
+        if body in found:
+            raise ValueError(f"Body {body} has multiple files in this dataset folder. Choose the intended copy before downloading")
+        found[body] = {"path": path.relative_to(root).as_posix(),
+                       "sha256": _hash(path), "size_bytes": path.stat().st_size}
+    return found
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    fd, name = tempfile.mkstemp(prefix=".library-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def store_dataset_download(profile: ResourceProfile, profile_path: Path,
+                           resource: ManagedResource, *, server: str, dataset: str,
+                           reviewed_existing: dict[str, dict], replacement_ids=()) -> ManagedResource:
+    """Commit staged SWCs to one tree; approved old bytes remain recoverable."""
+    incoming = load_managed_resource(resource.manifest, verify=True)
+    if incoming.integrity != "verified":
+        raise ValueError("The staged download failed checksum verification")
+    payload = json.loads(resource.manifest.read_text(encoding="utf-8"))
+    origin = str(server).rstrip("/")
+    if payload.get("dataset") != dataset or payload.get("server") != origin:
+        raise ValueError("The staged download belongs to a different server or dataset")
+    selected = {str(row["body_id"]): row for row in payload["files"] if "body_id" in row}
+    replacements = {str(body) for body in replacement_ids}
+    if not replacements.issubset(reviewed_existing) or not set(reviewed_existing).issubset(selected):
+        raise ValueError("Replacement permission does not match the reviewed neurons")
+    root = library_root(profile, origin, dataset)
+    _plain_path(root, profile.managed_data_root)
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = root / MANIFEST_FILENAME
+    with _locked(root):
+        _plain_path(manifest, profile.managed_data_root)
+        actual = inspect_existing_swcs(profile, origin, dataset, selected)
+        if actual != reviewed_existing:
+            raise ValueError("The dataset folder changed after review. Nothing was replaced; preview and review it again")
+        old_bytes = manifest.read_bytes() if manifest.exists() else None
+        old = json.loads(old_bytes) if old_bytes else None
+        if old:
+            load_managed_resource(manifest)  # Validate the old inventory's path grammar too.
+        convention = payload.get("swc_coordinate_convention")
+        if old and (old.get("library_schema"), old.get("dataset"), old.get("server"),
+                    old.get("swc_coordinate_convention")) != (LIBRARY_SCHEMA, dataset, origin, convention):
+            raise ValueError("The library server, dataset or coordinate units differ from this download")
+        inventory = {str(row["body_id"]): dict(row) for row in old["files"]} if old else {}
+        for body, record in inventory.items():
+            path = root / record["path"]
+            _plain_path(path, profile.managed_data_root)
+            if body in replacements:
+                continue  # Actual reviewed bytes, not a stale index, will be backed up.
+            if not path.is_file() or _hash(path) != record["sha256"]:
+                raise ValueError(f"Existing body {body} changed or is missing; review that file before updating this library")
+        profile_file = Path(profile_path)
+        if profile_file.name == "resources-v1.json":
+            profile_file = profile_file.with_name("resources-v2.json")
+        current = ResourceProfile.load(profile_file) if profile_file.exists() else profile
+        if current.managed_data_root != profile.managed_data_root:
+            raise ValueError("The Data Library location changed; reopen the download window")
+        identity = hashlib.sha256((origin + "\n" + dataset).encode()).hexdigest()[:20]
+        binding_id = "swc-library-" + identity
+        prior = next((item for item in current.resources if item.resource_id == binding_id), None)
+        if prior and (prior.path != str(root / "export_swc") or prior.metadata.get("library_schema") != LIBRARY_SCHEMA):
+            raise ValueError("The dataset library identifier is already in use")
+        binding = ResourceBinding(binding_id, ResourceKind.MORPHOLOGY_SOURCE, str(root / "export_swc"),
+            AccessMode.READ_ONLY, f"{dataset} · SWC library", False,
+            {"library_schema": LIBRARY_SCHEMA, "dataset": dataset, "server": origin,
+             "manifest": str(manifest), "managed": True,
+             "connectome_key": f"neuprint:{dataset}:swc-library-{identity[:8]}"})
+        updated = replace(current, resources=tuple(item for item in current.resources
+                           if item.resource_id != binding_id) + (binding,))
+        history = root / ".history" / uuid.uuid4().hex
+        _plain_path(history, profile.managed_data_root)
+        history.mkdir(parents=True)
+        created, moved, actions = [], [], []
+        try:
+            for body, record in selected.items():
+                existing = actual.get(body)
+                if existing and body not in replacements:
+                    if existing["sha256"] != record["sha256"]:
+                        raise ValueError("A kept SWC differs from the reviewed copy")
+                    inventory[body] = {**record, **existing, "body_id": body,
+                                       "download_action": "kept_existing"}
+                    actions.append({"body_id": body, "action": "kept_existing", **existing})
+                    continue
+                family, kind = _labels(Path(record["path"]), body, record)
+                relative = Path("export_swc") / family / kind / body / f"{body}.swc"
+                destination = root / relative
+                _plain_path(destination, profile.managed_data_root)
+                # Stage and verify bytes before moving any existing file.
+                temporary = history / "incoming" / f"{body}.swc"
+                temporary.parent.mkdir(exist_ok=True)
+                shutil.copyfile(resource.root / record["path"], temporary)
+                if _hash(temporary) != record["sha256"]:
+                    raise ValueError("Downloaded SWC bytes changed before storage")
+                backup = None
+                if existing:
+                    old_path = root / existing["path"]
+                    if _hash(old_path) != existing["sha256"]:
+                        raise ValueError("The existing SWC changed after review")
+                    backup = history / "previous" / existing["path"]
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(old_path, backup)
+                    moved.append((old_path, backup))
+                    if _hash(backup) != existing["sha256"]:
+                        raise ValueError("The existing SWC changed during backup; review it again")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists():
+                    raise ValueError("The destination appeared after review; no unapproved file was replaced")
+                # Hard-link publish refuses an unexpected destination atomically.
+                os.link(temporary, destination)
+                created.append((destination, record["sha256"]))
+                temporary.unlink()
+                stored = {**record, "path": relative.as_posix(), "body_id": body,
+                          "download_action": "replaced" if existing else "downloaded"}
+                inventory[body] = stored
+                actions.append({"body_id": body, "action": stored["download_action"],
+                    "path": relative.as_posix(), "sha256": record["sha256"],
+                    "backup": backup.relative_to(root).as_posix() if backup else None,
+                    "previous_sha256": existing["sha256"] if existing else None})
+            # Retain only small download records/connectivity, not another SWC collection.
+            extra_files = []
+            for record in payload["files"]:
+                if "body_id" in record:
+                    continue
+                source = resource.root / record["path"]
+                destination = history / record["path"]
+                _plain_path(destination, root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                if _hash(destination) != record["sha256"]:
+                    raise ValueError("Download details changed while saving")
+                extra_files.append({**record, "path": destination.relative_to(root).as_posix()})
+            receipt = history / "download.json"
+            _write_json_atomic(receipt, {"schema": "digifly-dataset-download-v1", "status": "stored",
+                "server": origin, "dataset": dataset, "fetched_at": payload["fetched_at"],
+                "selection": payload["selection"], "neurons": payload["neurons"],
+                "actions": actions, "files": extra_files,
+                "source_manifest_sha256": _hash(resource.manifest),
+                "acquisition_entrypoint": payload.get("acquisition_entrypoint"),
+                "credential_source": payload.get("credential_source")})
+            acquisitions = list(old.get("acquisitions", [])) if old else []
+            acquisitions.append({"manifest": str(receipt), "sha256": _hash(receipt)})
+            records = sorted(inventory.values(), key=lambda row: int(row["body_id"]))
+            result = {"schema_version": 1, "library_schema": LIBRARY_SCHEMA, "provider": "swc-library",
+                "resource_id": root.name, "source_version": "cumulative-v1", "dataset": dataset,
+                "server": origin, "fetched_at": payload["fetched_at"], "swc_coordinate_convention": convention,
+                "acquisitions": acquisitions, "file_count": len(records), "swc_count": len(records),
+                "total_bytes": sum(row["size_bytes"] for row in records), "files": records}
+            for family in FAMILIES:
+                (root / "export_swc" / family).mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(manifest, result)
+            checked = load_managed_resource(manifest, verify=True)
+            if checked.integrity != "verified":
+                raise ValueError("The stored dataset library failed its final checksum check")
+            updated.save(profile_file, replace=profile_file.exists())
+        except Exception as exc:
+            conflicts = []
+            for destination, expected_hash in reversed(created):
+                if destination.is_file() and not destination.is_symlink() and _hash(destination) == expected_hash:
+                    destination.unlink()
+                elif destination.exists() or destination.is_symlink():
+                    conflicts.append(str(destination))
+            for old_path, backup in reversed(moved):
+                try:
+                    # Refuse a surprise external file even during recovery.
+                    os.link(backup, old_path)
+                    backup.unlink()
+                except FileExistsError:
+                    conflicts.append(str(old_path))
+            if old_bytes is None:
+                manifest.unlink(missing_ok=True)
+            else:
+                # Restore the exact old index, not a newly serialized approximation.
+                fd, name = tempfile.mkstemp(prefix=".restore-", dir=root)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(old_bytes)
+                os.replace(name, manifest)
+            _write_json_atomic(history / "failed-download.json", {
+                "schema": "digifly-dataset-download-failure-v1", "status": "not_committed",
+                "recovery_files": [str(backup.relative_to(root)) for _, backup in moved if backup.exists()],
+                "unexpected_files_preserved": conflicts})
+            if (history / "download.json").exists():
+                (history / "download.json").unlink()
+            if conflicts:
+                raise ValueError("A file changed during recovery. It and the previous backup were preserved; review the dataset history folder") from exc
+            raise
+        return replace(checked, registered_binding=binding_id)
 
 
 def add_bundle_to_library(

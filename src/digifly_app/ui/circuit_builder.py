@@ -173,7 +173,7 @@ def _primary_circuit_sources(
     """Expose the primary datasets, preserving the older app's local Male CNS.
 
     Curated subsets, managed download bundles, custom morphologies, and scratch
-    exports remain registered in the Data Library.  They are useful provenance
+    exports remain registered in the Data Library.  They are useful source history
     and fallback resources, but should not masquerade as peer connectomes next
     to MANC and Male CNS. Prefer the exact locally discovered v0.9 source used
     by the older app over managed selections or v1.0. Never relabel one version
@@ -533,7 +533,7 @@ class CircuitBuilderPage(QWidget):
         )
         channel_help = QLabel(
             "Mechanism identity is saved separately from built-in HH values. The list includes "
-            "the provenance-locked Augustin GF membrane and exploratory Phase 2 surrogates; "
+            "the source-locked Augustin GF membrane and exploratory Phase 2 surrogates; "
             "they are not silent cross-backend equivalents. gbar columns are soma / branch in S/cm²."
         )
         channel_help.setObjectName("Muted")
@@ -670,7 +670,7 @@ class CircuitBuilderPage(QWidget):
         chemical_help = QLabel(
             "Imported contacts define pre/post neurons and postsynaptic placement. "
             "This saved policy supplies electrophysiology that is absent from many "
-            "connectome exports; each value and its provenance are written into the run manifest."
+            "connectome exports; each value and its source history are written into the run manifest."
         )
         chemical_help.setObjectName("Muted")
         chemical_help.setWordWrap(True)

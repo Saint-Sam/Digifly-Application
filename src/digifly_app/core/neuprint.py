@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import csv
 import hashlib
@@ -143,6 +143,8 @@ class NeuPrintAcquisitionRequest:
     include_connectivity: bool = False
     max_connectivity_rows: int = DEFAULT_MAX_CONNECTIVITY_ROWS
     max_connectivity_bytes: int = DEFAULT_MAX_CONNECTIVITY_BYTES
+    library_review: dict[str, dict] | None = None
+    replacement_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         normalize_server(self.server)
@@ -176,6 +178,19 @@ class NeuPrintAcquisitionRequest:
             )
         if self.max_connectivity_bytes < 1:
             raise ValueError("Invalid neuPrint connectivity byte limit")
+        if not set(self.replacement_ids).issubset(body_ids):
+            raise ValueError("Replacement choices must belong to the selected neurons")
+        if self.library_review is not None:
+            if not set(self.library_review).issubset({str(body) for body in body_ids}):
+                raise ValueError("Existing-file review does not match the selected neurons")
+            for row in self.library_review.values():
+                path = Path(str(row.get("path", "")))
+                if (not path.parts or path.parts[0] != "export_swc" or path.is_absolute()
+                        or ".." in path.parts or "\\" in str(path)
+                        or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("sha256", "")))):
+                    raise ValueError("Invalid reviewed SWC path or checksum")
+        if self.replacement_ids and not {str(body) for body in self.replacement_ids}.issubset(self.library_review or {}):
+            raise ValueError("Replacing a neuron requires an explicit existing-file review")
 
 
 @dataclass(frozen=True)
@@ -668,7 +683,7 @@ def _utc_text() -> str:
 def _request_descriptor(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
     """Return the credential-free identity persisted in resumable checkpoints."""
 
-    return {
+    result = {
         "server": normalize_server(request.server),
         "dataset": request.dataset,
         "resource_id": safe_component(request.resource_id),
@@ -678,6 +693,9 @@ def _request_descriptor(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
         "include_connectivity": bool(request.include_connectivity),
         "max_connectivity_rows": int(request.max_connectivity_rows),
     }
+    if request.library_review is not None:
+        result.update(library_review=request.library_review, replacement_ids=list(request.replacement_ids))
+    return result
 
 
 def _request_digest(request: NeuPrintAcquisitionRequest) -> str:
@@ -698,6 +716,44 @@ def neuprint_checkpoint_path(
         / ".staging"
         / f"neuprint-{_request_digest(request)[:24]}"
     )
+
+
+def matching_library_checkpoint(profile: ResourceProfile, request: NeuPrintAcquisitionRequest):
+    """Reuse one exact reviewed partial request across dialog sessions.
+
+    Hidden receipt names are not user-selected folders. Consent, file hashes,
+    dataset and selected neurons must still match; ambiguous partials fail closed.
+    """
+    if request.library_review is None:
+        return request
+    staging = profile.managed_data_root / ".staging"
+    if staging.is_symlink():
+        raise ValueError("The download staging folder cannot be a symbolic link")
+    wanted = _request_descriptor(request)
+    def comparable(value):
+        return {key: value for key, value in value.items()
+                if key not in {"resource_id", "source_version"}}
+    matches = []
+    for folder in staging.glob("neuprint-*"):
+        receipt = folder / NEUPRINT_CHECKPOINT_FILENAME
+        if folder.is_symlink() or receipt.is_symlink() or not receipt.is_file():
+            continue
+        if receipt.stat().st_size > 2 * 1024 * 1024:
+            continue
+        try:
+            descriptor = json.loads(receipt.read_text(encoding="utf-8")).get("request", {})
+        except (ValueError, OSError):
+            continue
+        if not isinstance(descriptor, dict) or comparable(descriptor) != comparable(wanted):
+            continue
+        candidate = replace(request, resource_id=descriptor["resource_id"],
+                            source_version=descriptor["source_version"])
+        if neuprint_checkpoint_path(profile, candidate) != folder:
+            continue
+        matches.append(candidate)
+    if len(matches) > 1:
+        raise ValueError("More than one saved partial download matches. Review the staging folders before continuing")
+    return matches[0] if matches else request
 
 
 def discard_neuprint_checkpoint(
@@ -840,7 +896,17 @@ def acquire_neuprint_bundle(
 
     cancel_event = cancel or threading.Event()
     destination = preview_destination(profile, request)
-    if destination.exists():
+    if add_to_library:
+        from .swc_library import inspect_existing_swcs, library_root, store_dataset_download, _plain_path
+        request = replace(request, server=normalize_server(request.server))
+        found = inspect_existing_swcs(profile, request.server, request.dataset,
+                                      (neuron.body_id for neuron in request.neurons))
+        if request.library_review is None:
+            request = replace(request, library_review=found)
+        elif found != request.library_review:
+            raise ValueError("Existing neurons changed after review. No files were replaced; review them again")
+        request = matching_library_checkpoint(profile, request)
+    if not add_to_library and destination.exists():
         raise FileExistsError(f"A managed neuPrint download already exists at {destination}")
     managed_root = profile.managed_data_root
     managed_root.mkdir(parents=True, exist_ok=True)
@@ -854,7 +920,8 @@ def acquire_neuprint_bundle(
             f"The managed library needs a {required_free:,}-byte safety reserve, "
             f"but only {available_free:,} bytes are free"
         )
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not add_to_library:
+        destination.parent.mkdir(parents=True, exist_ok=True)
     staging_root = managed_root / ".staging"
     if staging_root.is_symlink():
         raise NeuPrintError("Refusing to acquire through a symbolic-link staging root")
@@ -949,13 +1016,24 @@ def acquire_neuprint_bundle(
             if cancel_event.is_set():
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
             current = f"body {neuron.body_id}"
-            emit("Downloading SWC", completed_tasks(), current)
-            skeleton = provider.fetch_skeleton(
-                neuron.body_id,
-                cancel=cancel_event,
-                max_bytes=request.max_skeleton_bytes,
-                on_bytes=add_bytes,
-            )
+            existing = (request.library_review or {}).get(str(neuron.body_id)) if add_to_library else None
+            keep = existing is not None and neuron.body_id not in request.replacement_ids
+            if keep:
+                emit("Keeping existing SWC", completed_tasks(), current)
+                stored = library_root(profile, request.server, request.dataset) / existing["path"]
+                _plain_path(stored, profile.managed_data_root)
+                if stored.stat().st_size > request.max_skeleton_bytes or _sha256_file(stored) != existing["sha256"]:
+                    raise ValueError("The existing SWC changed after review or exceeds the size limit")
+                skeleton = stored.read_bytes()
+                add_bytes(len(skeleton))
+            else:
+                emit("Downloading SWC", completed_tasks(), current)
+                skeleton = provider.fetch_skeleton(
+                    neuron.body_id,
+                    cancel=cancel_event,
+                    max_bytes=request.max_skeleton_bytes,
+                    on_bytes=add_bytes,
+                )
             try:
                 skeleton.decode("utf-8")
             except UnicodeDecodeError as exc:
@@ -990,6 +1068,7 @@ def acquire_neuprint_bundle(
                 "body_id": neuron.body_id,
                 "type": neuron.neuron_type,
                 "instance": neuron.instance,
+                "download_action": "kept_existing" if keep else "downloaded",
                 "swc_rows": report.node_count,
                 "swc_quality": {
                     "needs_review": report.needs_review,
@@ -1111,6 +1190,38 @@ def acquire_neuprint_bundle(
         )
         if cancel_event.is_set():
             raise AcquisitionCancelled("The neuPrint download was cancelled")
+        if add_to_library:
+            emit("Saving neurons into dataset folders", total_tasks)
+            staged_resource = ManagedResource("neuprint", safe_component(request.resource_id),
+                safe_component(request.source_version), staging, manifest_path,
+                len(final_inventory), total_bytes, len(request.neurons), fetched_at)
+            library = store_dataset_download(profile, Path(profile_path), staged_resource,
+                server=normalize_server(request.server), dataset=request.dataset,
+                reviewed_existing=request.library_review or {}, replacement_ids=request.replacement_ids)
+            # Only remove the exact completed task-owned files; unexpected files
+            # in staging are retained rather than recursively deleted.
+            for record in final_inventory:
+                try:
+                    (staging / record["path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass  # Stored library is committed; retain unremoved task files.
+            for completed_receipt in (manifest_path, staging / NEUPRINT_CHECKPOINT_FILENAME):
+                try:
+                    completed_receipt.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for directory in sorted((path for path in staging.rglob("*") if path.is_dir()),
+                                    key=lambda path: len(path.parts), reverse=True):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            try:
+                staging.rmdir()
+            except OSError:
+                pass
+            emit("Complete", total_tasks)
+            return library
         emit("Promoting validated bundle", total_tasks)
         os.replace(staging, destination)
         promoted = True
@@ -1127,15 +1238,6 @@ def acquire_neuprint_bundle(
             len(request.neurons),
             fetched_at,
         )
-        if add_to_library:
-            from .swc_library import add_bundle_to_library
-
-            library = add_bundle_to_library(
-                profile, Path(profile_path), resource,
-                server=normalize_server(request.server), dataset=request.dataset,
-            )
-            emit("Complete", total_tasks)
-            return library
         binding_id = register_managed_morphology(
             profile,
             resource,

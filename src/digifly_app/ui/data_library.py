@@ -401,7 +401,7 @@ class DataLibraryPage(QWidget):
             destination = library_root(profile, server, dataset) / "export_swc"
             answer = QMessageBox.question(self, "Consolidate this saved SWC download",
                 f"Add {resource.swc_count:,} saved SWCs to the growing {dataset} library?\n\n{destination}\n\n"
-                "No download or coordinate conversion is needed. The original bundle and provenance remain. "
+                "No download or coordinate conversion is needed. The original bundle and source history remain. "
                 "Its separate morphology-source entry is replaced by the dataset library only after intake succeeds; "
                 "different existing SWC bytes stop intake without replacement.")
             if answer != QMessageBox.StandardButton.Yes:

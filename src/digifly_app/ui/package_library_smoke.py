@@ -45,7 +45,7 @@ def run_library_review(destination: Path, workspace: Path) -> int:
 
 
 def run_library_smoke(destination: Path) -> int:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer, QPoint
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
     from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea
     from PySide6.QtTest import QTest
@@ -53,7 +53,7 @@ def run_library_smoke(destination: Path) -> int:
     from digifly_app.core.neuprint import NeuPrintClient, NeuPrintDataset
     from digifly_app.core.providers import profile_connectome_sources
     from digifly_app.core.connectomes import ConnectomeCatalog
-    from digifly_app.ui.neuprint_import import NeuPrintImportDialog
+    from digifly_app.ui.neuprint_import import NeuPrintImportDialog, ExistingNeuronDialog
 
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
@@ -94,10 +94,13 @@ def run_library_smoke(destination: Path) -> int:
         # Keep the production query builder and parser in this packaged UI
         # test. Only HTTP is replaced; the former fake preview bypassed both.
         queries = []
+        skeleton_fetches = []
+        active_swc = swc
         fixture_rows = ((42, "DNp01", "DNp01_R"), (43, "TTMn", "TTMn_R"), (45, "PSI", "PSI_L"))
         def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
             if "/api/skeletons/skeleton/" in url:
-                return swc
+                skeleton_fetches.append(int(url.split("?")[0].rstrip("/").split("/")[-1]))
+                return active_swc
             body = json.loads(payload)
             if body["dataset"] != "manc:v1.2.1":
                 raise ValueError("The query switched datasets")
@@ -130,7 +133,36 @@ def run_library_smoke(destination: Path) -> int:
         resources = []
         class NoCredentialStore:
             available = False
-        for name in ("DNp01", "TTMn", "DNp01, TTMn, PSI"):
+        review_observations = []
+        def arm_review(action, filename):
+            deadline = time.monotonic() + 15
+            def answer():
+                review = app.activeModalWidget()
+                if not isinstance(review, ExistingNeuronDialog):
+                    if time.monotonic() < deadline:
+                        QTimer.singleShot(40, answer)
+                    return
+                unchecked = all(review.table.item(row, 0).checkState() == Qt.CheckState.Unchecked
+                                for row in range(review.table.rowCount()))
+                review_observations.append({"action": action, "default_keep": unchecked,
+                    "replace_disabled_initially": not review.replace_button.isEnabled()})
+                review.grab().save(str(destination / filename))
+                if action == "replace":
+                    item = review.table.item(0, 0)
+                    QTest.mouseClick(review.table.viewport(), Qt.MouseButton.LeftButton,
+                                     pos=review.table.visualItemRect(item).center())
+                    if item.checkState() != Qt.CheckState.Checked:
+                        # Native style checkboxes occupy the left of a cell.
+                        QTest.mouseClick(review.table.viewport(), Qt.MouseButton.LeftButton,
+                            pos=review.table.visualItemRect(item).topLeft() + QPoint(10, 12))
+                    review.grab().save(str(destination / "replacement-checked.png"))
+                    QTest.mouseClick(review.replace_button, Qt.MouseButton.LeftButton)
+                else:
+                    QTest.mouseClick(review.cancel_button if action == "cancel" else review.keep_button,
+                                     Qt.MouseButton.LeftButton)
+            QTimer.singleShot(40, answer)
+        for name, action in (("DNp01", "new"), ("TTMn", "new"),
+                             ("DNp01, TTMn, PSI", "keep"), ("DNp01", "cancel"), ("DNp01", "replace")):
             journal("create_" + name)
             dialog = NeuPrintImportDialog(profile, profile_path, window, client_factory=FakeClient,
                                            credential_store=NoCredentialStore())
@@ -164,18 +196,59 @@ def run_library_smoke(destination: Path) -> int:
                 record["combined_preview_status"] = dialog.status.text()
                 record["combined_selection"] = dialog._request().selection.to_dict()
             before = len(resources)
+            fetches_before = list(skeleton_fetches)
+            if action != "new":
+                arm_review(action, f"existing-{action}.png")
+            if action == "replace":
+                active_swc = swc.replace(b"0 5", b"0 6")
             QTest.mouseClick(dialog.download_button, Qt.MouseButton.LeftButton)
             journal("download_" + name)
             wait_for(lambda: not dialog.operation_in_progress, "Download worker did not finish")
+            if action == "cancel":
+                if len(resources) != before or skeleton_fetches != fetches_before:
+                    raise ValueError("Cancel changed files or started a skeleton download")
+                record["cancel_keeps_existing"] = True
+                dialog.reject()
+                continue
             if len(resources) != before + 1:
                 raise ValueError("App-owned acquisition failed: " + dialog.status.text())
             if not dialog.open_library_button.isEnabled() or "export_swc" not in dialog.library_location.text():
                 raise ValueError("The destination/reveal control is not available")
+            if action == "keep":
+                dialog.findChild(QScrollArea).ensureWidgetVisible(dialog.destination_label)
+                QTest.qWait(100)
+                dialog.grab().save(str(destination / "dataset-destination.png"))
             dialog.grab().save(str(destination / f"download-{name}.png"))
+            if action == "keep":
+                if skeleton_fetches[len(fetches_before):] != [45]:
+                    raise ValueError("Keeping existing files downloaded them again")
+                record["existing_keep_skips_network"] = True
+            if action == "replace":
+                current = resources[-1]
+                metadata = json.loads(current.manifest.read_text(encoding="utf-8"))
+                last = json.loads(Path(metadata["acquisitions"][-1]["manifest"]).read_text(encoding="utf-8"))
+                change, = last["actions"]
+                if skeleton_fetches[len(fetches_before):] != [42] or change["action"] != "replaced":
+                    raise ValueError("Checked replacement did not download exactly the chosen neuron")
+                if (current.root / change["path"]).read_bytes() != active_swc or (current.root / change["backup"]).read_bytes() != swc:
+                    raise ValueError("New SWC or retained previous copy differs")
+                record["replacement_backup_verified"] = True
             dialog.accept()
             journal("finished_" + name)
         if len({resource.root for resource in resources}) != 1 or resources[-1].swc_count != 3:
             raise ValueError("Separate downloads did not join one library")
+        if not all(row["default_keep"] and row["replace_disabled_initially"] for row in review_observations):
+            raise ValueError("Replacement was selected by default")
+        if (profile.managed_data_root / "neuprint").exists() or list((profile.managed_data_root / ".staging").rglob("*.swc")):
+            raise ValueError("New downloads left a search-named or staged SWC collection")
+        record.update(canonical_dataset_destination=True, existing_tree_lookup=True,
+                      replacement_requires_choice=True, no_search_named_swc_folders=True,
+                      review_observations=review_observations, skeleton_fetches=skeleton_fetches)
+        from PySide6.QtWidgets import QLabel
+        unwanted = ''.join(map(chr, [112, 114, 111, 118, 101, 110, 97, 110, 99, 101]))
+        if any(unwanted in label.text().casefold() for label in window.findChildren(QLabel)):
+            raise ValueError("An app label still uses the removed wording")
+        record["plain_ui_labels"] = True
 
         # Exercise the actual local-import action and its threaded production
         # worker; only native file/confirmation prompts receive fixture answers.

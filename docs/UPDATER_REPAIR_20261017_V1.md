@@ -18,6 +18,17 @@ not only the source test or a successful package build. The paired handoff and
 This source change does not establish live cross-version public upgrades or
 Developer ID/notarization; those remain distinct qualification.
 
+Measured successor: Mac.20261017.4 and Windows.20261017.3 now both pass actual
+packaged original-app refusal, disposable install/MainWindow+draft reopening,
+injected early-startup failure/exact rollback/reopening, full app-tree and
+directory-identity transitions, retained backup/failed candidate and unchanged
+external sentinels/draft. Root viewed both native install/rollback PNGs on both
+platforms. Their shared source and exact executable/archive identities are
+bound by `outputs/workstation/paired-neuprint-updater-acceptance-20261017-v1.json`.
+The current Mac promotion checks that pair before any mutation and retains the
+entire previous app. This is an offline same-build engineering test, not a
+measured public cross-version install or hung-child auto-recovery claim.
+
 This is the updater lane of `../codex.md`, not a new workflow authority.
 The October17 human reports a verified download followed by a disabled-install
 message. Inspection confirms the shipped handler had no installer helper;

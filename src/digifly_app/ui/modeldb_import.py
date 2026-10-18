@@ -209,7 +209,7 @@ class ModelDBImportDialog(QDialog):
         destination_form.addRow("Managed identity", naming_widget)
         self.preserve_archive = QCheckBox("Keep a checksummed copy of the original archive")
         self.preserve_archive.setChecked(True)
-        destination_form.addRow("Provenance", self.preserve_archive)
+        destination_form.addRow("Source details", self.preserve_archive)
         self.destination_label = QLabel("Inspect a source to calculate the exact destination")
         self.destination_label.setObjectName("Muted")
         self.destination_label.setWordWrap(True)
@@ -444,7 +444,7 @@ class ModelDBImportDialog(QDialog):
     def _local_inspected(self, inspection: ModelInspection) -> None:
         self._metadata = None
         self.model_name.setText(self._selected_source.name if self._selected_source else "Local model")
-        self.citation.setText("Not provided; inspect the imported README and add provenance before publication")
+        self.citation.setText("Not provided; inspect the imported README and add source details before publication")
         self._apply_inspection(inspection)
 
     def _apply_inspection(

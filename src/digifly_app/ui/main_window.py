@@ -1264,7 +1264,7 @@ class ExperimentPage(QWidget):
         store.update_status(job_dir, "running", pid=None)
         store.append_event(job_dir, "running", "Scientific worker started.")
         self.log.clear()
-        self.log.appendPlainText(f"Job provenance: {job_dir}\n")
+        self.log.appendPlainText(f"Run files: {job_dir}\n")
         self.log.appendPlainText(f"Starting: {self._plan.display_command}\n")
         self.log_state.set_state(CheckState.INFO, text="RUNNING")
         self.progress.setRange(0, 0)

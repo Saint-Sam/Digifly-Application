@@ -3,7 +3,7 @@
 Male CNS v0.9 native SWCs use 8 nm units. The historical Phase 1 exporter
 divided those values by 1000 instead of 125. Preserve its bytes and topology;
 correct the uniform XYZ/radius scale on import. Recovered micrometer files
-and managed raw downloads have distinct, provenance-bound conventions.
+and managed raw downloads have distinct, source details-bound conventions.
 """
 from __future__ import annotations
 
@@ -38,14 +38,14 @@ def source_coordinate_contract(path: Path) -> dict[str, Any]:
             if contract is not None:
                 recorded = (root / str(manifest.get("custom_swc", ""))).resolve()
                 if recorded != path or not recorded.is_relative_to(root):
-                    raise ValueError("Custom SWC coordinate provenance path mismatch")
+                    raise ValueError("Custom SWC coordinate source details path mismatch")
                 result = dict(contract)
                 rule = result.get("rule")
                 if (rule not in RULE_SCALES
                         or result.get("scale_to_um") != RULE_SCALES[rule]
                         or result.get("source_sha256") != _digest(path)
                         or manifest.get("custom_sha256") != result["source_sha256"]):
-                    raise ValueError("Custom SWC coordinate provenance identity check failed")
+                    raise ValueError("Custom SWC coordinate source details identity check failed")
                 return result
         resource_path = root / "digifly-resource.json"
         if resource_path.is_file():
@@ -56,7 +56,7 @@ def source_coordinate_contract(path: Path) -> dict[str, Any]:
                 entry = next((item for item in resource.get("files", ())
                               if (root / str(item.get("path", ""))).resolve() == path), None)
                 if entry is None or entry.get("sha256") != _digest(path):
-                    raise ValueError("Managed Male CNS SWC coordinate provenance checksum mismatch")
+                    raise ValueError("Managed Male CNS SWC coordinate source details checksum mismatch")
                 return _contract("male_cns_v09_neuprint_raw", path)
 
     # Only the established version-specific Phase 1 export convention is
@@ -75,7 +75,7 @@ def source_coordinate_contract(path: Path) -> dict[str, Any]:
                         f"{body}_healed.swc", f"{body}_healed_final.swc"}
         if body.isdigit() and path.name in legacy_names and f"# bodyId {body}\n" in header:
             return _contract("male_cns_v09_phase1_legacy", path)
-        raise ValueError(f"Unknown Male CNS v0.9 SWC unit provenance: {path}")
+        raise ValueError(f"Unknown Male CNS v0.9 SWC unit source details: {path}")
     return _contract("identity_um", path)
 
 

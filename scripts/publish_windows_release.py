@@ -24,6 +24,8 @@ OLD = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64.zip"
 OLD_SHA = "cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851"
 BACKUP = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20260913.zip"
 KNOWN_ROLLBACKS = {
+    "213c6482c15e7a04f068039143e2ea6577009b8cf1e0e921f636bb58d94a459f":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261018-dataset-folders.zip",
     OLD_SHA: BACKUP,
     "51b05776ce8cebab7db43564a123e334b8532727fd1a196e2a0a3ef4d11e473c":
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261015-interface-only.zip",

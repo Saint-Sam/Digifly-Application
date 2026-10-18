@@ -102,7 +102,7 @@ class NetStimSpec:
 
 @dataclass(frozen=True)
 class ExternalResourceRef:
-    """A provenance reference, never a bundled or silently imported dataset."""
+    """A source details reference, never a bundled or silently imported dataset."""
 
     label: str
     kind: str  # swc, dataset, mod, or other

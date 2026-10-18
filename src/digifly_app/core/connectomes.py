@@ -528,7 +528,7 @@ class ConnectomeEdgeCatalog:
         return tuple(output)
 
     def chemical_source_record(self) -> dict[str, Any]:
-        """Return a cheap immutable-cache identity for run provenance."""
+        """Return a cheap immutable-cache identity for run source details."""
 
         path = self.chemical_db.resolve()
         if not path.is_file():

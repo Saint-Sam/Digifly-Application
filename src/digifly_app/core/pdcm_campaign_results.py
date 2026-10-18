@@ -253,7 +253,7 @@ def _saved_sources(run, analysis):
     if t.get("state") != "completed_technical_unreviewed" or t.get("scientific_acceptance") is not False:
         raise ValueError("Saved technical state must not imply scientific acceptance")
     if any(t.get(key) != value for key, value in p.items()):
-        raise ValueError("Technical result/provenance identity differs")
+        raise ValueError("Technical result/source details identity differs")
     scalable = m.get("construction_policy") == SCALABLE_POLICY
     if m.get("construction_policy") not in (POLICY, SCALABLE_POLICY) or m.get("independent_inputs") is not True:
         raise ValueError("Not the approved independent released-method construction")
@@ -267,11 +267,11 @@ def _saved_sources(run, analysis):
         raise ValueError("Population census differs")
     for key in ("network_seed", "stimulus_seed"):
         _integer(m.get(key), key)
-        _integer(p.get(key), "provenance " + key)
+        _integer(p.get(key), "source details " + key)
         if p.get(key) != m[key]:
-            raise ValueError("Seed/provenance identity differs")
+            raise ValueError("Seed/source details identity differs")
     if p.get("duration_ms") != 60100 or p.get("input_manifest_sha256") != _hash(run / "input/manifest.json"):
-        raise ValueError("Condition/input provenance differs")
+        raise ValueError("Condition/input source details differs")
     if scalable and any(p.get(key) != m[key] for key in ("scale", "drive")):
         raise ValueError("Scalable execution identity differs")
     if p.get("mechanism_source_sha256") != MECHANISM_SHA256 or _hash(run / "mechanisms/DigiflyPDCMEvent.mod") != MECHANISM_SHA256:
@@ -487,7 +487,7 @@ def _convert(run, output_root, name, analysis):
                     "interpretation":"Load-integrity checks only; prior technical review retained, scientific acceptance not granted."}
         (view / "source_index.json").write_text(json.dumps(evidence, indent=2)+"\n", encoding="utf-8")
         artifacts = [{"kind":"table","path":path,"label":label} for path,label in (("spikes.csv","Cortical spikes — all events"),("cells.csv","Cortical population IDs"),("paper_metrics.csv","Paper-window population metrics"))]
-        artifacts.append({"kind":"json","path":"source_index.json","label":"Original evidence and technical provenance"})
+        artifacts.append({"kind":"json","path":"source_index.json","label":"Original evidence and technical source details"})
         payload = {"schema_version":1,"workflow":WORKFLOW,"engine":"BioNet","status":"complete",
                    "completed_at":datetime.now(timezone.utc).isoformat(),"title":name or f"PDCM BioNet · {m['drive']} · own network {m['network_seed']}",
                    "technical_acceptance":True,"scientific_acceptance":False,"artifacts":artifacts,
@@ -568,7 +568,7 @@ def load_pdcm_campaign_result(path):
         raise ValueError("Results view identity differs")
     for key in ("network_seed","stimulus_seed","duration_ms"):
         if metadata.get(key) != index["provenance"].get(key):
-            raise ValueError("Displayed condition differs from source provenance")
+            raise ValueError("Displayed condition differs from source source details")
     input_manifest = _json(Path(index["source_run"]) / "input/manifest.json")
     for key in ("network_seed","stimulus_seed","duration_ms","scale","drive"):
         if metadata.get(key) != input_manifest.get(key):

@@ -292,7 +292,7 @@ def load_custom_biophysics(
         return None
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
-        raise ValueError(f"Custom biophysics bundle has no provenance manifest: {root}")
+        raise ValueError(f"Custom biophysics bundle has no source details manifest: {root}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or int(manifest.get("schema_version", 0)) != 1:
         raise ValueError(f"Unsupported custom morphology manifest: {manifest_path}")

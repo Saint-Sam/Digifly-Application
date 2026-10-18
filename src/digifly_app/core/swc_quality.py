@@ -1,4 +1,4 @@
-"""Post-import SWC radius auditing and conservative, provenance-rich repair.
+"""Post-import SWC radius auditing and conservative, source details-rich repair.
 
 The checker deliberately separates detection from mutation.  Scans are read-only;
 healing happens only after an explicit copy or overwrite choice and is verified to
@@ -385,7 +385,7 @@ def scan_recent_imports(
     """Audit only manifest-declared SWCs from recent managed imports.
 
     This intentionally does not crawl arbitrary legacy morphology roots or large
-    connectome datasets.  A provider manifest is the scope and provenance boundary.
+    connectome datasets.  A provider manifest is the scope and source details boundary.
     """
 
     if recent_days < 1:

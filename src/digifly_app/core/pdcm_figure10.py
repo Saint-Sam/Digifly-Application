@@ -280,7 +280,7 @@ def validate_prepared_bundle(run_root: str | Path) -> dict:
         or source.get("model_commit") != MODEL_COMMIT
         or source.get("source_fingerprint") != SOURCE_FINGERPRINT
     ):
-        raise ValueError("Figure 10 source provenance differs from the pinned branch")
+        raise ValueError("Figure 10 source source details differs from the pinned branch")
     original_hashes = validate_model_source(root / "author")
     if source.get("original_sha256") != original_hashes:
         raise ValueError("Figure 10 author copy differs from its source manifest")
@@ -396,7 +396,7 @@ def run_local(
         (provenance / "runtime_versions.stdout.txt").write_bytes(version_check.stdout)
         (provenance / "runtime_versions.stderr.txt").write_bytes(version_check.stderr)
         if version_check.returncode != 0:
-            raise RuntimeError("Figure 10 NetPyNE/NEURON runtime preflight failed; see provenance logs")
+            raise RuntimeError("Figure 10 NetPyNE/NEURON runtime preflight failed; see source details logs")
         versions = json.loads(version_check.stdout.decode("utf-8").splitlines()[-1])
         manifest["runtime_versions"] = versions
         _write_json(manifest_path, manifest)
@@ -417,7 +417,7 @@ def run_local(
             manifest[f"{stage}_exit_code"] = completed.returncode
             _write_json(manifest_path, manifest)
             if completed.returncode != 0:
-                raise RuntimeError(f"Figure 10 {stage} exited {completed.returncode}; see provenance logs")
+                raise RuntimeError(f"Figure 10 {stage} exited {completed.returncode}; see source details logs")
         raw = root / "data" / f"digifly_pdcm_figure10_{spec.profile}_data.json"
         if not raw.is_file() or raw.stat().st_size == 0:
             raise RuntimeError("Figure 10 execution did not save the expected NetPyNE JSON")
