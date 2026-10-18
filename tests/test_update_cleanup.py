@@ -142,6 +142,26 @@ def test_superseded_unchanged_draft_removed_but_edited_draft_kept(tmp_path, monk
     assert outcome["ok"] is not edited
 
 
+def test_legacy_upgrade_removes_only_archive_matching_exact_committed_tree(tmp_path, monkeypatch):
+    import shutil
+    request, data = committed(tmp_path, monkeypatch)
+    archive = Path(data["cleanup"]["archive"])
+    folder = request.parent.parent / "download-legacy"
+    folder.mkdir()
+    saved = folder / archive.name
+    shutil.copyfile(archive, saved)
+    shutil.copyfile(archive.with_name(archive.name + ".sha256"), saved.with_name(saved.name + ".sha256"))
+    # A neighboring unrelated archive is never inferred to be obsolete.
+    unknown = folder / "unknown.zip"
+    unknown.write_bytes(b"unrelated")
+    data.pop("cleanup")
+    request.write_text(json.dumps(data))
+    outcome = cleanup.cleanup_completed_update(request, request.parent.parent, wait_seconds=0)
+    assert outcome["ok"] and not saved.exists()
+    assert unknown.read_bytes() == b"unrelated"
+    assert Path(data["draft"]).exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Actual Windows junction")
 def test_windows_junction_never_followed(tmp_path):
     import subprocess

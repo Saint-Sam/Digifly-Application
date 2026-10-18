@@ -9,7 +9,7 @@ from pathlib import Path
 import traceback
 
 
-def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False) -> int:
+def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, legacy_request=False) -> int:
     from digifly_app.core.app_settings import SETTINGS_ROOT_ENV
     from digifly_app.core.resource_profile import PROFILE_PATH_ENV, make_standalone_profile
     from digifly_app.core.circuit import CircuitSpec
@@ -56,6 +56,8 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False) ->
     def prepared(result):
         request_path = Path(result)
         request = json.loads(request_path.read_text("utf-8"))
+        if legacy_request:
+            request.pop("cleanup", None)  # same journal fields as the shipped old updater
         request["engineering_test"] = "exit-before-startup" if fail_startup else "close-after-startup"
         request_path.write_text(json.dumps(request, indent=2), "utf-8")
         (destination / "transaction.json").write_text(json.dumps({"request": str(request_path)}), "utf-8")

@@ -32,10 +32,13 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
             or record.get("original_app_unchanged") is not True
             or record.get("unmarked_original_app_refused") is not True):
         raise ValueError("Missing, unsuccessful or stale native updater evidence.")
-    for name, status in (("install", "installed"), ("rollback", "rolled_back")):
+    cases = [("install", "installed"), ("rollback", "rolled_back")]
+    if record.get("legacy_request_checked"):
+        cases.append(("legacy_install", "installed"))
+    for name, status in cases:
         case = record["cases"][name]
         tree_check = "exact_tree_and_retained_backup_verified"
-        if name == "install" and record.get("cleanup_policy") == "after_verified_startup":
+        if name != "rollback" and record.get("cleanup_policy") == "after_verified_startup":
             tree_check = "exact_tree_and_cleanup_verified"
         if (case.get("status") != status or any(case.get(key) is not True for key in
                 ("external_files_unchanged", "draft_unchanged", tree_check))):
@@ -44,14 +47,16 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
         if (file_hash(screenshot) != case.get("screenshot_sha256") or screenshot.stat().st_size < 128
                 or screenshot.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n"):
             raise ValueError("Native updater screenshot is missing or changed.")
-        if name == "install":
+        if name != "rollback":
             startup = case.get("startup") or {}
             if startup.get("window_ready") is not True or startup.get("draft_restored") is not True or startup.get("executable_sha256") != executable_sha256:
                 raise ValueError("Native updater did not acknowledge the actual new window/draft.")
         elif not case.get("expected_failure"):
             raise ValueError("Rollback evidence lacks the injected startup failure.")
     if require_cleanup and (record.get("cleanup_policy") != "after_verified_startup"
-            or record["cases"]["install"].get("cleanup", {}).get("ok") is not True):
+            or not record.get("legacy_request_checked")
+            or any(record["cases"][name].get("cleanup", {}).get("ok") is not True
+                   for name in ("install", "legacy_install"))):
         raise ValueError("Missing native post-update cleanup evidence.")
     return record
 
@@ -63,6 +68,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
     before = tree_inventory(application)
     record = {"schema": "digifly-native-updater-gate-v1", "ok": False,
               "cleanup_policy": "after_verified_startup",
+              "legacy_request_checked": True,
               "platform": system, "archive_sha256": file_hash(archive),
               "source_app_executable_sha256": file_hash(executable_in(application, system)),
               "scope": "actual packaged app, offline verified-archive fixture, GUI update controls/workers, external copied-app helper, replacement and MainWindow/draft restart; explicit startup fault for rollback; not live GitHub transport, Windows11, SmartScreen or scientific acceptance", "cases": {}}
@@ -75,7 +81,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
     if refused.returncode == 0 or refusal.exists() or tree_inventory(application) != before:
         raise ValueError("The engineering route did not refuse the unmarked original app.")
     record["unmarked_original_app_refused"] = True
-    for name, failure in (("install", False), ("rollback", True)):
+    for name, failure in (("install", False), ("legacy_install", False), ("rollback", True)):
         case = output / name
         case.mkdir()
         target = case / application.name
@@ -96,6 +102,8 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         args = [str(executable_in(target, system)), "--package-update-test", str(case / "gui"), "--update-archive", str(archive)]
         if failure:
             args.append("--fail-new-startup")
+        if name == "legacy_install":
+            args.append("--legacy-update-request")
         with (case / "parent.log").open("xb") as log:
             process = subprocess.Popen(args, cwd=case, stdout=log, stderr=log,
                                        env={**os.environ, DISPOSABLE_TEST_ENV: str(disposable_marker)})
@@ -131,7 +139,11 @@ def check(application: Path, archive: Path, output: Path) -> dict:
             cleanup = json.loads((request_path.parent / "cleanup.json").read_text("utf-8"))
             if not cleanup.get("ok") or retained.exists() or Path(transaction["helper"]).exists():
                 raise ValueError("Successful updater did not remove its exact obsolete app copies.")
-            for owned in (transaction["cleanup"]["archive"], transaction["cleanup"]["stage"]):
+            expected_owned = ([transaction["cleanup"]["archive"], transaction["cleanup"]["stage"]]
+                              if "cleanup" in transaction else [str(p) for p in (case / "gui/cache").glob("download-*/*.zip")])
+            if name == "legacy_install" and not any(Path(p).suffix == ".zip" for p in cleanup["removed"]):
+                raise ValueError("Legacy updater archive was not independently identified and removed.")
+            for owned in expected_owned:
                 if Path(owned).exists():
                     raise ValueError("Successful updater retained its owned archive/extraction folder.")
         if (target.stat().st_ino == original_directory_id) != failure:

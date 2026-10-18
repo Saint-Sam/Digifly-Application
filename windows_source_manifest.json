@@ -50,8 +50,8 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "6e07381404cd66c4a1bf8d063ef196cf68fe15a14c1c2a74a6e119998f058cd2",
-      "bytes": 8337
+      "sha256": "17f1a85e4e0c71d6dee3b27d32106c90d58ad375b9cffc454d49676ef362bca3",
+      "bytes": 10123
     },
     "docs/WINDOWS_TESTER.md": {
       "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350",
@@ -182,8 +182,8 @@
       "bytes": 6821
     },
     "scripts/check_packaged_updater.py": {
-      "sha256": "8467f2e13942c792218c738f6bf0d5115aca30c6eb13b800fb55b19dc869e257",
-      "bytes": 10482
+      "sha256": "a1c5e2da11aae64ba7d2cdcf67229d3dab5b2668580180906258b69a99688498",
+      "bytes": 11264
     },
     "scripts/collect_windows_notices.py": {
       "sha256": "78293c624f5f93beb7cc31a6cd8dbc3bd65fddb1d19c773eeca9d4cbe063ea23",
@@ -274,8 +274,8 @@
       "bytes": 80
     },
     "src/digifly_app/app.py": {
-      "sha256": "9773e88b77a084e47884db49d7d5a1f1cf698b763b42b9f224525829a29273be",
-      "bytes": 4965
+      "sha256": "1fe120eae2e383cb66bcc11922d1169a0fcf6554b47cd95ca4c0e7edab6d75b9",
+      "bytes": 5116
     },
     "src/digifly_app/assets/BRANDING.md": {
       "sha256": "e0548e2021dd88a2617d3cbee27e1edac61f327647c65e4be924bf3d2d9eed88",
@@ -454,8 +454,8 @@
       "bytes": 4513
     },
     "src/digifly_app/core/update_cleanup.py": {
-      "sha256": "b46650c8aa319ccad9bb55f6d92d388102fc2cc967b7c36c7402096b950f2f7a",
-      "bytes": 9327
+      "sha256": "47eecf138fbe0d5c37878346c982df10fbf2a051c4e1874d9bbe1a8e86112c39",
+      "bytes": 11798
     },
     "src/digifly_app/core/update_installer.py": {
       "sha256": "87d7c30bf5205060cdd39e2182a72dd54463e938d11566d560f0cd3d463ccdaa",
@@ -678,8 +678,8 @@
       "bytes": 6000
     },
     "src/digifly_app/ui/package_update_smoke.py": {
-      "sha256": "566e2d5e636ab986507ad4dbd4b1eefaf80eeb6ffad7a08f3a03cfe64de8af3e",
-      "bytes": 3481
+      "sha256": "6f692db2b8492c98e72e7b2fe2dbd3e6f5beb50c33ab260b8247722d45a4a3a7",
+      "bytes": 3621
     },
     "src/digifly_app/ui/pair_graph_import.py": {
       "sha256": "9fd3369970c943a0917658795bf6e48911b849b8a32c874f6ed2270b3495726b",
@@ -846,8 +846,8 @@
       "bytes": 11335
     },
     "tests/test_update_cleanup.py": {
-      "sha256": "a347bcb0b36153f0545a87df73c8194140380f35b1f3cd110e220c6c85fadca1",
-      "bytes": 7701
+      "sha256": "f3f5693a815f36b1106ee61780a215c84741eeae5c166f6a172f171523013102",
+      "bytes": 8613
     },
     "tests/test_updater_gate.py": {
       "sha256": "4c2ca8187440b984f630f87916ba09d2824e75d9534504aa1ae4ef742ef5688b",

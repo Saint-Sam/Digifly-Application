@@ -12,10 +12,56 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import time
+import zipfile
+import hashlib
 
 from .update_installer import (SCHEMA, ParentWait, executable_in, file_hash,
-                               installation_root, tree_inventory, write_new)
+                               installation_root, tree_inventory, write_new, checked_members)
+
+
+def _legacy_artifacts(item: dict, cache_root: Path, target: Path) -> dict:
+    """Old updaters recorded the staged app but not the original ZIP path.
+
+    Accept a legacy download only when its checksum AND every archive member
+    match that exact successful app inventory. Unknown archives remain intact.
+    """
+    candidate = Path(item["candidate"])
+    relative = candidate.relative_to(target.parent)
+    stage = target.parent / relative.parts[0]
+    metadata = {"downloads": []}
+    if stage.name.startswith(".digifly-update-") and stage != candidate:
+        metadata.update(stage=str(stage), stage_remainder={})  # remove only empty leftovers
+    for archive in cache_root.glob("download-*/*.zip"):
+        try:
+            _plain_path(archive)
+            checksum = archive.with_name(archive.name + ".sha256")
+            _plain_path(checksum)
+            fields = checksum.read_text("ascii").split()
+            if not fields or file_hash(archive) != fields[0].lower():
+                continue
+            with zipfile.ZipFile(archive) as zipped:
+                actual = {}
+                for entry in checked_members(zipped, item["system"]):
+                    if entry.is_dir():
+                        continue
+                    name = entry.filename
+                    if item["system"] == "Darwin":
+                        if name.startswith("__MACOSX/"):
+                            continue
+                        name = name.split("/", 1)[1]
+                    content = zipped.read(entry)
+                    actual[name] = ({"link": content.decode("utf-8")} if stat.S_ISLNK(entry.external_attr >> 16)
+                                    else {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)})
+            expected = {name: {k: v for k, v in value.items() if k != "executable"}
+                        for name, value in item["candidate_inventory"].items()}
+            if actual == expected:
+                metadata["downloads"].append({"archive": str(archive), "archive_sha256": fields[0].lower(),
+                                               "checksum_sha256": file_hash(checksum)})
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+            continue
+    return metadata
 
 
 def _plain_path(path: Path) -> None:
@@ -124,8 +170,8 @@ def cleanup_completed_update(request_path: Path, cache_root: Path, *, wait_secon
             if Path(item["helper"]) != helper or Path(item["backup"]) != backup:
                 raise ValueError("Updater artifact paths differ from their exact owned locations.")
             trees = [(backup, item["original"]), (helper, item["original"])]
-            metadata = item.get("cleanup") or {}
-            if metadata:
+            metadata = item.get("cleanup") or _legacy_artifacts(item, cache_root, target)
+            if "stage" in metadata:
                 stage = Path(metadata["stage"])
                 candidate = Path(item["candidate"])
                 if (stage.parent != target.parent or not stage.name.startswith(".digifly-update-")
@@ -140,12 +186,13 @@ def cleanup_completed_update(request_path: Path, cache_root: Path, *, wait_secon
                         report["removed"].append(str(artifact))
                 except (OSError, ValueError) as exc:
                     report["kept"].append({"path": str(artifact), "reason": str(exc)})
-            if metadata:
-                archive = Path(metadata["archive"])
+            downloads = metadata.get("downloads", [metadata] if "archive" in metadata else [])
+            for download in downloads:
+                archive = Path(download["archive"])
                 # Never delete a manually selected ZIP outside updater cache.
                 if archive.parent.parent == cache_root and archive.parent.name.startswith("download-"):
-                    for artifact, expected_hash in ((archive, metadata["archive_sha256"]),
-                            (archive.with_name(archive.name + ".sha256"), metadata["checksum_sha256"])):
+                    for artifact, expected_hash in ((archive, download["archive_sha256"]),
+                            (archive.with_name(archive.name + ".sha256"), download["checksum_sha256"])):
                         _plain_path(artifact)
                         if artifact.exists():
                             if file_hash(artifact) != expected_hash:

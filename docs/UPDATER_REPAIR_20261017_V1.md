@@ -1,5 +1,33 @@
 # Windows updater completion gate
 
+## October18 cleanup override — current repair
+
+The user now requires obsolete update files to be removed automatically after
+a verified successful restart. This supersedes the older retain-every-copy
+policy below. The current app and active draft, saved projects, SWCs, datasets,
+installed simulators, run data and credentials remain protected. No broad
+folder/age-based sweep is permitted. Failed or live updates retain recovery.
+
+After the new MainWindow restores its draft and the installer exits, perform
+one bounded background cleanup pass over successful journals for this exact
+installation. Remove only unchanged recorded app backups/helper copies,
+verified updater-cache ZIP/checksum files and extraction leftovers. Keep small
+records and the currently open recovery draft; remove superseded unchanged
+auto-generated recovery snapshots, never edited drafts. Unexpected files,
+symlinks, Windows junctions, changed copies or uncertain ownership defer that
+item safely. Older journals without ZIP paths require checksum and complete
+archive-member matching against their committed app inventory; unknown ZIPs
+are not cleanup targets. No attempt is made to find/delete unrelated old apps
+or manually saved projects in Desktop/Downloads.
+
+Acceptance adds native successful cleanup and a legacy-journal upgrade case
+on both actual platforms, plus early-startup rollback with no cleanup. The
+paired validator requires this new evidence rather than accepting historical
+retention-only receipts. Unit negative cases cover unchanged/edited drafts,
+changed trees, live processes, wrong roots, locks, links and a native Windows
+junction. A small deletion record reports removed paths/logical bytes and any
+items kept; it is not a promise that disk free space increases by that amount.
+
 October17 paired-platform continuation: the human requires the same fixes in
 the Mac app. Its first candidate.20261017.3 passed the compiled neuron-list UI
 but failed actual disposable updater startup acknowledgement. Runtime context

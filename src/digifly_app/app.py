@@ -51,8 +51,10 @@ def main() -> int:
         parser.add_argument("--package-update-test", type=Path, required=True)
         parser.add_argument("--update-archive", type=Path, required=True)
         parser.add_argument("--fail-new-startup", action="store_true")
+        parser.add_argument("--legacy-update-request", action="store_true")
         args = parser.parse_args()
-        return run_update_smoke(args.package_update_test, args.update_archive, fail_startup=args.fail_new_startup)
+        return run_update_smoke(args.package_update_test, args.update_archive, fail_startup=args.fail_new_startup,
+                                legacy_request=args.legacy_update_request)
     if len(sys.argv) > 1 and sys.argv[1] == "--library-ui-review":
         import argparse
         from digifly_app.ui.package_library_smoke import run_library_review
