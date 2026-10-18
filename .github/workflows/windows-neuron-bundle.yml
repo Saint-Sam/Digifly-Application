@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261018.2
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261018.3
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4

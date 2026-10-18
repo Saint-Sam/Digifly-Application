@@ -130,6 +130,20 @@ def test_existing_detection_checks_unindexed_folder_bytes_and_keeps_them(state):
     assert json.loads(result.manifest.read_text())["files"][0]["path"] == "export_swc/MN/TTMn/43/43.swc"
 
 
+def test_replacement_keeps_existing_classified_folder(state):
+    profile, path = state
+    root = library_root(profile, SERVER, DATASET)
+    target = root / 'export_swc/MN/TTMn/43/43.swc'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(SWC)
+    review = inspect_existing_swcs(profile, SERVER, DATASET, (43,))
+    changed = SWC.replace(b'0 5', b'0 6')
+    result = _download(profile, path, body=43, kind='TTMn', review=review,
+                       replacements=(43,), data=changed)
+    assert target.read_bytes() == changed
+    assert json.loads(result.manifest.read_text())['files'][0]['path'] == review['43']['path']
+
+
 def test_stale_replacement_approval_refuses_before_fetch_or_overwrite(state):
     profile, path = state
     first = _download(profile, path)

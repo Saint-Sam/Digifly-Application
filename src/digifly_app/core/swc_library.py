@@ -204,7 +204,10 @@ def store_dataset_download(profile: ResourceProfile, profile_path: Path,
                     actions.append({"body_id": body, "action": "kept_existing", **existing})
                     continue
                 family, kind = _labels(Path(record["path"]), body, record)
-                relative = Path("export_swc") / family / kind / body / f"{body}.swc"
+                # A replacement refreshes the exact reviewed file, not its
+                # classification or location in the user's existing tree.
+                relative = (Path(existing["path"]) if existing else
+                            Path("export_swc") / family / kind / body / f"{body}.swc")
                 destination = root / relative
                 _plain_path(destination, profile.managed_data_root)
                 # Stage and verify bytes before moving any existing file.
