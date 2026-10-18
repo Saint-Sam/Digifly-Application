@@ -34,6 +34,13 @@ def test_valid_case_metadata_is_accepted_but_not_a_substitute_for_native_run(tmp
     assert gate.validate_evidence(*fixture(tmp_path))["ok"]
 
 
+def test_new_cleanup_gate_rejects_historical_retention_only_evidence(tmp_path):
+    receipt, archive, exe = fixture(tmp_path)
+    with pytest.raises(ValueError, match="cleanup"):
+        gate.validate_release_evidence(receipt, archive_sha256=gate.file_hash(archive),
+            executable_sha256=gate.file_hash(exe), system=gate.platform.system(), require_cleanup=True)
+
+
 @pytest.mark.parametrize("change", ["archive", "executable", "screenshot", "rollback", "startup"])
 def test_native_gate_rejects_stale_or_incomplete_evidence(tmp_path, change):
     receipt, archive, exe = fixture(tmp_path)

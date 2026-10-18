@@ -244,6 +244,9 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
     if tree_inventory(helper) != original:
         raise ValueError("The external installer copy did not match the running app.")
     token = uuid.uuid4().hex
+    candidate_prefix = candidate.relative_to(stage).as_posix() + "/"
+    stage_remainder = {name: item for name, item in tree_inventory(stage).items()
+                       if not name.startswith(candidate_prefix)}
     request = transaction / "request.json"
     write_new(request, {"schema": SCHEMA, "token": token, "system": system,
                        "parent_pid": os.getpid(), "target": str(target), "candidate": str(candidate),
@@ -251,6 +254,9 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
                        "failed": str(target.with_name(target.name + ".failed-" + token)),
                        "helper": str(helper), "draft": str(draft),
                        "draft_sha256": file_hash(draft), "original": original,
+                       "cleanup": {"archive": str(archive), "archive_sha256": file_hash(archive),
+                                   "checksum_sha256": file_hash(archive.with_name(archive.name + ".sha256")),
+                                   "stage": str(stage), "stage_remainder": stage_remainder},
                        "candidate_inventory": candidate_inventory})
     return request
 

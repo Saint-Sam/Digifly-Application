@@ -94,6 +94,7 @@ from digifly_app.core.updates import (
 from digifly_app.core.update_installer import (
     acknowledge_startup, installation_root, prepare_install, read_request, start_helper,
 )
+from digifly_app.core.update_cleanup import cleanup_completed_update
 from digifly_app.core.paths import (
     bundled_arbor_python,
     container_runtime_launcher,
@@ -190,6 +191,21 @@ class UpdatePreparationWorker(QThread):
     def run(self) -> None:
         try:
             self.succeeded.emit(prepare_install(*self.arguments))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class UpdateCleanupWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, request: Path, cache: Path, parent: QWidget):
+        super().__init__(parent)
+        self.request, self.cache = request, cache
+
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(cleanup_completed_update(self.request, self.cache))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -3170,7 +3186,9 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self, "Install update and restart?",
             "The update passed its integrity check. Install it and restart Digifly now?\n\n"
-            "A separate copy of this draft and the previous app will be kept. Your SWCs, runs, "
+            "Your draft and the previous app are kept until the new app opens successfully. "
+            "After that, obsolete updater app copies, installers and unchanged older recovery drafts "
+            "are removed automatically. Your current draft, saved projects, SWCs, runs, "
             "credentials and installed simulators will not be replaced. If the new app exits before "
             "opening the draft, the installer restores the previous app. A running but unresponsive "
             "new app is never force-closed; its backup stays available.",
@@ -3217,6 +3235,27 @@ class MainWindow(QMainWindow):
             experiment=self.experiment_page.config().to_dict(),
             notes=f"Update recovery copy. Previous project: {self.current_project_path or '(unsaved)'}",
         ).save(destination)
+
+    def _cleanup_installed_update(self, request_path: Path, request: dict) -> None:
+        self._update_cleanup_worker = UpdateCleanupWorker(request_path, request_path.parent.parent, self)
+        def finished(report):
+            removed = report["bytes_removed"] / 1024**2
+            message = f"Update installed. Removed {removed:.1f} MB of obsolete update files."
+            if report["kept"]:
+                message += " Some changed or recovery files were kept; see update details."
+            self.statusBar().showMessage(message)
+            if request.get("engineering_test"):
+                self.grab().save(str(request_path.parent / "reopened-window.png"))
+                QTimer.singleShot(1200, self.close)
+        def failed(message):
+            self.statusBar().showMessage("Update installed; cleanup deferred safely: " + message)
+            if request.get("engineering_test"):
+                self.grab().save(str(request_path.parent / "reopened-window.png"))
+                QTimer.singleShot(1200, self.close)
+        self._update_cleanup_worker.succeeded.connect(finished)
+        self._update_cleanup_worker.failed.connect(failed)
+        self._update_cleanup_worker.finished.connect(self._update_cleanup_worker.deleteLater)
+        self._update_cleanup_worker.start()
 
     def _update_prepared(self, result: object) -> None:
         request_path = Path(str(result))
@@ -3564,6 +3603,15 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: Any) -> None:
+        cleanup = getattr(self, "_update_cleanup_worker", None)
+        if cleanup is not None:
+            try:
+                if cleanup.isRunning():
+                    self.statusBar().showMessage("Finishing update cleanup; please try closing again in a moment.")
+                    event.ignore()
+                    return
+            except RuntimeError:
+                pass
         update = getattr(self, "_update_worker", None)
         if update is not None:
             try:
@@ -3652,10 +3700,11 @@ def launch(argv: list[str] | None = None) -> int:
                     if window.current_project_path != draft or not window.isVisible():
                         raise ValueError("The recovered draft could not be opened.")
                     acknowledge_startup(request_path, project_path=draft)
-                    window.statusBar().showMessage(f"Update installed. Previous app retained: {request['backup']}")
+                    window.statusBar().showMessage("Update installed. Cleaning up obsolete update files…")
+                    window._cleanup_installed_update(request_path, request)
                 else:
                     window.statusBar().showMessage(f"Update failed; previous app restored. Details: {request_path.parent}")
-                if request.get("engineering_test"):
+                if request.get("engineering_test") and arguments[1] != "--finish-update":
                     # Explicit disposable packaged-updater test only; never set
                     # by the normal updater. Preserve a real visible-window PNG.
                     window.grab().save(str(request_path.parent / "reopened-window.png"))

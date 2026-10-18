@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import shutil
 from pathlib import Path
 import traceback
 
@@ -36,7 +37,14 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False) ->
     # -> close -> external helper -> replacement -> actual MainWindow reopen.
     asset = updates.UpdateAsset(archive.name, "offline engineering fixture", "offline checksum", "")
     ui.check_for_update = lambda: updates.UpdateStatus(True, asset, "Explicit packaged updater check")
-    ui.download_verified_update = lambda selected: archive.resolve()
+    def download(selected):
+        folder = destination / "cache/download-fixture"
+        folder.mkdir(parents=True)
+        saved = folder / archive.name
+        shutil.copyfile(archive, saved)
+        shutil.copyfile(archive.with_name(archive.name + ".sha256"), saved.with_name(saved.name + ".sha256"))
+        return saved.resolve()
+    ui.download_verified_update = download
     ui.update_cache_root = lambda: destination / "cache"
     QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.Yes
     def failed(parent, title, text, *a, **kw):

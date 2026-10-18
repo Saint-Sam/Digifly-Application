@@ -23,7 +23,7 @@ def validate_evidence(receipt_path: Path, archive: Path, executable: Path) -> di
                                      executable_sha256=file_hash(executable), system=platform.system())
 
 
-def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows") -> dict:
+def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows", require_cleanup=False) -> dict:
     record = json.loads(receipt_path.read_text("utf-8"))
     if (record.get("schema") != "digifly-native-updater-gate-v1" or record.get("ok") is not True
             or record.get("platform") != system
@@ -34,8 +34,11 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
         raise ValueError("Missing, unsuccessful or stale native updater evidence.")
     for name, status in (("install", "installed"), ("rollback", "rolled_back")):
         case = record["cases"][name]
+        tree_check = "exact_tree_and_retained_backup_verified"
+        if name == "install" and record.get("cleanup_policy") == "after_verified_startup":
+            tree_check = "exact_tree_and_cleanup_verified"
         if (case.get("status") != status or any(case.get(key) is not True for key in
-                ("external_files_unchanged", "draft_unchanged", "exact_tree_and_retained_backup_verified"))):
+                ("external_files_unchanged", "draft_unchanged", tree_check))):
             raise ValueError("Native updater case did not pass all preservation checks.")
         screenshot = receipt_path.parent / (name + "-window.png")
         if (file_hash(screenshot) != case.get("screenshot_sha256") or screenshot.stat().st_size < 128
@@ -47,6 +50,9 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
                 raise ValueError("Native updater did not acknowledge the actual new window/draft.")
         elif not case.get("expected_failure"):
             raise ValueError("Rollback evidence lacks the injected startup failure.")
+    if require_cleanup and (record.get("cleanup_policy") != "after_verified_startup"
+            or record["cases"]["install"].get("cleanup", {}).get("ok") is not True):
+        raise ValueError("Missing native post-update cleanup evidence.")
     return record
 
 
@@ -56,6 +62,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
     system = platform.system()
     before = tree_inventory(application)
     record = {"schema": "digifly-native-updater-gate-v1", "ok": False,
+              "cleanup_policy": "after_verified_startup",
               "platform": system, "archive_sha256": file_hash(archive),
               "source_app_executable_sha256": file_hash(executable_in(application, system)),
               "scope": "actual packaged app, offline verified-archive fixture, GUI update controls/workers, external copied-app helper, replacement and MainWindow/draft restart; explicit startup fault for rollback; not live GitHub transport, Windows11, SmartScreen or scientific acceptance", "cases": {}}
@@ -114,18 +121,28 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         if after != (transaction["original"] if failure else transaction["candidate_inventory"]):
             raise ValueError("The installed/restored tree differs from its staged inventory.")
         retained = Path(transaction["failed"] if failure else transaction["backup"])
-        if tree_inventory(retained) != (transaction["candidate_inventory"] if failure else transaction["original"]):
-            raise ValueError("The preserved previous/failed app changed.")
+        cleanup = None
+        if failure:
+            if tree_inventory(retained) != transaction["candidate_inventory"]:
+                raise ValueError("The preserved failed app changed.")
+            if (request_path.parent / "cleanup.json").exists():
+                raise ValueError("A failed update must not start cleanup.")
+        else:
+            cleanup = json.loads((request_path.parent / "cleanup.json").read_text("utf-8"))
+            if not cleanup.get("ok") or retained.exists() or Path(transaction["helper"]).exists():
+                raise ValueError("Successful updater did not remove its exact obsolete app copies.")
+            for owned in (transaction["cleanup"]["archive"], transaction["cleanup"]["stage"]):
+                if Path(owned).exists():
+                    raise ValueError("Successful updater retained its owned archive/extraction folder.")
         if (target.stat().st_ino == original_directory_id) != failure:
             raise ValueError("The actual installation directory was not replaced/restored as expected.")
-        if not failure and retained.stat().st_ino != original_directory_id:
-            raise ValueError("The retained backup is not the original installation directory.")
         if tree_inventory(sentinels) != user_before or file_hash(Path(transaction["draft"])) != transaction["draft_sha256"]:
             raise ValueError("External data or saved draft changed.")
         # Make compact evidence portable out of the native runner.
         shutil.copyfile(request_path.parent / "reopened-window.png", output / (name + "-window.png"))
         record["cases"][name] = {"status": result["status"], "external_files_unchanged": True,
-                "draft_unchanged": True, "exact_tree_and_retained_backup_verified": True,
+                "draft_unchanged": True, "exact_tree_and_retained_backup_verified": failure,
+                "exact_tree_and_cleanup_verified": not failure, "cleanup": cleanup,
                 "startup": result.get("startup"), "expected_failure": result.get("error"),
                 "transaction": str(request_path), "screenshot": name + "-window.png"}
         record["cases"][name]["actual_directory_identity_transition_verified"] = True
