@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import ssl
@@ -184,9 +184,10 @@ class NeuPrintAcquisitionRequest:
             if not set(self.library_review).issubset({str(body) for body in body_ids}):
                 raise ValueError("Existing-file review does not match the selected neurons")
             for row in self.library_review.values():
-                path = Path(str(row.get("path", "")))
+                raw_path = str(row.get("path", ""))
+                path = PurePosixPath(raw_path)
                 if (not path.parts or path.parts[0] != "export_swc" or path.is_absolute()
-                        or ".." in path.parts or "\\" in str(path)
+                        or ".." in path.parts or "\\" in raw_path
                         or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("sha256", "")))):
                     raise ValueError("Invalid reviewed SWC path or checksum")
         if self.replacement_ids and not {str(body) for body in self.replacement_ids}.issubset(self.library_review or {}):

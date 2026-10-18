@@ -231,6 +231,17 @@ def test_duplicate_files_in_tree_do_not_choose_an_arbitrary_replacement(state):
         inspect_existing_swcs(profile, SERVER, DATASET, (42,))
 
 
+@pytest.mark.parametrize('relative', ['/export_swc/42.swc', '../export_swc/42.swc',
+    'export_swc/../../42.swc', 'C:/export_swc/42.swc', 'export_swc\\DN\\42.swc'])
+def test_reviewed_paths_keep_portable_grammar_and_reject_escape(state, relative):
+    request = NeuPrintAcquisitionRequest(SERVER, DATASET, 'review', 'one',
+        NeuPrintSelection('name_list', 'DNp01'), (NeuPrintNeuron(42, 'DNp01'),), 'fixture')
+    with pytest.raises(ValueError, match='Invalid reviewed'):
+        replace(request, library_review={'42': {'path': relative, 'sha256': 'a' * 64}})
+    valid = replace(request, library_review={'42': {'path': 'export_swc/DN/DNp01/42/42.swc', 'sha256': 'a' * 64}})
+    assert valid.library_review['42']['path'].startswith('export_swc/')
+
+
 def test_releases_origins_and_coordinate_units_are_not_merged(state, tmp_path):
     profile, path = state
     original = local(tmp_path, profile, "first")

@@ -358,8 +358,8 @@
       "bytes": 14276
     },
     "src/digifly_app/core/neuprint.py": {
-      "sha256": "fda0477d57d3027f3437ab07a7fb6134a5e651cba5a33d91094c376526db7537",
-      "bytes": 52683
+      "sha256": "3163bcc8d842afc6c0c3b9357e243b4e73b6b3da2a1c48c0fc99d3232ec6d792",
+      "bytes": 52742
     },
     "src/digifly_app/core/pair_graph.py": {
       "sha256": "746e620f5767355f744efb8da9ee99cb7b21fa3d5b2f364d11eed76cb9ccdbcd",
@@ -862,8 +862,8 @@
       "bytes": 644
     },
     "tests/test_swc_library.py": {
-      "sha256": "fb5461f6d6d41606d0d981400cfda68e5d5cba0ecba6b108d2a194a73df002ca",
-      "bytes": 16798
+      "sha256": "18fc4896926137beeea4a01ba3d160b5ddeb9657d67d5259ff5752ce337292f5",
+      "bytes": 17552
     },
     "tests/test_bundled_pair_graph.py": {
       "sha256": "c60eed3f8e11dbe61eda84caaa6143b64beedd08e6caaf82bc9e451aa341a418",
