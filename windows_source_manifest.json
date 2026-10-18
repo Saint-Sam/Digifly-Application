@@ -390,16 +390,16 @@
       "bytes": 41516
     },
     "src/digifly_app/core/pdcm_figure10.py": {
-      "sha256": "87b4ca4fc543ce02cb20017014e88dd947bb66a5009b3d16eb9576b43a721f2d",
-      "bytes": 27514
+      "sha256": "b3d7d299c3bcc82abf0d20814e997e775034819574031283357fcfd49d948dea",
+      "bytes": 27508
     },
     "src/digifly_app/core/pdcm_figure_bundle.py": {
       "sha256": "345429d041c751b0cce90fad0b8c127a87e754e67924da2b7779345b73f81e61",
       "bytes": 15095
     },
     "src/digifly_app/core/pdcm_replication.py": {
-      "sha256": "a2af0340307b1297316e2a4aa380f6098f3de90f4d633080d09c2af68430368b",
-      "bytes": 18617
+      "sha256": "1f495d470dab2d2d813cbffe2055db30fa2f5dfe210685c7568c9ccde2dd729f",
+      "bytes": 18611
     },
     "src/digifly_app/core/pdcm_source_view.py": {
       "sha256": "cd110441cb421b6106ee80a8d05852abff2e2f9e3417e3c2eaea1b4024719f6c",
@@ -474,8 +474,8 @@
       "bytes": 432
     },
     "src/digifly_app/engines/arbor_escape_siz.py": {
-      "sha256": "0c154cc16405631083afc036cee2babf9d0dfb70b304d3a1cc5346b4a02193b1",
-      "bytes": 59137
+      "sha256": "78e99476d468e041055acdfed9e92a969d3c661e92e2bf6444f99d8f5716d478",
+      "bytes": 59165
     },
     "src/digifly_app/engines/base.py": {
       "sha256": "746126f08f3d5941aaa981b6ceac79dba80e39b1c9f92f29d080ba07836acccd",
@@ -494,8 +494,8 @@
       "bytes": 67
     },
     "src/digifly_app/packaging/audit.py": {
-      "sha256": "660592d653d304685bdd892bcca4a655adcc71ef00a9698916a49f6284d0a80d",
-      "bytes": 26783
+      "sha256": "e57950cb1b33d59951134bb8f5f9fddb9a63ee1ede7684f6eaed53dd77692dd0",
+      "bytes": 26787
     },
     "src/digifly_app/pdcm_bionet/__init__.py": {
       "sha256": "4bd538c95bab54b0c276fae22ac43f570178f88c0f3839296d7db6856bd51cfc",
@@ -730,36 +730,36 @@
       "bytes": 6350
     },
     "src/digifly_app/workers/arbor_escape_siz_worker.py": {
-      "sha256": "61797648c8b283043594f6f3d28839c07d487a93b96a6d5efa59b975031fb7be",
-      "bytes": 65515
+      "sha256": "cb688280e14042e5a64ae76a14a059bc24d1220388686e84b56950acb0a54ea3",
+      "bytes": 65527
     },
     "src/digifly_app/workers/arbor_gap_bridge.py": {
-      "sha256": "6557ff491a5d07cb9bb7ec80eebe751b97983d1f166633fb75695c9894008cd9",
-      "bytes": 19557
+      "sha256": "c2dea933e91d44d07b6b7b2b3acdb316e29e01f6c7124ed76295c96f9eb155ff",
+      "bytes": 19565
     },
     "src/digifly_app/workers/arbor_legacy_cv_bridge.py": {
-      "sha256": "e86b6cf501d79813d524a3a4190115ac9f778844ed3f9a3d03b1e7720fe70416",
-      "bytes": 29065
+      "sha256": "adc2f92be6c5d991222248a29b89ab8e9cd29f0b726b9e515261f7c8a1f0eaa3",
+      "bytes": 29069
     },
     "src/digifly_app/workers/arbor_source_soma_diagnostic_worker.py": {
       "sha256": "9b33905b53e97a388138647e2d86311e41e7cff9333dc5d81d9aa0814e3770c8",
       "bytes": 71569
     },
     "src/digifly_app/workers/bmtk_bionet_worker.py": {
-      "sha256": "64511b6c6c11de50b9b3ba9ebf7ba41cceb283a3be275bd27ed9a4536adf97a9",
-      "bytes": 119222
+      "sha256": "3a495c8165e4f1df026497f12d2c39da49bd85e6288fd3ea18c43e7aaadd5d9f",
+      "bytes": 119230
     },
     "src/digifly_app/workers/escape_siz_worker.py": {
       "sha256": "9e921554189ca523d3adbed0d59913e9f66c46f3583abfbe9e51a8f0c4957d41",
       "bytes": 27761
     },
     "src/digifly_app/workers/exact_gap_equivalence_auditor.py": {
-      "sha256": "c6fadd28a70cc6bd01958c8ac1219c5561442ee1feafab022751192672c10519",
-      "bytes": 50027
+      "sha256": "75414182c0f06c5efc97a284edcbbc468433b71cb5b033be481b2dada7fb5775",
+      "bytes": 50041
     },
     "src/digifly_app/workers/generic_experiment_worker.py": {
-      "sha256": "eec484568e12ce4cf32f8507d1f1cc87b09812663f8b3aabedd7d5759906aef0",
-      "bytes": 191987
+      "sha256": "09dfc483f79aedaeae9dae07e9f5d37d57ec81b899ba5441f2466519391facfa",
+      "bytes": 191992
     },
     "src/digifly_app/workers/independent_trials.py": {
       "sha256": "d81efc6e657a0923bbfc8baf1cf67893d0cc1143326a858539d20b7e6058bcb8",
@@ -798,8 +798,8 @@
       "bytes": 39595
     },
     "src/digifly_app/workers/pdcm_netpyne_worker.py": {
-      "sha256": "359823360444e9a1d759fe453dd614f7c7318ee276d00e9468b02aabba086f10",
-      "bytes": 22922
+      "sha256": "bbe16a886ce0c28b3754d1a085ae9a6a4fc148c3aa89180509dbbad9370e5b70",
+      "bytes": 22920
     },
     ".github/workflows/windows-current-release.yml": {
       "sha256": "92e7acb3736e4ad2d0cd1622a66399bfe210543df3fb4616aadebe86c50b6b72",
@@ -810,7 +810,7 @@
       "bytes": 16380
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "676cb1e787bfe46e7a1052b53ee7dd6571f9ff7e1a3660d4c4ffc233b5b9abb6",
+      "sha256": "f85c79f726bf44e41cc333e33179a46de3bd200f19937e724b07f6a96f08b9fb",
       "bytes": 9839
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -858,8 +858,8 @@
       "bytes": 1262
     },
     "tests/test_ui_wording.py": {
-      "sha256": "241314aba6a0da5d6d1902eb7a8370f1c68472453b82197e34b0dee9e7a2fdb2",
-      "bytes": 644
+      "sha256": "e04c3243c51f50bceb9fa551031e43ea41bf7f6a2a6370a71a90ae998e383adc",
+      "bytes": 1407
     },
     "tests/test_swc_library.py": {
       "sha256": "18fc4896926137beeea4a01ba3d160b5ddeb9657d67d5259ff5752ce337292f5",

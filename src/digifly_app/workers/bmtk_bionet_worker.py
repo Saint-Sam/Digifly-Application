@@ -1886,7 +1886,7 @@ def _relative_artifact(
 def _file_provenance(output_dir: Path, path: Path) -> dict[str, Any]:
     resolved = path.resolve()
     if not _inside(resolved, output_dir) or not resolved.is_file():
-        raise ValueError(f"Cannot record provenance for {resolved}")
+        raise ValueError(f"Cannot record source details for {resolved}")
     return {
         "path": str(resolved.relative_to(output_dir)),
         "sha256": _common._sha256(resolved),
@@ -2273,7 +2273,7 @@ def _run(
     provenance_path = output_dir / "bmtk_bionet_provenance.json"
     _common._atomic_json(provenance_path, provenance_payload)
     artifacts.append(
-        {"kind": "document", "path": provenance_path.name, "label": "BioNet provenance"}
+        {"kind": "document", "path": provenance_path.name, "label": "BioNet source details"}
     )
 
     completed_at = _common._now()

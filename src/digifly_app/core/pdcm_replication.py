@@ -115,7 +115,7 @@ def validate_prepared_bundle(run_root: str | Path) -> dict:
         or not isinstance(original_hashes, dict)
         or any(original_hashes.get(name) != expected for name, expected in SOURCE_SHA256.items())
     ):
-        raise ValueError("PDCM source source details differs from pinned authors' revision")
+        raise ValueError("PDCM source identity differs from pinned authors' revision")
     expected_hashes = source.get("executed_sha256")
     if not isinstance(expected_hashes, dict) or set(expected_hashes) != set((*SOURCE_SHA256, "LICENSE")):
         raise ValueError("PDCM source manifest has an unexpected file list")

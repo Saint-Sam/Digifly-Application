@@ -543,7 +543,7 @@ def audit_artifact(
         except (ValueError, TypeError):
             notice_ok = False
         if not notice_ok:
-            issues.append(ArtifactIssue("invalid_bundled_pair_graph", PAIR_NOTICE, "The included scientific table requires its exact dataset/provenance/coverage notice."))
+            issues.append(ArtifactIssue("invalid_bundled_pair_graph", PAIR_NOTICE, "The included scientific table requires its exact dataset/source details/coverage notice."))
     if allow_bundled_arbor:
         try:
             marker = json.loads((bundled_arbor_marker.data if bundled_arbor_marker else b"").decode())

@@ -280,7 +280,7 @@ def validate_prepared_bundle(run_root: str | Path) -> dict:
         or source.get("model_commit") != MODEL_COMMIT
         or source.get("source_fingerprint") != SOURCE_FINGERPRINT
     ):
-        raise ValueError("Figure 10 source source details differs from the pinned branch")
+        raise ValueError("Figure 10 source identity differs from the pinned branch")
     original_hashes = validate_model_source(root / "author")
     if source.get("original_sha256") != original_hashes:
         raise ValueError("Figure 10 author copy differs from its source manifest")

@@ -595,7 +595,7 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
                 else (
                     f"Existing artifacts use {artifact_policy} ({source}); the current app uses "
                     f"{CURRENT_CV_POLICY}. Other-policy traces and audits are retained for "
-                    "provenance but are not evidence for the production policy."
+                    "source details but are not evidence for the production policy."
                 )
             ),
             path=str(summary),
@@ -717,7 +717,7 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
                 key="arbor_gap_catalogue",
                 title="App-owned Arbor gap catalogue",
                 state=CheckState.FAIL,
-                detail=f"Catalogue provenance manifest is missing: {manifest_path}",
+                detail=f"Catalogue source details manifest is missing: {manifest_path}",
                 blocking=True,
                 path=str(catalogue),
             )
@@ -743,7 +743,7 @@ class ArborEscapeSizAdapter(EngineAdapter[ArborAblationComparisonConfig]):
                 title="App-owned Arbor gap catalogue",
                 state=CheckState.FAIL,
                 detail=(
-                    "Catalogue provenance does not match the artifact or Arbor version: "
+                    "Catalogue source details does not match the artifact or Arbor version: "
                     f"manifest={manifest_path}, sha256={digest}."
                 ),
                 blocking=True,
@@ -927,7 +927,7 @@ def _artifact_cv_policy(
 ) -> tuple[str, str]:
     bridge = dict(payload.get("legacy_neuron_cv_bridge") or {})
     if bridge.get("cv_policy"):
-        return str(bridge["cv_policy"]), "summary bridge provenance"
+        return str(bridge["cv_policy"]), "summary bridge source details"
     root = summary_path.parent.resolve()
     candidates: list[str] = []
     candidates.extend(str(value) for value in dict(payload.get("planned_configs") or {}).values())
@@ -954,7 +954,7 @@ def _artifact_cv_policy(
         return next(iter(policies)), "saved run/config artifact"
     if policies:
         return "mixed:" + ",".join(sorted(policies)), "inconsistent saved configs"
-    return "unknown", "no saved CV-policy provenance"
+    return "unknown", "no saved CV-policy source details"
 
 
 def _audit_cv_policy(
@@ -1101,7 +1101,7 @@ def load_arbor_ablation_result(path: str | Path) -> ResultRecord:
         "equivalence audit": payload.get("equivalence_audit_status", "not recorded"),
         "artifact CV policy": artifact_policy,
         "current CV policy": CURRENT_CV_POLICY,
-        "CV policy provenance": artifact_policy_source,
+        "CV policy source details": artifact_policy_source,
         "topology equivalence claim": False,
     }
     audit = _latest_equivalence_report(summary_path.parent)
@@ -1139,7 +1139,7 @@ def load_arbor_ablation_result(path: str | Path) -> ResultRecord:
                     state=CheckState.WARNING,
                     detail=(
                         f"This audit used {audit_policy}; the current app uses {CURRENT_CV_POLICY}. "
-                        "It is retained for provenance but is not evidence for the production policy."
+                        "It is retained for source details but is not evidence for the production policy."
                     ),
                     blocking=False,
                     path=str(audit_path),

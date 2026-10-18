@@ -12,3 +12,17 @@ def test_interface_uses_plain_labels():
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and unwanted in node.value.casefold():
                 failures.append(f'{path.name}:{node.lineno}')
     assert not failures, failures
+
+
+def test_execution_errors_use_plain_labels():
+    unwanted = ''.join(map(chr, [112, 114, 111, 118, 101, 110, 97, 110, 99, 101]))
+    root = Path(__file__).resolve().parents[1] / 'src/digifly_app'
+    failures = []
+    for folder in ('core', 'workers', 'engines', 'packaging'):
+        for path in (root / folder).glob('*.py'):
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+                if isinstance(node, ast.Raise) and node.exc:
+                    for value in ast.walk(node.exc):
+                        if isinstance(value, ast.Constant) and isinstance(value.value, str) and unwanted in value.value.casefold():
+                            failures.append(f'{path.name}:{value.lineno}')
+    assert not failures, failures

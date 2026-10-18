@@ -51,7 +51,7 @@ class ArborLegacyCVBridgeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArborLegacyCVBridge:
-    """Installed bridge identity and JSON-safe provenance."""
+    """Installed bridge identity and JSON-safe source details."""
 
     arbor_version: str
     runner_module: str

@@ -3,7 +3,7 @@
 
 The staged Arbor project is input-only.  This wrapper materializes the
 notebook's no-direct-GF chemical table, plans, simulations, metrics, plots,
-and provenance beneath ``--output-root/escape_siz/arbor``.
+and source details beneath ``--output-root/escape_siz/arbor``.
 
 The gap-enabled condition uses the app-owned ``hetero_rect_gap`` Arbor
 junction catalogue.  It preserves the NEURON mechanism equations and locked
@@ -124,7 +124,7 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=0.20,
         help=(
-            "Deprecated locked provenance value from the legacy comparison. "
+            "Deprecated locked source details value from the legacy comparison. "
             "It is not used as HeteroRectGap closed conductance."
         ),
     )
@@ -649,7 +649,7 @@ def _assert_legacy_seed_ais_contract(
     actual_metadata = dict((config.get("metadata") or {}).get("legacy_seed_ais_biophysics") or {})
     if actual_metadata != expected_metadata:
         raise RuntimeError(
-            "Saved stimulated-cell AIS provenance changed: "
+            "Saved stimulated-cell AIS source details changed: "
             f"expected={expected_metadata}, found={actual_metadata}"
         )
 

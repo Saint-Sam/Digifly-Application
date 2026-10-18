@@ -90,7 +90,7 @@ def _validated_request(request_path: Path) -> tuple[Path, dict, dict]:
         or not isinstance(original_hashes, dict)
         or any(original_hashes.get(name) != digest for name, digest in SOURCE_SHA256.items())
     ):
-        raise ValueError("PDCM source provenance differs from pinned authors' revision")
+        raise ValueError("PDCM source identity differs from pinned authors' revision")
     executed_hashes = provenance.get("executed_sha256")
     if not isinstance(executed_hashes, dict) or set(executed_hashes) != set((*SOURCE_SHA256, "LICENSE")):
         raise ValueError("PDCM source manifest has an unexpected file list")

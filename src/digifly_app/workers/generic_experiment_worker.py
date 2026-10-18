@@ -150,7 +150,7 @@ def _validate_gap_contact_placement(contact: Mapping[str, Any], policy: Mapping[
         provenance = dict(contact.get("coordinate_sources") or {}).get(end)
         if placement == "imported_contact_sites":
             if provenance not in {f"{end}_xyz", f"{'post' if end=='pre' else 'pre'}_xyz_fallback"}:
-                raise ValueError("Electrical coordinate provenance is invalid")
+                raise ValueError("Electrical coordinate source details is invalid")
             if f"{end}_source_edge_fraction" in contact:
                 raise ValueError("Imported contacts cannot acquire a synthetic edge fraction")
         elif provenance != f"synthetic_geometric_{placement}" or float(contact.get(f"{end}_source_edge_fraction", -1)) != .5:
@@ -615,7 +615,7 @@ def _normalize_swc(
     source_label: str = "Source SWC",
     coordinate_transform: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path, str]:
-    """Write an isomorphic parent-before-child SWC plus an ID provenance map.
+    """Write an isomorphic parent-before-child SWC plus an ID source details map.
 
     When an expected digest is supplied, it is checked against the same byte
     stream that is parsed. The resulting normalized file is therefore a frozen
@@ -1695,7 +1695,7 @@ def _validate_edge_source_identity(edge_manifest: Mapping[str, Any]) -> None:
             if not manifest_path.is_file() or _sha256(manifest_path) != str(
                 source.get("manifest_sha256") or ""
             ):
-                raise ValueError("An edge-source provenance manifest changed after preflight")
+                raise ValueError("An edge-source manifest changed after preflight")
         elif kind == "immutable_sqlite":
             stat = path.stat()
             if int(source.get("size_bytes", -1)) != stat.st_size or int(
@@ -1949,7 +1949,7 @@ def _arbor_network_traces(
         catalogue_manifest_path = catalogue_path.with_name("catalogue_manifest.json")
         if not catalogue_manifest_path.is_file():
             raise FileNotFoundError(
-                f"The Arbor gap catalogue provenance manifest is missing: {catalogue_manifest_path}"
+                f"The Arbor gap catalogue source details manifest is missing: {catalogue_manifest_path}"
             )
         catalogue_manifest = json.loads(
             catalogue_manifest_path.read_text(encoding="utf-8")
@@ -1961,7 +1961,7 @@ def _arbor_network_traces(
             or catalogue_manifest.get("catalogue_sha256") != _sha256(catalogue_path)
         ):
             raise ValueError(
-                "The Arbor gap catalogue does not match its ABI provenance manifest"
+                "The Arbor gap catalogue does not match its ABI source details manifest"
             )
         properties.catalogue.extend(
             arbor.load_catalogue(str(catalogue_path)), "digifly_"

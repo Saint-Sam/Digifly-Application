@@ -353,7 +353,7 @@ def exact_gap_contract_checks(
 
     ``gap_model_comparison`` is the primary, human-readable contract saved in
     ``comparison_summary.json``.  The catalogue hash/path and installation are
-    independently cross-checked against ``worker_provenance.json`` and the
+    independently cross-checked against ``the worker source record`` and the
     actual catalogue file.  Config mappings are optional for unit-level use,
     but a full audit supplies both condition configs.
     """
@@ -543,7 +543,7 @@ def exact_gap_contract_checks(
         rows,
         category="provenance",
         name="catalogue path cross-checked",
-        expected="matching summary and worker-provenance paths",
+        expected="matching summary and worker-source details paths",
         actual={"summary": str(summary_catalogue_path or ""), "provenance": str(provenance_catalogue_path or "")},
         passed=paths_match,
     )
@@ -555,7 +555,7 @@ def exact_gap_contract_checks(
         rows,
         category="provenance",
         name="catalogue SHA-256 cross-checked",
-        expected="same 64-character SHA-256 in summary and worker provenance",
+        expected="same 64-character SHA-256 in summary and worker source details",
         actual={"summary": summary_hash, "provenance": provenance_hash},
         passed=declared_hash_ok,
     )
@@ -984,7 +984,7 @@ def audit_exact_gap_equivalence(
         )
     if str(worker_provenance.get("comparison_class")) != "app_owned_equation_port":
         raise ExactGapAuditError(
-            "Worker provenance does not identify the app-owned equation port: "
+            "Worker source details does not identify the app-owned equation port: "
             f"{worker_provenance.get('comparison_class')!r}"
         )
     enabled_config = _json(arbor_runs["gap_enabled"] / "config.json")

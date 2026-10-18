@@ -70,7 +70,7 @@ class ArborGapBridgeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArborGapBridge:
-    """Installed bridge identity and provenance."""
+    """Installed bridge identity and source details."""
 
     arbor_version: str
     catalogue_path: str
@@ -81,7 +81,7 @@ class ArborGapBridge:
 
     @property
     def metadata(self) -> dict[str, Any]:
-        """Return a JSON-safe description suitable for run provenance."""
+        """Return a JSON-safe description suitable for run source details."""
 
         return {
             "status": "installed",
