@@ -58,3 +58,5 @@ jobs:
             ${{ runner.temp }}/release-evidence/updater-evidence/receipt.json
             ${{ runner.temp }}/release-evidence/updater-evidence/*-window.png
             ${{ runner.temp }}/release-evidence/updater-evidence/*/gui/metadata-safety.json
+            ${{ runner.temp }}/release-evidence/updater-evidence/**/*.log
+            ${{ runner.temp }}/release-evidence/updater-evidence/*/gui/cache/install-*/*.json
