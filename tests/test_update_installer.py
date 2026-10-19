@@ -15,7 +15,8 @@ from digifly_app.core import update_installer as installer
 def fake_app(root, value=b"MZold"):
     root.mkdir(parents=True)
     (root / "Digifly Workstation.exe").write_bytes(value)
-    (root / "digifly_build.json").write_text('{"version":"0.1.0"}')
+    build = "20261019.2" if value == b"MZnew" else "20261019.1"
+    (root / "digifly_build.json").write_text(json.dumps({"version":"0.1.0", "build": build}))
     files = {p.name: {"sha256": installer.file_hash(p), "bytes": p.stat().st_size} for p in root.iterdir()}
     (root / installer.MARKER).write_text(json.dumps({"schema": "digifly-windows-package-v1", "files": files}))
     return root
@@ -78,6 +79,18 @@ def test_prepare_leaves_current_app_and_external_data_untouched(tmp_path, monkey
     assert not Path(data["backup"]).exists()
     assert sentinel.read_text() == "user data"
     assert installer.tree_inventory(Path(data["helper"])) == data["original"]
+
+
+@pytest.mark.parametrize("candidate", ["20261018.1", "20261019.1", "broken"])
+def test_install_refuses_stale_or_unknown_candidate_before_helper(tmp_path, monkeypatch, candidate):
+    old = fake_app(tmp_path / 'old')
+    new = fake_app(tmp_path / 'new', b'MZnew')
+    (new / 'digifly_build.json').write_text(json.dumps({"version": "not-a-version" if candidate == "broken" else "0.1.0", "build": candidate}))
+    monkeypatch.delenv(installer.DISPOSABLE_TEST_ENV, raising=False)
+    before = installer.tree_inventory(old)
+    with pytest.raises(ValueError, match="Refusing|could not be verified"):
+        installer.require_newer_build(old, new, 'Windows')
+    assert installer.tree_inventory(old) == before
 
 
 def test_candidate_tamper_after_staging_never_replaces_old_app(tmp_path, monkeypatch):

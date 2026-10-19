@@ -20,7 +20,28 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, le
 
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
-    from digifly_app.core.update_installer import running_executable
+    from digifly_app.core.update_installer import running_executable, installation_root, installed_build_info
+    metadata = updates.build_info()
+    installed = installed_build_info(installation_root(), __import__('platform').system())
+    if not metadata or metadata != installed:
+        raise ValueError("Packaged updater build metadata is missing or differs from the installed app.")
+    # Reproduce the actual historical public catalog without replacing the
+    # packaged build reader. A newer upload timestamp is deliberately hostile.
+    fragment = updates.platform_asset_fragment()
+    name = 'Digifly-Workstation-0.1.0-alpha.1-' + fragment
+    read = updates._read_json
+    updates._read_json = lambda url: {"assets": [
+        {"name": name, "browser_download_url": "offline", "updated_at": "2099-01-01T00:00:00Z"},
+        {"name": name + '.sha256', "browser_download_url": "offline"}]}
+    try:
+        result = updates.check_for_update()
+        if result.available:
+            raise ValueError("Actual packaged metadata offered a historical downgrade.")
+    finally:
+        updates._read_json = read
+    (destination / "metadata-safety.json").write_text(json.dumps({
+        "ok": True, "build_info": metadata, "actual_build_reader_used": True,
+        "historical_catalog_refused": True}), "utf-8")
     (destination / "runtime-context.json").write_text(json.dumps({
         "runtime_executable": sys.executable, "loaded_module_executable": str(running_executable()),
         "argv0": sys.argv[0]}, indent=2), "utf-8")

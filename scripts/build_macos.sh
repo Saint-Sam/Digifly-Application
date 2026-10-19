@@ -235,6 +235,10 @@ if [[ ! -f "$stage_bundle/Contents/Info.plist" || ! -x "$stage_bundle/Contents/M
   exit 3
 fi
 
+# Updater identity must be inside the delivered app, not merely in its source
+# ledger. Omitting this file previously allowed a historical public downgrade.
+cp "$stage_root/digifly_build.json" "$stage_bundle/Contents/MacOS/digifly_build.json"
+
 # Nuitka deliberately excludes .py from --include-data-dir. These frozen files
 # are source inputs to an external qualified interpreter, not GUI modules.
 "$stage_python" "$stage_root/scripts/stage_pdcm_bionet_assets.py" \
@@ -261,7 +265,12 @@ cp "$stage_root/src/digifly_app/core/pdcm_bionet_5pct_app.py" \
   --source "$stage_root" --freeze "$stage_root/build_source_freeze.json" --bundle "$stage_bundle" \
   --freeze-sha256 "$build_source_freeze_sha256"
 
-"$project_dir/scripts/bundle_arbor_runtime_macos.sh" "$stage_bundle"
+if [[ -n "${DIGIFLY_PRESERVE_RUNTIME_FROM:-}" ]]; then
+  "$stage_python" "$stage_root/scripts/preserve_macos_runtime.py" \
+    --source "$DIGIFLY_PRESERVE_RUNTIME_FROM" --bundle "$stage_bundle"
+else
+  "$project_dir/scripts/bundle_arbor_runtime_macos.sh" "$stage_bundle"
+fi
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"

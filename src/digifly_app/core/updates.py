@@ -53,8 +53,17 @@ def build_info() -> dict[str, Any]:
         from digifly_app.core.paths import resource_path
 
         value = json.loads(resource_path("digifly_build.json").read_text("utf-8"))
-        return value if isinstance(value, dict) else {}
+        if isinstance(value, dict) and _version_key(str(value.get("version", "")), str(value.get("build", ""))) is not None:
+            return value
     except (OSError, ValueError, TypeError):
+        pass
+    # Older Mac packages accidentally omitted the JSON. Use the *loaded*
+    # app's Info.plist, never the compiler's remembered Python executable.
+    try:
+        from digifly_app.core.update_installer import installation_root, installed_build_info
+
+        return installed_build_info(installation_root(), platform.system())
+    except (OSError, ValueError, TypeError, KeyError):
         return {}
 
 
@@ -138,11 +147,11 @@ def check_for_update(*, release_api: str = RELEASE_API) -> UpdateStatus:
     current = build_info()
     local_key = _version_key(str(current.get("version", "")), str(current.get("build", "")))
     remote_key = _version_key(version)
-    if local_key is not None and (local_key[:3] != remote_key[:3] or local_key[3:] != (0, 0) or remote_key[3:] != (0, 0)):
-        available = remote_key > local_key
-    else:
-        built_at = str(current.get("built_at", ""))
-        available = not built_at or _time_key(asset.updated_at) > _time_key(built_at)
+    if local_key is None:
+        return UpdateStatus(False, None, "This app's build number could not be verified. Automatic replacement is disabled; install the current verified download manually.")
+    # Upload/edit times do not identify an app version. Never let a refreshed
+    # historical ZIP or missing metadata trigger replacement of a newer app.
+    available = remote_key > local_key
     return UpdateStatus(available, asset, "Update available." if available else "This build is current.")
 
 

@@ -37,6 +37,11 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
         cases.append(("legacy_install", "installed"))
     for name, status in cases:
         case = record["cases"][name]
+        metadata_path = receipt_path.parent / name / "gui/metadata-safety.json"
+        if record.get("metadata_safety_checked"):
+            metadata = json.loads(metadata_path.read_text("utf-8"))
+            if not all(metadata.get(key) is True for key in ("ok", "actual_build_reader_used", "historical_catalog_refused")):
+                raise ValueError("Missing actual packaged metadata/downgrade check.")
         tree_check = "exact_tree_and_retained_backup_verified"
         if name != "rollback" and record.get("cleanup_policy") == "after_verified_startup":
             tree_check = "exact_tree_and_cleanup_verified"
@@ -69,6 +74,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
     record = {"schema": "digifly-native-updater-gate-v1", "ok": False,
               "cleanup_policy": "after_verified_startup",
               "legacy_request_checked": True,
+              "metadata_safety_checked": True,
               "platform": system, "archive_sha256": file_hash(archive),
               "source_app_executable_sha256": file_hash(executable_in(application, system)),
               "scope": "actual packaged app, offline verified-archive fixture, GUI update controls/workers, external copied-app helper, replacement and MainWindow/draft restart; explicit startup fault for rollback; not live GitHub transport, Windows11, SmartScreen or scientific acceptance", "cases": {}}

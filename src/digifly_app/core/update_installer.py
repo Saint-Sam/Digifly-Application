@@ -95,6 +95,39 @@ def executable_in(root: Path, system: str) -> Path:
     return root / ("Digifly Workstation.exe" if system == "Windows" else "Contents/MacOS/main")
 
 
+def installed_build_info(root: Path, system: str) -> dict:
+    """Read package identity without executing it or consulting upload times."""
+    metadata = root / ("Contents/MacOS/digifly_build.json" if system == "Darwin" else "digifly_build.json")
+    try:
+        value = json.loads(metadata.read_text("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("Invalid app build metadata.")
+        return value
+    except FileNotFoundError:
+        if system != "Darwin":
+            raise ValueError("App build metadata is missing.")
+        info = plistlib.loads((root / "Contents/Info.plist").read_bytes())
+        return {"version": info.get("CFBundleShortVersionString", ""), "build": info.get("CFBundleVersion", "")}
+
+
+def require_newer_build(target: Path, candidate: Path, system: str) -> dict:
+    from digifly_app.core.updates import _version_key
+
+    old, new = installed_build_info(target, system), installed_build_info(candidate, system)
+    old_key = _version_key(str(old.get("version", "")), str(old.get("build", "")))
+    new_key = _version_key(str(new.get("version", "")), str(new.get("build", "")))
+    if old_key is None or new_key is None:
+        raise ValueError("App build numbers could not be verified; automatic replacement is disabled.")
+    if new_key <= old_key:
+        # Same-build fixtures are allowed only beside the exact disposable app
+        # marker; production never uses a general environment bypass.
+        if new_key == old_key and os.environ.get(DISPOSABLE_TEST_ENV):
+            require_disposable_test()
+        else:
+            raise ValueError("Refusing an older or identical app build. Your current app and saved settings were not replaced.")
+    return {"original": old, "candidate": new}
+
+
 def require_disposable_test() -> None:
     """The auto-consenting engineering route must never target a normal app."""
     value = os.environ.get(DISPOSABLE_TEST_ENV, "")
@@ -236,6 +269,7 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
                            check=True, capture_output=True, timeout=180)
             candidate = next(p for p in extraction.iterdir() if p.suffix == ".app")
     candidate_inventory = validate_app(candidate, system)
+    versions = require_newer_build(target, candidate, system)
     helper = transaction / ("helper.app" if system == "Darwin" else "helper")
     if system == "Darwin":
         subprocess.run(["/usr/bin/ditto", str(target), str(helper)], check=True, capture_output=True, timeout=180)
@@ -257,7 +291,7 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
                        "cleanup": {"archive": str(archive), "archive_sha256": file_hash(archive),
                                    "checksum_sha256": file_hash(archive.with_name(archive.name + ".sha256")),
                                    "stage": str(stage), "stage_remainder": stage_remainder},
-                       "candidate_inventory": candidate_inventory})
+                       "candidate_inventory": candidate_inventory, "build_check": versions})
     return request
 
 

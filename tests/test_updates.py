@@ -74,10 +74,31 @@ def test_equal_or_newer_local_build_is_not_offered_an_update(monkeypatch, local)
 
 
 def test_private_Mac_date_build_never_downgrades_to_legacy_public_asset(monkeypatch):
-    monkeypatch.setattr(updates, "_read_json", lambda url: {"assets": list(_release_asset("0.1.0-alpha.1"))})
-    monkeypatch.setattr(updates, "platform_asset_fragment", lambda: "Windows-x86_64.zip")
+    assets = [{**item, "name": item["name"].replace("Windows-x86_64", "macOS-arm64")} for item in _release_asset("0.1.0-alpha.1")]
+    monkeypatch.setattr(updates, "_read_json", lambda url: {"assets": assets})
+    monkeypatch.setattr(updates, "platform_asset_fragment", lambda: "macOS-arm64.zip")
     monkeypatch.setattr(updates, "build_info", lambda: {"version": "0.1.0", "build": "20261016.4"})
     assert not updates.check_for_update().available
+
+
+def test_missing_build_metadata_fails_closed_even_for_recent_asset(monkeypatch):
+    monkeypatch.setattr(updates, "_read_json", lambda url: {"assets": list(_release_asset("0.1.0-alpha.1", "2099-01-01T00:00:00Z"))})
+    monkeypatch.setattr(updates, "platform_asset_fragment", lambda: "Windows-x86_64.zip")
+    monkeypatch.setattr(updates, "build_info", lambda: {})
+    status = updates.check_for_update()
+    assert not status.available and status.asset is None and "could not be verified" in status.reason
+
+
+def test_mac_metadata_fallback_reads_loaded_app_not_source(tmp_path, monkeypatch):
+    import plistlib
+    from digifly_app.core import paths, update_installer
+    app = tmp_path / "Current.app"
+    (app / 'Contents').mkdir(parents=True)
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({"CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "20261019.1"}))
+    monkeypatch.setattr(paths, "resource_path", lambda name: tmp_path / 'missing.json')
+    monkeypatch.setattr(update_installer, 'installation_root', lambda: app)
+    monkeypatch.setattr(updates.platform, 'system', lambda: 'Darwin')
+    assert updates.build_info() == {"version": "0.1.0", "build": "20261019.1"}
 
 
 @pytest.mark.parametrize("name", ["../app.zip", "/tmp/app.zip", "C:\\app.zip", "app:stream.zip"])

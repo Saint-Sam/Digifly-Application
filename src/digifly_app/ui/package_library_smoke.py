@@ -49,7 +49,7 @@ def run_library_smoke(destination: Path) -> int:
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
     from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea
     from PySide6.QtTest import QTest
-    from digifly_app.core.resource_profile import PROFILE_PATH_ENV, ResourceProfile, ResourceKind, make_standalone_profile
+    from digifly_app.core.resource_profile import PROFILE_PATH_ENV, ResourceProfile, ResourceKind, ResourceBinding, AccessMode, make_standalone_profile
     from digifly_app.core.neuprint import NeuPrintClient, NeuPrintDataset
     from digifly_app.core.providers import profile_connectome_sources
     from digifly_app.core.connectomes import ConnectomeCatalog
@@ -71,6 +71,14 @@ def run_library_smoke(destination: Path) -> int:
     try:
         profile_path = destination / "workspace/config/resources.json"
         profile = make_standalone_profile(workstation_root=destination / "workspace")
+        # Existing profiles may contain every supported simulator, unlike the
+        # old clean-install fixture which missed the reported NetPyNE failure.
+        from dataclasses import replace
+        runtimes = (ResourceKind.NEURON_RUNTIME, ResourceKind.ARBOR_RUNTIME,
+                    ResourceKind.BMTK_RUNTIME, ResourceKind.NETPYNE_RUNTIME)
+        profile = replace(profile, resources=tuple(r for r in profile.resources if r.kind not in runtimes) + tuple(
+            ResourceBinding('saved-' + kind.value, kind, str(destination / 'existing-runtime' / kind.value),
+                            AccessMode.EXECUTABLE, required=False) for kind in runtimes))
         profile.save(profile_path)
         os.environ[PROFILE_PATH_ENV] = str(profile_path)
         os.environ[SETTINGS_ROOT_ENV] = str(destination / "settings")
@@ -89,6 +97,12 @@ def run_library_smoke(destination: Path) -> int:
         page = window.data_library_page
         window.pages.setCurrentWidget(page)
         QTest.qWait(400)
+        page.refresh()
+        if any(not ResourceProfile.load(profile_path).binding(kind) for kind in runtimes):
+            raise ValueError("Saved simulator bindings were lost on Data Library refresh.")
+        if any("ResourceKind" in item['text'] for item in record['dialogs']):
+            raise ValueError("Existing simulator profile breaks Data Library.")
+        record["existing_simulator_profile_loaded"] = [kind.value for kind in runtimes]
 
         swc = b"1 1 0 0 0 5 -1\n2 3 1 0 0 1 1\n"
         # Keep the production query builder and parser in this packaged UI
@@ -262,6 +276,8 @@ def run_library_smoke(destination: Path) -> int:
         QTest.mouseClick(page.swc_intake_button, Qt.MouseButton.LeftButton)
         wait_for(lambda: not page.import_in_progress, "Local SWC intake worker did not finish")
         restored = ResourceProfile.load(profile_path)
+        if any(restored.binding(kind) != profile.binding(kind) for kind in runtimes):
+            raise ValueError("Data Library import changed saved simulator bindings.")
         if len(restored.bindings(ResourceKind.MORPHOLOGY_SOURCE)) != 1:
             raise ValueError("More than one dataset library binding was registered")
         source, = profile_connectome_sources(restored)

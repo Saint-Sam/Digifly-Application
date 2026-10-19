@@ -15,7 +15,7 @@ def inputs(root: Path) -> list[Path]:
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
              "scripts/check_packaged_updater.py", "docs/UPDATER_REPAIR_20261017_V1.md",
-             "scripts/stage_pdcm_bionet_scalable_assets.py", "docs/WINDOWS_TESTER.md"}
+             "scripts/stage_pdcm_bionet_scalable_assets.py", "scripts/preserve_macos_runtime.py", "docs/WINDOWS_TESTER.md"}
     metadata = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
     for files in metadata["tool"]["setuptools"]["data-files"].values():
         names.update(files)

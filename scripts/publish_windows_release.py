@@ -24,6 +24,8 @@ OLD = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64.zip"
 OLD_SHA = "cad2389f5c104b6e05b2914002a70e1478b8c9ca4552507e2ce455bbf240c851"
 BACKUP = "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20260913.zip"
 KNOWN_ROLLBACKS = {
+    "7ad9f251fc945833b81dbefd6b8c7bddec94be8ffd03afe52a25a3b2eb3bd61b":
+        "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261018-before-cleanup.zip",
     "213c6482c15e7a04f068039143e2ea6577009b8cf1e0e921f636bb58d94a459f":
         "Digifly-Workstation-0.1.0-alpha.1-Windows-x86_64-rollback-20261018-dataset-folders.zip",
     OLD_SHA: BACKUP,
@@ -140,7 +142,8 @@ def publish(archive: Path, review=None):
             raise ValueError("Native updater install/relaunch/rollback evidence is required")
         updater_gate.validate_release_evidence(Path(approval["updater_native_evidence"]),
             archive_sha256=marker.get("license_overlay_base_sha256") or hashlib.sha256(archive.read_bytes()).hexdigest(),
-            executable_sha256=marker["files"]["Digifly Workstation.exe"]["sha256"])
+            executable_sha256=marker["files"]["Digifly Workstation.exe"]["sha256"],
+            require_cleanup=bool(approval.get("cleanup_required")))
         notices = json.loads(zipped.read("THIRD_PARTY_COMPONENTS.json"))
         includes_neuron = "installers/neuron/DIGIFLY_NEURON_RUNTIME.json" in marker["files"]
         from digifly_app.core.bundled_pair_graph import PAIR_PATH, PAIR_NOTICE, NOTICE
@@ -207,7 +210,7 @@ def publish(archive: Path, review=None):
     body = release.get("body") or ""
     if "<!-- current-windows-start -->" in body:
         body = body.split("<!-- current-windows-end -->", 1)[-1].lstrip()
-    note = ("<!-- current-windows-start -->\n## Current Windows tester — October 17, 2026\n\n"
+    note = (f"<!-- current-windows-start -->\n## Current Windows tester — {build['version']}\n\n"
             f"Download [{archive.name}]({current['browser_download_url']}). "
             "Extract All and open **Digifly Workstation.exe**. The old Windows link now serves this build; "
             "previous checksum-pinned builds are preserved as rollback. Mac downloads are unchanged.\n\n"
@@ -224,7 +227,10 @@ def publish(archive: Path, review=None):
             + ("Includes the user-supplied MANC pair Parquet (exact release/completeness/weight units unverified), not SWCs or located synapses. In Data Library, use the included file with the installed private Python as reader. "
                if includes_pair else "No dataset included; transfer your Parquet separately. ")
             + "Downloads default to Neuron names / IDs (list): enter DNp01, TTMn, PSI together for a bounded union of literal type/instance-prefix matches, with per-name counts and missing/limit warnings. Exact and advanced regex modes remain separate. Downloads and SWC imports join one library per exact dataset/server/version, with visible export_swc family/type/body-ID folders. No SWC corpus or token included. "
-            + "Built-in updates now offer Install and Restart, retain the previous app and a recovery draft, and restore the old app on early startup failure. Actual packaged install/reopen and injected failed-startup rollback passed Windows CI with external-data sentinels. Older download-only builds need this one-time manual Extract All bootstrap. Live unresponsive startup is not force-killed; its backup is retained for recovery.\n<!-- current-windows-end -->\n\n")
+            + ("After a verified successful restart, built-in updates automatically remove checked obsolete app backups, helper copies, downloaded installers, extraction folders and superseded unchanged recovery drafts. The current draft, saved projects, SWCs, datasets, installed simulators and run data are protected. Changed/unknown files and failed-update recovery files are kept. Native successful cleanup, older-journal cleanup and injected failed-startup recovery passed on the actual packaged app. "
+               if approval.get("cleanup_required") else
+               "Built-in updates offer Install and Restart, retain the previous app and a recovery draft, and restore the old app on early startup failure. Actual packaged install/reopen and injected failed-startup rollback passed Windows CI with external-data sentinels. ")
+            + "Older download-only builds need this one-time manual Extract All bootstrap. Live unresponsive startup is not force-killed; its backup is retained for recovery.\n<!-- current-windows-end -->\n\n")
     notes = archive.parent / "windows-release-notes.md"
     notes.write_text(note + body, "utf-8")
     gh("release", "edit", TAG, "--repo", REPO, "--notes-file", str(notes))

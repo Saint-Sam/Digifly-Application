@@ -28,6 +28,46 @@ changed trees, live processes, wrong roots, locks, links and a native Windows
 junction. A small deletion record reports removed paths/logical bytes and any
 items kept; it is not a promise that disk free space increases by that amount.
 
+### October18 measured paired delivery
+
+Completed: local Mac20261018.5 (runtime-preserved archive) and published
+Windows0.1.0-alpha.20261018.4, sourcec3cb3ed / native CI39175391897. Both actual
+packages pass normal post-restart cleanup, legacy-journal archive identification
+and cleanup, and failed-startup restoration with no cleanup. Active drafts and
+external SWC/runtime/run/project sentinels remain unchanged. Windows additionally
+passes its real junction refusal, existing shared-library/Parquet controls and
+private official NEURON Install/Use/Run/Results engineering test. Windows source
+regression:189cases,186pass,3platform skips; local wider suite:189cases,185pass,
+4platform skips. These are engineering checks, not scientific replication.
+
+Final Mac archive:88,217,264bytes, SHA256
+`e205d8bbdaaf3c50a8eb6e1dd89094eddbc502b60985d47229c250e9643d39a9`.
+All3085packaged files/140source inputs match. The full-package gate caught
+regenerated runtime bytecode/support paths before delivery; the entire accepted
+2897-file runtime was copied unchanged, the unchanged unsigned compiled body was
+checked, the app re-signed, and all native checks repeated on the final archive.
+The old generated runtime/archive remain separate. Actual current-app promotion
+preserves the previous app; original user window93345 on.17.4 was not closed or
+modified. Save/quit/reopen is needed to use the new current Mac app.
+
+Final Windows archive:225,443,905bytes, SHA256
+`9d03f32e85db2c9bdd7440f0e5c055d95a44b2dc9eae0ff799c7903fbfe9df8f`.
+All415outer files,3425private runtime files and25reused full notice files checked.
+Public postflight preserves all32previous asset IDs/digests, renaming only the
+stable Windows pair, leaves public Mac assets unchanged, verifies the public
+checksum and proves new-build discovery/no same-build offer. The checks use
+offline disposable same-build copies with legacy journal compatibility, not a
+live cross-version public install, Windows11 or notarized Mac qualification.
+
+Exact acceptance: `outputs/workstation/paired-updater-cleanup-acceptance-20261018-v1.json`.
+Its valid guard passes; a version with unsuccessful cleanup is rejected with
+`Missing native post-update cleanup evidence.` Scientific work and schedules
+were unchanged. Separately, twelve duplicate expanded app trees from finished
+earlier updater tests were removed only after matching every file to retained
+checked apps/ZIPs and checking no process used them. All test records/images,
+release apps/archives, user data and simulator installations remain available;
+see `outputs/workstation/obsolete-updater-test-copy-cleanup-20261018-v1.json`.
+
 October17 paired-platform continuation: the human requires the same fixes in
 the Mac app. Its first candidate.20261017.3 passed the compiled neuron-list UI
 but failed actual disposable updater startup acknowledgement. Runtime context
