@@ -52,7 +52,8 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "scripts/bundle_arbor_runtime_macos.sh", "scripts/check_swc_library_gui.py",
             "scripts/collect_macos_release_notices.py", "scripts/stage_macos_notices.py",
             "tests/test_stage_macos_notices.py", "tests/test_stage_build_source_manifest.py",
-            "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt", "docs/MACOS_TESTER.md"))
+            "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt", "docs/MACOS_TESTER.md",
+            "docs/CHANNEL_EXECUTION_REPAIR.md"))
     records = {}
     for path in paths:
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source):
