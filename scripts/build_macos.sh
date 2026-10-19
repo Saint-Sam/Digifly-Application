@@ -272,6 +272,11 @@ else
   "$project_dir/scripts/bundle_arbor_runtime_macos.sh" "$stage_bundle"
 fi
 
+if [[ -n "${DIGIFLY_MAC_NOTICE_SOURCE:-}" ]]; then
+  "$stage_python" "$stage_root/scripts/stage_macos_notices.py" \
+    --source "$DIGIFLY_MAC_NOTICE_SOURCE" --bundle "$stage_bundle"
+fi
+
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Digifly Workstation" "$stage_bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.digifly.workstation" "$stage_bundle/Contents/Info.plist"

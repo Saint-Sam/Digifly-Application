@@ -1,6 +1,7 @@
 # Digifly Workstation — current Windows tester
 
-Build 20261017.2 (combined neuron lists, working updater, included NEURON and shared SWC libraries)
+Build 20261019.1 (saved-simulator Data Library repair, downgrade protection,
+automatic post-update cleanup, combined neuron lists and shared SWC libraries)
 Windows x86-64 · Arbor deferred
 
 Download the Windows ZIP, right-click it and choose **Extract All**, then open
@@ -45,7 +46,7 @@ exactly. Preview shows per-name returned counts and warns about missing names or
 the total limit. Exact matching and advanced regex remain separate options;
 commas inside a regex are literal, not a name list. Review the checked rows, then
 download. The original download/import snapshots are retained for
-provenance; different releases and changed bytes for an existing body are never
+source history; different releases and changed bytes for an existing body are never
 silently merged. Existing saved bundles can be explicitly added through Data
 Library without downloading again. Missing family labels stay UNKNOWN.
 
@@ -67,7 +68,7 @@ private installation, then **Use selected runtimes**. It expands to your
 LocalAppData/Digifly/Runtimes folder, not the app or another installation.
 There is no separate download, administrator access, registry/file-association
 or global PATH change. Reuse that included Python for the Parquet data reader.
-The official installer EXE is retained for provenance; the normal Digifly
+The official installer EXE is retained for source details; the normal Digifly
 button does not execute its registry/association changes. Failed/older
 installations are preserved, not overwritten or deleted.
 

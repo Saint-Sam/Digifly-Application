@@ -28,6 +28,13 @@ all four coexist in one user-selected external interpreter.
 
 ## Temporary bundled-Arbor exception
 
+October19 human override also authorizes the current Apple-silicon Mac tester
+on the existing public GitHub release. Its exact isolated Arbor runtime is
+retained unchanged and accompanied by component-specific full license documents,
+Qt source links and Python/native dependency notices. This is an ad-hoc-signed,
+not Apple-notarized alpha, not Intel Mac or scientific qualification. The
+download contains no user settings, tokens, SWC corpus or simulation runs.
+
 ### October16 user-selected connectivity table — explicit human override
 
 The Windows installer may include exactly `bundled_data/manc/unique_pairs_by_id.parquet`,

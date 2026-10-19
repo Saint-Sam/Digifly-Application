@@ -14,9 +14,9 @@ Use the [release page](https://github.com/Saint-Sam/Digifly-Application/releases
 for packaged applications. Prefer explicitly versioned downloads; historical
 and rollback assets remain available for recovery.
 
-The October 19 packages are being finalized. The source on this branch includes
-the latest repairs; a successful build is not automatically a published download.
-Release notes identify the exact build and checks for each platform.
+Latest editions: **Mac Apple silicon20261019.2** and
+**Windows x86-64 20261019.1**. Use the explicitly versioned ZIPs on the release
+page. Release notes identify the exact checks and remaining limitations.
 
 - **Mac:** Apple silicon, macOS 14 or newer. Local tester builds are ad-hoc
   signed, not Apple-notarized. Intel Mac packages are not currently supplied.
@@ -61,6 +61,7 @@ installation tests.
 See [architecture](docs/ARCHITECTURE.md),
 [packaging boundaries](docs/PACKAGING_BOUNDARY.md),
 [Windows testing](docs/WINDOWS_TESTER.md) and
+[Mac testing](docs/MACOS_TESTER.md), plus
 [updater checks](docs/UPDATER_REPAIR_20261017_V1.md).
 
 ## Source development
