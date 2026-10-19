@@ -50,8 +50,8 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "6fa1464b746ad7c86b75a5568baceff11db82b3525c73a7bc8c2e7a63b7d17c8",
-      "bytes": 12758
+      "sha256": "256bdca0194a271370607fea10454e7d74a780b00d6829d227cde6a9b712a58b",
+      "bytes": 14786
     },
     "docs/WINDOWS_TESTER.md": {
       "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350",
@@ -182,8 +182,8 @@
       "bytes": 6821
     },
     "scripts/check_packaged_updater.py": {
-      "sha256": "c1f41de57b566de27a59d0ee832eb178890c2851552f7eb6c969dab2dcd37b23",
-      "bytes": 11722
+      "sha256": "feec314cb54040fd3cbca8f49768d79522033823cb76ba40ffe5fe1e1543e05f",
+      "bytes": 11895
     },
     "scripts/collect_windows_notices.py": {
       "sha256": "78293c624f5f93beb7cc31a6cd8dbc3bd65fddb1d19c773eeca9d4cbe063ea23",
@@ -902,8 +902,8 @@
       "bytes": 2296
     },
     "tests/test_windows_package.py": {
-      "sha256": "7d0d666cb90da5f35ab55c4c699dc07504f6d41a0f97868b8c34c6cedc9a2432",
-      "bytes": 11365
+      "sha256": "196275f6275d81143e457e8fe99f7ea99a0835d862634e5edf5f4271d5f5d99a",
+      "bytes": 11402
     },
     "tests/test_package_foundation.py": {
       "sha256": "7456bd647e0decf975b595743402e7ee2a9c89b888adfd2ca3e720df036f7f66",

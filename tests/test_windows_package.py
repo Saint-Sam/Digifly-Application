@@ -90,7 +90,7 @@ def test_release_replacement_preserves_old_payload_and_mac_assets(tmp_path, monk
     publisher = module("publish_windows_release")
     gate = module("windows_package")
     bundle = fixture_bundle(tmp_path)
-    (bundle / "digifly_build.json").write_text(json.dumps({"source_commit": "fixture-source"}))
+    (bundle / "digifly_build.json").write_text(json.dumps({"source_commit": "fixture-source", "version": "0.1.0-alpha.20261019.1"}))
     (bundle / "THIRD_PARTY_COMPONENTS.json").write_text(json.dumps({"schema": "digifly-windows-notice-inventory-v1"}))
     notice = bundle / "mechanisms/augustin_2019/NOTICE.md"
     notice.parent.mkdir(parents=True, exist_ok=True)

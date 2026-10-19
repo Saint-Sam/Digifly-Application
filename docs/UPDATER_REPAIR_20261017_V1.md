@@ -1,5 +1,37 @@
 # Windows updater completion gate
 
+## October19 Mac downgrade and release-folder repair
+
+The real update exposed a missed delivery defect: the Mac builder froze
+`digifly_build.json` as a source input but did not put it inside the app. The
+updater treated missing identity as permission to compare upload times, and
+offered historical public build4 over the newer local build. That old app
+cannot read the saved `netpyne_runtime` binding. The actual saved17-binding
+profile loads in modern source; deleting its simulator binding is not a repair.
+
+Acceptance now requires the real packaged build reader (not mocked build
+metadata), a deliberately newer-dated historical platform catalog, fail-closed
+unknown identity, and installation-time older/equal-build refusal. Mac
+Info.plist is a fallback for older packages with missing JSON. Same-build native
+engineering exercises remain restricted to exact marked disposable copies.
+The paired guard checks embedded identity, native metadata evidence, a Data
+Library fixture containing all four saved simulator kinds, and the installed
+current Mac executable. A later accidental downgrade must invalidate preflight.
+
+The old-window draft was saved separately through the app and the old app quit
+normally. Both that draft and the modern updater's original recovery draft
+remain. Recovery uses the checked modern app, not changes to user settings.
+Earlier cleanup covered updater-journaled files and did not sweep `dist`.
+This repair additionally removes exact redundant local release copies only
+after full-tree comparison with retained recovery archives, plus byte-identical
+archive aliases. Unknown copies, current/recovery builds, run data, SWCs, saved
+projects and external simulator installations are protected. Logical removed
+bytes and observed free space are reported separately because cloned files
+and concurrent builds make them different quantities. This manual release-folder
+repair is not a periodic sweep or permission for one.
+
+Evidence: `workstation_active_v1.json:shared_fix_delivery.repair_20261019`.
+
 ## October18 cleanup override — current repair
 
 The user now requires obsolete update files to be removed automatically after

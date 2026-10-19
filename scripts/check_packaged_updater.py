@@ -23,7 +23,7 @@ def validate_evidence(receipt_path: Path, archive: Path, executable: Path) -> di
                                      executable_sha256=file_hash(executable), system=platform.system())
 
 
-def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows", require_cleanup=False) -> dict:
+def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows", require_cleanup=False, require_metadata=False) -> dict:
     record = json.loads(receipt_path.read_text("utf-8"))
     if (record.get("schema") != "digifly-native-updater-gate-v1" or record.get("ok") is not True
             or record.get("platform") != system
@@ -63,6 +63,8 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
             or any(record["cases"][name].get("cleanup", {}).get("ok") is not True
                    for name in ("install", "legacy_install"))):
         raise ValueError("Missing native post-update cleanup evidence.")
+    if require_metadata and not record.get("metadata_safety_checked"):
+        raise ValueError("Missing actual packaged metadata/downgrade check.")
     return record
 
 
