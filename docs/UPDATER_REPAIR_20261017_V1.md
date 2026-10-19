@@ -1,5 +1,44 @@
 # Windows updater completion gate
 
+## October19 current public paired delivery
+
+Both current packages are published on the existing GitHub release and linked
+from the repository main page: Mac arm64**20261019.2** and Windows x86-64
+**20261019.1**. Mac remains an ad-hoc-signed, not Apple-notarized alpha;
+Windows remains unsigned with WindowsServer2022 engineering evidence rather
+than full Windows11 qualification. No current Intel Mac package is supplied.
+
+Both final apps pass saved-simulator Data Library controls, actual packaged
+build identity and historical-catalog refusal, disposable update/reopen,
+successful cleanup, legacy-journal cleanup and injected failed-startup recovery.
+Windows additionally passes private offline NEURON setup/Run/Results and the
+included pinned Parquet import. Windows194source cases:191pass/3platform skips.
+The evidence-only unchanged-EXE recheck39316599878 retains the complete metadata
+sidecars. An earlier recheck39315759039 timed out in recovery; its failed record
+is retained and is not called successful.
+
+Mac3398archive files/140source inputs, unchanged2897runtime files and311license
+documents are checked. Windows416outer files/3425runtime files and25reused
+additional license documents are checked. The Mac notice-layout guard initially
+rejected license copies shaped like site-packages; flattening only their text
+paths and updating the README preserved the complete unsigned compiled body
+and runtime. Native checks were run on that final re-signed archive.
+
+Public checks preserve all36previous asset IDs/digests, rename only the two old
+stable platform pairs to recoverable names, and verify both public checksums,
+new-build discovery and no same-build offer. The actual current Mac opens the
+separately saved draft, refreshes the unchanged17-binding real profile and
+reports `This build is current.` No scientific job or schedule changed.
+
+Final Mac SHA256`63400c3abeff255c51e6ad0b36fde996dbc4769ab625192cf87777d25970963b`;
+Windows SHA256`25cabf0e3a1a6434bb8cbfd228536859defc8b55d29626c6c2109f8626672f0e`.
+These checks do not establish live cross-version installation, arbitrary
+mechanism/MPI support or scientific replication acceptance.
+
+Local exact evidence: `outputs/workstation/paired-update-repair-acceptance-20261019-v2.json`,
+`paired-publication-postflight-20261019-v2.json` and
+`public-mac-live-closeout-20261019-v3.json`. Previous sections below are historical.
+
 ## October19 Mac downgrade and release-folder repair
 
 The real update exposed a missed delivery defect: the Mac builder froze
