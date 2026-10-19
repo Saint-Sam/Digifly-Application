@@ -45,7 +45,14 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",
             "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
-            "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh"))
+            "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh",
+            "scripts/setup_dev.sh", "scripts/run_dev.sh", "pysidedeploy.spec",
+            "scripts/stage_build_source_manifest.py", "scripts/archive_macos_app.sh",
+            "scripts/sign_macos_app.sh", "scripts/notarize_macos_app.sh",
+            "scripts/bundle_arbor_runtime_macos.sh", "scripts/check_swc_library_gui.py",
+            "scripts/collect_macos_release_notices.py", "scripts/stage_macos_notices.py",
+            "tests/test_stage_macos_notices.py", "tests/test_stage_build_source_manifest.py",
+            "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt", "docs/MACOS_TESTER.md"))
     records = {}
     for path in paths:
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source):

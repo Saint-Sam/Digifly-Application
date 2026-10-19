@@ -1,0 +1,97 @@
+[app]
+
+# title of your application
+title = Digifly Workstation
+
+# project root directory. default = The parent directory of input_file
+project_dir = .
+
+# source file entry point path. default = main.py
+input_file = main.py
+
+# directory where the executable output is generated
+exec_directory = .
+
+# path to the project file relative to project_dir
+project_file =
+
+# Digifly-owned application icon. The build script stages this source asset
+# together with the repository before PySide deployment starts.
+icon = src/digifly_app/assets/digifly_icon.icns
+
+[python]
+
+# python path (resolved inside the no-space staging root by build_macos.sh)
+python_path = .venv/bin/python
+
+# python packages to install
+packages = Nuitka==2.7.11
+
+# buildozer = for deploying Android application
+android_packages = buildozer==1.5.0,cython==0.29.33
+
+[qt]
+
+# paths to required qml files. comma separated
+# normally all the qml files required by the project are added automatically
+# design studio projects include the qml files using qt resources
+qml_files =
+
+# excluded qml plugin binaries
+excluded_qml_plugins =
+
+# qt modules used. comma separated
+modules = Core,DBus,Gui,OpenGL,OpenGLWidgets,Widgets
+
+# qt plugins used by the application. only relevant for desktop deployment
+# for qt plugins used in android application see [android][plugins]
+plugins = accessiblebridge,egldeviceintegrations,generic,iconengines,imageformats,platforms,platforms/darwin,platformthemes,styles,wayland-decoration-client,wayland-graphics-integration-client,wayland-shell-integration,xcbglintegrations
+
+[android]
+
+# path to pyside wheel
+wheel_pyside =
+
+# path to shiboken wheel
+wheel_shiboken =
+
+# plugins to be copied to libs folder of the packaged application. comma separated
+plugins =
+
+[nuitka]
+
+# usage description for permissions requested by the app as found in the info.plist file
+# of the app bundle. comma separated
+# eg = extra_args = --show-modules --follow-stdlib
+macos.permissions =
+
+# mode of using nuitka. accepts standalone or onefile. default = onefile
+mode = standalone
+
+# specify any extra nuitka arguments
+extra_args = --quiet --assume-yes-for-downloads --disable-cache=ccache --lto=no --jobs=4 --noinclude-qt-translations --include-data-file=src/digifly_app/assets/digifly_icon.png=digifly_app/assets/digifly_icon.png --include-data-file=src/digifly_app/workers/escape_siz_worker.py=digifly_app/workers/escape_siz_worker.py --include-data-file=src/digifly_app/workers/arbor_escape_siz_worker.py=digifly_app/workers/arbor_escape_siz_worker.py --include-data-file=src/digifly_app/workers/generic_experiment_worker.py=digifly_app/workers/generic_experiment_worker.py --include-data-file=src/digifly_app/workers/bmtk_bionet_worker.py=digifly_app/workers/bmtk_bionet_worker.py --include-data-file=src/digifly_app/workers/pdcm_netpyne_worker.py=digifly_app/workers/pdcm_netpyne_worker.py --include-data-file=src/digifly_app/workers/netpyne_workbench_worker.py=digifly_app/workers/netpyne_workbench_worker.py --include-data-file=src/digifly_app/workers/pdcm_netpyne_mpi_worker.py=digifly_app/workers/pdcm_netpyne_mpi_worker.py --include-data-file=src/digifly_app/workers/parquet_edge_query_worker.py=digifly_app/workers/parquet_edge_query_worker.py --include-data-file=src/digifly_app/workers/arbor_source_soma_diagnostic_worker.py=digifly_app/workers/arbor_source_soma_diagnostic_worker.py --include-data-file=src/digifly_app/workers/arbor_gap_bridge.py=digifly_app/workers/arbor_gap_bridge.py --include-data-file=src/digifly_app/workers/arbor_legacy_cv_bridge.py=digifly_app/workers/arbor_legacy_cv_bridge.py --include-data-file=src/digifly_app/workers/exact_gap_equivalence_auditor.py=digifly_app/workers/exact_gap_equivalence_auditor.py --include-data-dir=mechanisms/arbor_gap_junctions=mechanisms/arbor_gap_junctions --include-data-dir=mechanisms/neuron_gap_junctions=mechanisms/neuron_gap_junctions --include-data-dir=presets=presets --include-data-dir=schemas=schemas --include-data-file=scripts/build_arbor_gap_catalogue.py=scripts/build_arbor_gap_catalogue.py --include-data-file=scripts/build_neuron_gap_mechanisms.py=scripts/build_neuron_gap_mechanisms.py --include-data-file=docs/ARCHITECTURE.md=docs/ARCHITECTURE.md --include-data-file=docs/BACKEND_CONTRACT_V1.md=docs/BACKEND_CONTRACT_V1.md --include-data-file=docs/PACKAGING_BOUNDARY.md=docs/PACKAGING_BOUNDARY.md --include-data-file=docs/PDCM_REPLICATION.md=docs/PDCM_REPLICATION.md --include-data-file=docs/PDCM_ATHENE_RUNBOOK.md=docs/PDCM_ATHENE_RUNBOOK.md --include-data-file=docs/NETPYNE_WORKBENCH_PLAN.md=docs/NETPYNE_WORKBENCH_PLAN.md --include-data-file=scripts/run_pdcm_athene.sh=scripts/run_pdcm_athene.sh --include-data-file=scripts/install_pdcm_athene_layer.sh=scripts/install_pdcm_athene_layer.sh --include-data-file=scripts/probe_neuron_mpi.py=scripts/probe_neuron_mpi.py --include-data-file=README.md=README.md --include-data-file=LICENSE=LICENSE --include-data-file=THIRD_PARTY_NOTICES.md=THIRD_PARTY_NOTICES.md --include-data-file=src/digifly_app/workers/arbor_channel_translation.py=digifly_app/workers/arbor_channel_translation.py --include-data-dir=mechanisms/augustin_2019=mechanisms/augustin_2019 --include-data-file=docs/CHANNEL_EXECUTION_REPAIR.md=docs/CHANNEL_EXECUTION_REPAIR.md --include-data-file=src/digifly_app/workers/pdcm_bionet_app_worker.py=digifly_app/workers/pdcm_bionet_app_worker.py --include-data-file=src/digifly_app/core/pdcm_campaign_results.py=digifly_app/workers/pdcm_campaign_results.py --include-data-dir=src/digifly_app/pdcm_bionet=digifly_app/pdcm_bionet --include-data-file=src/digifly_app/workers/independent_trials.py=digifly_app/workers/independent_trials.py
+
+[buildozer]
+
+# build mode
+# possible values = ["aarch64", "armv7a", "i686", "x86_64"]
+# release creates a .aab, while debug creates a .apk
+mode = debug
+
+# path to pyside6 and shiboken6 recipe dir
+recipe_dir =
+
+# path to extra qt android .jar files to be loaded by the application
+jars_dir =
+
+# if empty, uses default ndk path downloaded by buildozer
+ndk_path =
+
+# if empty, uses default sdk path downloaded by buildozer
+sdk_path =
+
+# other libraries to be loaded at app startup. comma separated.
+local_libs =
+
+# architecture of deployed platform
+arch =
