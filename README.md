@@ -37,11 +37,6 @@ longer an application tab or project model.
 
 ## Early tester quick start
 
-This is a private alpha. Invited collaborators are authorized by Digifly to
-clone and run this repository solely for private evaluation and feedback. That
-authorization does not permit redistribution, publication, sublicensing, or
-production use of the source or a built application.
-
 Download the Mac build matching the test machine from
 [Digifly Workstation 0.1.0 alpha 1](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.1):
 
