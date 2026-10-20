@@ -302,7 +302,7 @@ class DataLibraryPage(QWidget):
         row.addWidget(self.add_data_button)
         row.addStretch()
         action_layout.addLayout(row)
-        hint = QLabel('Link keeps SWCs in their folder. Import copies SWCs into this release’s library.')
+        hint = QLabel('Link keeps SWCs in their folder. Import asks you to confirm the destination dataset library.')
         hint.setObjectName('Muted')
         hint.setWordWrap(True)
         action_layout.addWidget(hint)
