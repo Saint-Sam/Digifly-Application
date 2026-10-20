@@ -586,7 +586,7 @@ def run_library_smoke(destination: Path) -> int:
             holder = page.table.cellWidget(row, 8)
             click_menu(holder._library_button, action, filename)
         try:
-            QDesktopServices.openUrl = lambda url: urls.append(url.toLocalFile()) or True
+            QDesktopServices.openUrl = lambda url: urls.append(str(Path(url.toLocalFile()))) or True
             managed_action(page.reveal_selected_button, 'compact-managed-row-menu.png')
             if urls != [str(second_resource.root)]:
                 raise ValueError('Managed row menu opened a different selected row')

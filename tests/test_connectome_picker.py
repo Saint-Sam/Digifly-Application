@@ -182,7 +182,7 @@ def test_compact_menus_keep_routes_and_reject_stale_row_targets(tmp_path, monkey
         roots.append(item.root)
     monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
     opened = []
-    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toLocalFile()) or True)
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(str(Path(url.toLocalFile()))) or True)
     page = DataLibraryPage()
     page.resize(840, 760)
     page.show()
