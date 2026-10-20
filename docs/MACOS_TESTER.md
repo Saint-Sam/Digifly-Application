@@ -1,6 +1,6 @@
 # Current Mac tester
 
-Build20261019.2 targets Apple-silicon Macs on macOS14 or newer. Use the explicitly
+Build20261020.3 targets Apple-silicon Macs on macOS14 or newer. Use the explicitly
 versioned macOS-arm64 ZIP from the repository release page. There is no current
 Intel Mac package.
 
@@ -19,6 +19,13 @@ This edition repairs Data Library loading of saved simulator selections and
 ships an actual embedded build number. Update discovery and installation refuse
 older app versions. Successful updates remove only exact unchanged updater-owned
 obsolete files; unknown/edited files and failed-update recovery are retained.
+
+Data Library lists linked local folders separately from downloaded subsets.
+Save/Open library shortcut controls retain external folder locations across
+restarts and updates. A shortcut stores only a local path and dataset label;
+on a different device, select that user's local folder once. The page scrolls
+instead of compressing tables and buttons. Mac startup disables bytecode-cache
+writes so a runtime import cannot mutate the installed bundle during an update.
 
 The final packaged app passed Data Library controls, disposable install/reopen,
 older-journal cleanup and injected early-startup restoration with draft and

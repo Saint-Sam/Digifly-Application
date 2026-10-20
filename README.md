@@ -14,10 +14,10 @@ Use the [release page](https://github.com/Saint-Sam/Digifly-Application/releases
 for packaged applications. Prefer explicitly versioned downloads; historical
 and rollback assets remain available for recovery.
 
-Latest checked editions: **Mac Apple silicon20261019.2** and
-**Windows x86-64 20261019.1**. The October20 linked-library repair is being
-checked on both platforms. Use the explicitly versioned ZIPs on the release
-page. Release notes identify the exact checks and remaining limitations.
+Current editions: **Mac Apple silicon20261020.3** and
+**Windows x86-64 20261020.2**. Use the explicitly versioned ZIPs on the release
+page, which keeps only the current platform downloads and their checksums.
+Release notes identify the exact checks and remaining limitations.
 
 - **Mac:** Apple silicon, macOS 14 or newer. Local tester builds are ad-hoc
   signed, not Apple-notarized. Intel Mac packages are not currently supplied.
@@ -36,6 +36,15 @@ their complete paths are visible. Explicit background SWC-file counts are
 read-only snapshots, not biological completeness checks. Missing linked drives
 remain visible, and linked folders have no managed trash/move controls.
 
+Choose **Save library shortcut…** to save a small `.digifly-library.json` file
+and remember an external SWC folder on this device. The default file location is
+`config/library-links` beside the external app settings, not inside the app;
+restarts and updates retain the folder binding. **Open library shortcut…**
+reviews the location before remembering it. On another device, locate that
+user's own folder once if needed. No SWCs or credentials are copied into the
+shortcut; it opens through Data Library, not an OS-specific file association.
+The page scrolls at smaller window sizes so controls do not overlap tables.
+
 - A growing SWC library for each exact server and dataset release, with
   `export_swc/family/type/body-ID/` folders shared by individual and list searches.
 - Literal neuron-name/ID lists such as `DNp01, TTMn, PSI`, with per-name match
@@ -50,6 +59,10 @@ remain visible, and linked folders have no managed trash/move controls.
   Saved projects, SWCs, installed simulators and run data are protected.
 - Build-number checks that reject older downloads and disable automatic
   replacement when the installed version cannot be verified.
+- Mac startup prevents bytecode-cache writes inside the installed bundle,
+  preserving the strict update integrity check. Windows' shortcut/runtime
+  package remains separately tested; this Mac-only guard is not a Windows
+  bundled-Arbor claim.
 
 ## Modeling and results
 

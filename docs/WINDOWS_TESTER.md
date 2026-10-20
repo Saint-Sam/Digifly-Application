@@ -1,6 +1,6 @@
 # Digifly Workstation — current Windows tester
 
-Build 20261019.1 (saved-simulator Data Library repair, downgrade protection,
+Build 20261020.2 (saved local-library shortcuts, linked-folder visibility, saved-simulator Data Library repair, downgrade protection,
 automatic post-update cleanup, combined neuron lists and shared SWC libraries)
 Windows x86-64 · Arbor deferred
 
@@ -33,6 +33,16 @@ table does not establish contact locations or simulation readiness. You choose
 the custom experimental presets; no new experiment is run here.
 
 ## One growing SWC folder per dataset
+
+Existing SWCs outside the app can stay in place. **Register existing SWC folder…**
+lists a read-only local folder; **Save library shortcut…** saves a small
+`.digifly-library.json` file and remembers the folder on this device. The default
+file lives in `config/library-links` beside external app settings, so updates
+retain it. **Open library shortcut…** reviews a saved location and can locate
+another user's local copy when needed. The file contains no SWCs or credentials;
+use Data Library to open it. Linked folders are shown separately from small
+downloads, with full paths, optional read-only counts and no managed-trash control.
+The page scrolls at smaller window sizes instead of overlapping its controls.
 
 neuPrint downloads and **Add SWCs to dataset library…** imports join the same
 library for the exact server/dataset/release. The visible download location and

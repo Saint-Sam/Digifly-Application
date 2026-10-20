@@ -108,3 +108,32 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     assert page.table.geometry().bottom() < page.inspect_button.geometry().top()
     assert source.read_text() == '1 1 0 0 0 1 -1\n'
     page.close()
+
+
+def test_open_shortcut_can_locate_other_device_folder_without_rewriting_link(tmp_path, monkeypatch):
+    from digifly_app.core.linked_libraries import LinkedLibrary, save_library_link
+    app = QApplication.instance() or QApplication([])
+    old = tmp_path / 'missing-on-this-device'
+    local = tmp_path / 'my-external-swcs'
+    local.mkdir()
+    (local / '1.swc').write_text('1 1 0 0 0 1 -1\n')
+    link = save_library_link(LinkedLibrary('male-cns:v0.9', 'Male CNS', 'male-cns:v0.9', old, 'external', False),
+                             tmp_path / 'male.digifly-library.json')
+    link_before = link.read_bytes()
+    p = make_default_profile(workspace_root=None, output_root=tmp_path / 'runs', managed_data_root=tmp_path / 'data')
+    path = p.save(tmp_path / 'config/resources.json')
+    monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(link), ''))
+    monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a, **k: str(local))
+    monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Yes)
+    page = DataLibraryPage()
+    try:
+        page.load_link_button.click()
+        assert page.linked_table.rowCount() == 1
+        assert page._linked[0].root == local
+        assert page._linked[0].dataset == 'male-cns:v0.9'
+        assert link.read_bytes() == link_before and not old.exists()
+        assert not p.managed_data_root.exists()
+    finally:
+        page.close()
+        app.processEvents()

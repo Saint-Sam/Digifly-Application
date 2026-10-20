@@ -30,6 +30,11 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    # An installed Mac bundle is immutable. This also reaches external runtime
+    # probes, so a lazy import cannot change the tree while an update is staged.
+    if sys.platform == 'darwin':
+        sys.dont_write_bytecode = True
+        os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     if len(sys.argv) == 3 and sys.argv[1] == "--finish-update":
         from digifly_app.core.update_installer import read_request
         request = read_request(Path(sys.argv[2]).resolve())
