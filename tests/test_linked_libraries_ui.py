@@ -7,6 +7,22 @@ from PySide6.QtTest import QTest
 from digifly_app.core.resource_profile import make_default_profile, ResourceProfile
 from digifly_app.ui.data_library import DataLibraryPage
 from digifly_app.core.data_library import import_local_source
+from PySide6.QtCore import Qt
+
+
+def click_menu(button, action):
+    menu = button._library_menu
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    target = next(item for item in menu.actions() if item.text() == action.text())
+    assert menu.isVisible() and target.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(target).center())
+    QApplication.processEvents()
+
+
+def linked_menu(page, action):
+    holder = page.linked_table.cellWidget(0, 6)
+    click_menu(holder._library_button, action)
 
 
 def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_path, monkeypatch):
@@ -51,7 +67,9 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
         assert not page.trash_button.isEnabled() and not page.registration_button.isEnabled()
         assert str(page._linked[0].root) in page.linked_detail.text()
         assert page.count_linked_button.isEnabled()
-        page.count_linked_button.click()
+        page.show()
+        app.processEvents()
+        linked_menu(page, page.count_linked_button)
         deadline = time.monotonic() + 4
         while page.import_in_progress and time.monotonic() < deadline:
             QTest.qWait(10)
@@ -83,7 +101,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     page.show()
     app.processEvents()
     page.linked_table.selectRow(0)
-    page.save_link_button.click()
+    linked_menu(page, page.save_link_button)
     assert link.is_file() and 'remembers' in page.action_status.text()
     page.close()
     # A new page/profile after restart, without the original workspace, retains the source.
@@ -94,6 +112,8 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
     page.release_buttons['male-cns:v0.9'].setChecked(True)
+    page.show()
+    app.processEvents()
     assert page.linked_table.rowCount() == 1
     page.close()
     other = make_default_profile(workspace_root=None, output_root=tmp_path / 'other-runs', managed_data_root=tmp_path / 'other-data')
@@ -104,16 +124,15 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     page.connectome_picker.buttons['male_cns'].click()
     page.release_buttons['male-cns:v0.9'].setChecked(True)
     before = path.read_bytes()
-    page.load_link_button.click()
+    page.load_link_button.trigger()
     assert path.read_bytes() == before
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Yes)
-    page.load_link_button.click()
+    click_menu(page.add_data_button, page.load_link_button)
     assert page.linked_table.rowCount() == 1 and not other.managed_data_root.exists()
     page.resize(840, 650)
     page.show()
     app.processEvents()
-    assert page.scroll.verticalScrollBar().maximum() > 0
-    assert page.linked_table.geometry().bottom() < page.open_linked_button.geometry().top()
+    assert page.linked_table.cellWidget(0, 6)._library_button.isVisible()
     assert not page.managed_card.isVisible()
     assert source.read_text() == '1 1 0 0 0 1 -1\n'
     page.close()
@@ -139,7 +158,7 @@ def test_open_shortcut_can_locate_other_device_folder_without_rewriting_link(tmp
     page.connectome_picker.buttons['male_cns'].click()
     page.release_buttons['male-cns:v0.9'].setChecked(True)
     try:
-        page.load_link_button.click()
+        page.load_link_button.trigger()
         assert page.linked_table.rowCount() == 1
         assert page._linked[0].root == local
         assert page._linked[0].dataset == 'male-cns:v0.9'

@@ -281,6 +281,9 @@ QPushButton#ConnectomeChoiceButton:checked {
 }
 QLabel#ConnectomePicture { background: white; border-radius: 6px; }
 QPushButton:disabled { color: @button_disabled_text@; background: @button_disabled@; border-color: @button_disabled_border@; }
+QWidget#CompactLibraryWorkspace QPushButton {
+    min-height: 30px; padding: 0 11px;
+}
 QPushButton[primary="true"] { color: white; background: @primary@; border-color: @primary_border@; }
 QPushButton[primary="true"]:hover { background: @primary_hover@; }
 QPushButton[netpynePrimary="true"] {

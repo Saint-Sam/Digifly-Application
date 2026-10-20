@@ -77,11 +77,11 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
     monkeypatch.setattr(NeuPrintImportDialog, 'exec', inspect_dialog)
     try:
         assert page.view_stack.currentWidget() is page.picker_scroll
-        assert page.connectome_picker.isVisible() and not page.import_button.isVisible()
+        assert page.connectome_picker.isVisible() and not page.add_data_button.isVisible()
         QTest.mouseClick(page.connectome_picker.buttons['male_cns'], Qt.MouseButton.LeftButton)
         app.processEvents()
         assert page.view_stack.currentWidget() is page.scroll
-        assert page.import_button.isVisible() and not page.connectome_picker.isVisible()
+        assert page.add_data_button.isVisible() and not page.connectome_picker.isVisible()
         assert page.connectome_title.text() == 'Male CNS'
         assert QApplication.activeModalWidget() is None
         assert page.release_buttons['male-cns:v0.9'].isVisible()
@@ -98,7 +98,7 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
         QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
         app.processEvents()
         assert page.view_stack.currentWidget() is page.picker_scroll
-        assert not page.import_button.isVisible()
+        assert not page.add_data_button.isVisible()
         QTest.mouseClick(page.connectome_picker.buttons['manc'], Qt.MouseButton.LeftButton)
         app.processEvents()
         QTest.mouseClick(page.release_buttons['manc:v1.2.1'], Qt.MouseButton.LeftButton)
@@ -109,7 +109,7 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
         assert chosen == ['manc:v1.2.1']
         assert path.read_bytes() == before and not p.managed_data_root.exists()
         assert not page.linked_card.isVisible() and not page.managed_card.isVisible()
-        assert page.load_link_button.isVisible()
+        assert page.add_data_button.isVisible() and page.load_link_button in page.add_data_menu.actions()
     finally:
         page.close()
 
@@ -128,9 +128,7 @@ def test_empty_release_does_not_stretch_headings_in_a_tall_window(tmp_path, monk
             page.connectome_picker.choose(family)
             page.release_buttons[dataset].setChecked(True)
             app.processEvents()
-            layout = page.scroll.widget().layout()
-            for index in (1, 2, 3):
-                label = layout.itemAt(index).widget()
+            for label in (page.connectome_title, page.release_detail, page.data_heading):
                 natural = label.heightForWidth(label.width()) if label.hasHeightForWidth() else label.sizeHint().height()
                 assert label.height() <= natural + 2
     finally:
@@ -165,6 +163,59 @@ def test_strict_release_identity_and_parquet_pin():
     assert pair_binding_dataset({'source_sha256': PAIR_SHA256}) == 'manc:v1.2.1'
     assert pair_binding_dataset({'source_sha256': PAIR_SHA256, 'dataset': 'male-cns:v1.0'}) == 'manc:v1.2.1'
     assert pair_binding_dataset({'source_sha256': 'other', 'release': 'not_declared_in_file'}) == ''
+
+
+def test_compact_menus_keep_routes_and_reject_stale_row_targets(tmp_path, monkeypatch):
+    from digifly_app.core.data_library import import_local_source
+    from digifly_app.core.resource_profile import ResourceProfile
+    from PySide6.QtGui import QDesktopServices
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path / 'work')
+    path = profile.save(tmp_path / 'profile.json')
+    roots = []
+    for key in ('first', 'second'):
+        source = tmp_path / key
+        source.mkdir()
+        (source / '1.swc').write_text('1 1 0 0 0 1 -1\n')
+        item = import_local_source(ResourceProfile.load(path), source, provider='local',
+            resource_id=key, source_version='snapshot', dataset='male-cns:v1.0', profile_path=path)
+        roots.append(item.root)
+    monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toLocalFile()) or True)
+    page = DataLibraryPage()
+    page.resize(840, 760)
+    page.show()
+    page.connectome_picker.choose('male_cns')
+    app.processEvents()
+    try:
+        assert page.neuprint_button.property('primary')
+        assert page.swc_intake_button in page.add_data_menu.actions()
+        assert page.load_link_button in page.add_data_menu.actions()
+        assert page.import_button in page.add_data_menu.actions()
+        assert page.modeldb_button in page.add_data_menu.actions()
+        assert not page.pair_graph_button.isVisible()
+        assert page.move_library_button in page.library_tools_menu.actions()
+        assert page.relink_button in page.library_tools_menu.actions()
+        assert page.manage_trash_button in page.library_tools_menu.actions()
+        page.table.selectRow(0)
+        holder = page.table.cellWidget(1, 8)
+        menu = holder._library_menu
+        QTest.mouseClick(holder._library_button, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        target = next(action for action in menu.actions() if action.text() == page.reveal_selected_button.text())
+        QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(target).center())
+        assert opened == [str(page._resources[1].root)]
+        # Retain an old action across a release change. Its identity guard
+        # refuses even a synthetic late activation before deferred destruction.
+        before = path.read_bytes()
+        page.release_buttons['male-cns:v0.9'].setChecked(True)
+        target.trigger()
+        assert len(opened) == 1 and path.read_bytes() == before
+        page.connectome_picker.choose('manc')
+        assert page.pair_graph_button.isVisible()
+    finally:
+        page.close()
 
 
 def test_exact_scope_filters_rows_empty_cards_and_stale_actions(tmp_path, monkeypatch):

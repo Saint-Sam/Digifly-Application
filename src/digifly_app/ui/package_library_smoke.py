@@ -97,6 +97,23 @@ def run_library_smoke(destination: Path) -> int:
         journal("main_window_created")
         window.show()
         page = window.data_library_page
+        def click_menu(button, action, filename=None):
+            page.scroll.ensureWidgetVisible(button)
+            QTest.qWait(50)
+            menu = button._library_menu
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            QTest.qWait(50)
+            target = next(item for item in menu.actions() if item.text() == action.text())
+            if not menu.isVisible() or not target.isEnabled():
+                raise ValueError('The requested library menu action is not accessible: ' + action.text())
+            if filename:
+                menu.grab().save(str(destination / filename))
+            QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(target).center())
+            app.processEvents()
+
+        def click_linked(action, filename=None):
+            holder = page.linked_table.cellWidget(0, 6)
+            click_menu(holder._library_button, action, filename)
         window.pages.setCurrentWidget(page)
         QTest.qWait(400)
         page.refresh()
@@ -123,7 +140,7 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Initial connectome choices or bundled pictures are missing')
         if any(button.isCheckable() for button in picker.buttons.values()):
             raise ValueError('Connectome navigation must use ordinary accessible push buttons')
-        if page.view_stack.currentWidget() is not page.picker_scroll or page.import_button.isVisible():
+        if page.view_stack.currentWidget() is not page.picker_scroll or page.add_data_button.isVisible():
             raise ValueError('Data Library home must show only the connectome chooser')
         layout_sizes = []
         for width in (1120, 1700):
@@ -139,7 +156,7 @@ def run_library_smoke(destination: Path) -> int:
             QTest.qWait(80)
             if app.activeModalWidget() or page.view_stack.currentWidget() is not page.scroll or picker.isVisible():
                 raise ValueError('Connectome choice must navigate inline without a window')
-            if not page.import_button.isVisible() or not page.load_link_button.isVisible():
+            if not page.add_data_button.isVisible() or page.load_link_button not in page.add_data_menu.actions():
                 raise ValueError('Common import tools disappeared from an empty release')
             if page.linked_card.isVisible() or page.managed_card.isVisible():
                 raise ValueError('Empty data sections must be hidden')
@@ -154,7 +171,7 @@ def run_library_smoke(destination: Path) -> int:
                 raise ValueError('Connectome details view did not render')
             QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
             QTest.qWait(80)
-            if page.view_stack.currentWidget() is not page.picker_scroll or page.import_button.isVisible():
+            if page.view_stack.currentWidget() is not page.picker_scroll or page.add_data_button.isVisible():
                 raise ValueError('Back did not restore the connectome-only home')
             layout_sizes.append(width)
         QTest.mouseClick(picker.buttons['manc'], Qt.MouseButton.LeftButton)
@@ -372,7 +389,7 @@ def run_library_smoke(destination: Path) -> int:
         choices = iter(("manc:v1.2.1", "Folder (preserve family/type labels)"))
         QInputDialog.getItem = lambda *args, **kwargs: (next(choices), True)
         QFileDialog.getExistingDirectory = lambda *args, **kwargs: str(local_root)
-        QTest.mouseClick(page.swc_intake_button, Qt.MouseButton.LeftButton)
+        click_menu(page.add_data_button, page.swc_intake_button, 'compact-add-data-menu.png')
         wait_for(lambda: not page.import_in_progress, "Local SWC intake worker did not finish")
         restored = ResourceProfile.load(profile_path)
         if any(restored.binding(kind) != profile.binding(kind) for kind in runtimes):
@@ -435,14 +452,13 @@ def run_library_smoke(destination: Path) -> int:
             page.linked_table.selectRow(0)
             if page.trash_button.isEnabled() or page.registration_button.isEnabled():
                 raise ValueError('Linked folder acquired managed deletion controls')
-            QTest.mouseClick(page.count_linked_button, Qt.MouseButton.LeftButton)
+            click_linked(page.count_linked_button, 'compact-linked-row-menu.png')
             wait_for(lambda: not page.import_in_progress, 'Read-only linked folder count did not finish')
             linked = page._linked[0]
             counts[linked.root] = page.linked_table.item(0, 3).text()
             shortcut = destination / ('library-links/' + ('male' if linked.root == male.resolve() else 'manc') + '.digifly-library.json')
             QFileDialog.getSaveFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
-            page.scroll.ensureWidgetVisible(page.save_link_button)
-            QTest.mouseClick(page.save_link_button, Qt.MouseButton.LeftButton)
+            click_linked(page.save_link_button)
             if not shortcut.is_file():
                 raise ValueError('Save library shortcut did not save the selected release source')
             shortcuts.append(shortcut)
@@ -469,16 +485,14 @@ def run_library_smoke(destination: Path) -> int:
             QTest.mouseClick(modal.button(QMessageBox.StandardButton.Yes), Qt.MouseButton.LeftButton)
         for shortcut in shortcuts:
             QFileDialog.getOpenFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
-            page.scroll.ensureWidgetVisible(page.load_link_button)
-            QTimer.singleShot(100, accept_link)
-            QTest.mouseClick(page.load_link_button, Qt.MouseButton.LeftButton)
+            QTimer.singleShot(250, accept_link)
+            click_menu(page.add_data_button, page.load_link_button)
         if {link.root for link in page._all_linked} != {male.resolve(), manc.resolve()}:
             raise ValueError('Saved library shortcuts did not restore both exact external sources')
         if any(path.read_bytes() != before_linked[str(path)] for path in native_files):
             raise ValueError('Shortcut controls modified a source SWC')
-        if (page.linked_table.geometry().intersects(page.open_linked_button.geometry())
-                or (page.managed_card.isVisible() and page.table.geometry().intersects(page.inspect_button.geometry()))):
-            raise ValueError('Data Library controls overlap a table at the native test window size')
+        if not page.linked_table.rect().contains(page.linked_table.cellWidget(0, 6).geometry()):
+            raise ValueError('Linked row actions escape the native table')
         page.linked_table.selectRow(0)
         page.scroll.ensureWidgetVisible(page.linked_detail)
         app.processEvents()
@@ -529,13 +543,11 @@ def run_library_smoke(destination: Path) -> int:
         top_positions = {}
         for dataset in ('manc:v1.2.3', 'manc:v1.2.1', 'male-cns:v1.0'):
             choose_release(dataset)
-            layout = page.scroll.widget().layout()
-            for index in (1, 2, 3):
-                label = layout.itemAt(index).widget()
+            for label in (page.connectome_title, page.release_detail, page.data_heading):
                 natural = label.heightForWidth(label.width()) if label.hasHeightForWidth() else label.sizeHint().height()
                 if label.height() > natural + 2:
                     raise ValueError('Empty-release headings stretch apart in a tall native window')
-            top_positions[dataset] = page.import_button.mapTo(page.scroll.widget(), QPoint()).y()
+            top_positions[dataset] = page.add_data_button.mapTo(page.scroll.widget(), QPoint()).y()
             window.grab().save(str(destination / ('tall-' + dataset.replace(':', '-').replace('.', '_') + '.png')))
         if top_positions['manc:v1.2.3'] != top_positions['manc:v1.2.1']:
             raise ValueError('MANC releases do not retain the same top action position')
@@ -543,6 +555,111 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Layout switching changed the saved profile')
         window.resize(1120, 760)
         choose_release('manc:v1.2.1')
+        # Activate the new native menus, not a hidden legacy control or a
+        # callback shortcut. All files here are isolated engineering fixtures.
+        from PySide6.QtGui import QDesktopServices
+        from digifly_app.core.data_library import import_local_source
+        second = destination / 'compact-second-source'
+        second.mkdir()
+        (second / '88.swc').write_bytes(swc)
+        second_resource = import_local_source(ResourceProfile.load(profile_path), second,
+            provider='local', resource_id='compact-second', source_version='fixture',
+            dataset='manc:v1.2.1', profile_path=profile_path)
+        page.refresh()
+        target_row = next(i for i, item in enumerate(page._resources) if item.root == second_resource.root)
+        page.table.selectRow(0 if target_row != 0 else 1)
+        urls = []
+        original_open_url = QDesktopServices.openUrl
+        original_directory = QFileDialog.getExistingDirectory
+        original_open_file = QFileDialog.getOpenFileName
+        original_question = QMessageBox.question
+        dialogs_closed = []
+        def close_fixture_dialog():
+            modal = app.activeModalWidget()
+            if modal is None:
+                raise ValueError('Compact menu did not open its existing dialog')
+            dialogs_closed.append(modal.windowTitle())
+            modal.grab().save(str(destination / ('compact-dialog-' + str(len(dialogs_closed)) + '.png')))
+            modal.reject()
+        def managed_action(action, filename=None):
+            row = next(i for i, item in enumerate(page._resources) if item.root == second_resource.root)
+            holder = page.table.cellWidget(row, 8)
+            click_menu(holder._library_button, action, filename)
+        try:
+            QDesktopServices.openUrl = lambda url: urls.append(url.toLocalFile()) or True
+            managed_action(page.reveal_selected_button, 'compact-managed-row-menu.png')
+            if urls != [str(second_resource.root)]:
+                raise ValueError('Managed row menu opened a different selected row')
+            QTimer.singleShot(300, close_fixture_dialog)
+            managed_action(page.inspect_button)
+            if not dialogs_closed:
+                raise ValueError('Download details are no longer reachable')
+            # Real registration changes affect only this disposable fixture.
+            QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.Yes
+            managed_action(page.registration_button)
+            if next(x for x in page._resources if x.root == second_resource.root).is_registered:
+                raise ValueError('Row registration menu did not unregister the exact fixture')
+            managed_action(page.registration_button)
+            if not next(x for x in page._resources if x.root == second_resource.root).is_registered:
+                raise ValueError('Row registration menu did not restore the fixture')
+            trash_reviews = []
+            def cancel_trash(parent, title, text, *a, **kw):
+                trash_reviews.append(text)
+                return QMessageBox.StandardButton.Cancel
+            QMessageBox.question = cancel_trash
+            managed_action(page.trash_button)
+            if len(trash_reviews) != 1 or str(second_resource.root) not in trash_reviews[0]:
+                raise ValueError('Trash review targeted the wrong row')
+            if not (second_resource.root / 'digifly-resource.json').is_file():
+                raise ValueError('Cancelled Trash action changed the fixture')
+            holder = page.table.cellWidget(target_row, 8)
+            stale = next(a for a in holder._library_menu.actions() if a.text() == page.reveal_selected_button.text())
+            before_stale = list(urls)
+            page.release_buttons['manc:v1.2.3'].setChecked(True)
+            stale.trigger()
+            if urls != before_stale or page._selected_resource() is not None:
+                raise ValueError('A stale Compact row action survived a release switch')
+            QFileDialog.getExistingDirectory = lambda *a, **kw: ''
+            QFileDialog.getOpenFileName = lambda *a, **kw: ('', '')
+            for action in (page.import_button, page.load_link_button):
+                click_menu(page.add_data_button, action)
+            for action in (page.move_library_button, page.relink_button):
+                click_menu(page.library_tools_button, action, 'compact-library-tools-menu.png')
+            for button, action in ((page.add_data_button, page.modeldb_button),
+                                   (page.add_data_button, page.pair_graph_button),
+                                   (page.library_tools_button, page.manage_trash_button)):
+                QTimer.singleShot(300, close_fixture_dialog)
+                click_menu(button, action)
+            click_menu(page.library_tools_button, page.open_managed_action)
+            if urls[-1] != str(ResourceProfile.load(profile_path).managed_data_root):
+                raise ValueError('Library tools no longer opens the managed folder')
+            if len(dialogs_closed) != 4:
+                raise ValueError('A Compact menu lost an existing dialog route')
+            for width in (1120, 1700):
+                window.resize(width, 900)
+                for choice in CONNECTOMES:
+                    for release in choice.releases:
+                        choose_release(release)
+                        controls = (page.neuprint_button, page.register_button, page.add_data_button)
+                        rects = [button.geometry() for button in controls]
+                        if any(a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:]):
+                            raise ValueError('Compact toolbar actions overlap')
+                        if any(button.width() > 260 for button in controls):
+                            raise ValueError('Compact actions stretch into full-width rows')
+                choose_release('manc:v1.2.1')
+                page.scroll.verticalScrollBar().setValue(0)
+                QTest.qWait(80)
+                window.grab().save(str(destination / f'compact-workspace-{width}.png'))
+            if (second / '88.swc').read_bytes() != swc:
+                raise ValueError('Compact menu tests changed their input SWC')
+        finally:
+            QDesktopServices.openUrl = original_open_url
+            QFileDialog.getExistingDirectory = original_directory
+            QFileDialog.getOpenFileName = original_open_file
+            QMessageBox.question = original_question
+        record.update(compact_library_layout=True, compact_library_menus=True,
+                      compact_library_row_targeting=True, compact_library_stale_menu_rejected=True,
+                      compact_library_dialog_routes=dialogs_closed, compact_library_widths=[1120, 1700])
         record.update(connectome_exact_release_filter=True, connectome_empty_sections_hidden=True,
                       connectome_stale_selection_cleared=True, connectome_parquet_scoped=True,
                       connectome_scope_preserves_sources=True, connectome_unknown_not_guessed=True,
