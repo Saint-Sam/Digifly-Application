@@ -74,6 +74,15 @@ Stable UI-facing interfaces are `ModelDBClient`, `ModelDBMetadata`,
 
 ## Managed-resource integrity and lifecycle
 
+October20 additive linked-library view: `list_linked_libraries` consumes the
+existing workspace/provider discovery and read-only profile bindings. It does
+not change managed-resource schemas or lifecycle rules. User-owned folders,
+including unavailable registered paths, are listed separately from downloads;
+no managed move/trash/delete action accepts them. `count_linked_swcs` is an
+explicit cancellable read-only file/byte snapshot, not a unique-neuron census or
+biological completeness check. Refresh never recursively inventories a library.
+Linked source contents and the profile are unchanged by discovery/counting.
+
 Stable UI-facing interfaces are `load_managed_resource`,
 `list_managed_resources`, `verify_managed_resource`, registration helpers,
 and the operations in `resource_management`.

@@ -6,7 +6,7 @@ import threading
 import json
 import uuid
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -22,6 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtCore import QUrl
+from digifly_app.core.linked_libraries import (
+    LinkedLibrary, LinkedCount, list_linked_libraries, count_linked_swcs, path_key,
+)
 
 from digifly_app.core.data_library import (
     ManagedResource,
@@ -147,6 +150,22 @@ class _LibraryMoveWorker(QObject):
         self.completed.emit(result)
 
 
+class _LinkedCountWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, root: Path, parent=None):
+        super().__init__(parent)
+        self.root = root
+        self.cancel_event = threading.Event()
+
+    def run(self):
+        try:
+            self.completed.emit(count_linked_swcs(self.root, cancel=self.cancel_event))
+        except (OSError, ValueError) as error:
+            self.failed.emit(str(error))
+
+
 class DataLibraryPage(QWidget):
     status_message = Signal(str)
     sources_changed = Signal()
@@ -161,17 +180,20 @@ class DataLibraryPage(QWidget):
         self._neuprint_dialog: NeuPrintImportDialog | None = None
         self._modeldb_dialog: ModelDBImportDialog | None = None
         self._resources: tuple[ManagedResource, ...] = ()
+        self._linked: tuple[LinkedLibrary, ...] = ()
+        self._linked_counts: dict[str, LinkedCount] = {}
+        self._linked_counter: _LinkedCountWorker | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 26, 30, 32)
         root.setSpacing(16)
-        eyebrow = QLabel("MANAGED DATA")
+        eyebrow = QLabel("LOCAL AND DOWNLOADED DATA")
         eyebrow.setObjectName("Eyebrow")
         title = QLabel("Data Library")
         title.setObjectName("PageTitle")
         detail = QLabel(
-            "Import scientific data into a versioned library outside the app package, "
-            "or register an existing folder without copying it."
+            "Your linked local libraries stay in their original folders. "
+            "Downloaded subsets and app-managed libraries are listed separately below."
         )
         detail.setObjectName("Muted")
         detail.setWordWrap(True)
@@ -239,9 +261,44 @@ class DataLibraryPage(QWidget):
         action_layout.addWidget(self.action_status)
         root.addWidget(actions)
 
+        linked_card = Card()
+        linked_layout = QVBoxLayout(linked_card)
+        linked_layout.addWidget(QLabel("Linked local SWC libraries — read-only, no copies"))
+        self.linked_table = QTableWidget(0, 6)
+        self.linked_table.setObjectName('LinkedLibrariesTable')
+        self.linked_table.setHorizontalHeaderLabels(('Library', 'Dataset / release', 'Status', 'SWC files', 'SWC size', 'Folder'))
+        self.linked_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.linked_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.linked_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.linked_table.horizontalHeader().setStretchLastSection(True)
+        for column, width in enumerate((260, 150, 150, 100, 100)):
+            self.linked_table.setColumnWidth(column, width)
+        self.linked_table.setMinimumHeight(140)
+        self.linked_table.itemSelectionChanged.connect(self._linked_selection_changed)
+        linked_layout.addWidget(self.linked_table)
+        linked_buttons = QHBoxLayout()
+        self.open_linked_button = QPushButton('Open linked folder')
+        self.open_linked_button.clicked.connect(self.open_linked_folder)
+        self.count_linked_button = QPushButton('Count SWCs (read-only)')
+        self.count_linked_button.clicked.connect(self.count_selected_linked)
+        self.cancel_count_button = QPushButton('Cancel SWC count')
+        self.cancel_count_button.setEnabled(False)
+        self.cancel_count_button.clicked.connect(self.cancel_linked_count)
+        for button in (self.open_linked_button, self.count_linked_button, self.cancel_count_button):
+            linked_buttons.addWidget(button)
+        linked_buttons.addStretch(1)
+        linked_layout.addLayout(linked_buttons)
+        self.linked_detail = QLabel('Select a linked library to see its full path. Counts are read-only snapshots, not completeness checks.')
+        self.linked_detail.setObjectName('LinkedLibraryDetails')
+        self.linked_detail.setWordWrap(True)
+        self.linked_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        linked_layout.addWidget(self.linked_detail)
+        root.addWidget(linked_card)
+
         library = Card()
         library_layout = QVBoxLayout(library)
         library_layout.setContentsMargins(16, 15, 16, 15)
+        library_layout.addWidget(QLabel('Downloaded subsets and app-managed libraries'))
         heading = QHBoxLayout()
         self.root_label = QLabel("No resource profile configured")
         self.root_label.setObjectName("Muted")
@@ -261,7 +318,7 @@ class DataLibraryPage(QWidget):
             (
                 "Provider",
                 "Resource",
-                "Version",
+                "Dataset / scope",
                 "State",
                 "Files",
                 "SWCs",
@@ -329,6 +386,8 @@ class DataLibraryPage(QWidget):
         self._resources = ()
         try:
             profile, _ = self._profile()
+            self._linked = list_linked_libraries(profile)
+            self._render_linked()
             resources = list_managed_resources(profile)
         except (OSError, ValueError) as exc:
             self.root_label.setText(str(exc))
@@ -355,7 +414,7 @@ class DataLibraryPage(QWidget):
             values = (
                 resource.provider,
                 resource.resource_id,
-                resource.source_version,
+                self._managed_dataset(resource),
                 "Registered" if resource.is_registered else "Stored only",
                 f"{resource.file_count:,}",
                 f"{resource.swc_count:,}",
@@ -365,7 +424,99 @@ class DataLibraryPage(QWidget):
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
         self._resource_selection_changed()
-        self.status_message.emit(f"Data Library contains {len(resources)} managed resource(s)")
+        self.status_message.emit(f"Data Library: {len(self._linked)} linked local libraries; {len(resources)} managed downloads/libraries")
+
+    @staticmethod
+    def _managed_dataset(resource):
+        try:
+            value = json.loads(resource.manifest.read_text(encoding='utf-8'))
+            dataset = value.get('dataset') or resource.source_version
+            return str(dataset) + (' · dataset library' if value.get('library_schema') else ' · subset/import')
+        except (OSError, ValueError):
+            return resource.source_version
+
+    def _render_linked(self):
+        previous = self._selected_linked()
+        key = path_key(previous.root) if previous else None
+        self.linked_table.setRowCount(0)
+        for linked in self._linked:
+            count = self._linked_counts.get(path_key(linked.root))
+            values = (linked.label, linked.dataset, 'Linked · read-only' if linked.available else 'Missing folder',
+                      f'{count.swc_files:,}' if count and linked.available else 'Not counted',
+                      _human_bytes(count.swc_bytes) if count and linked.available else '—', str(linked.root))
+            row = self.linked_table.rowCount()
+            self.linked_table.insertRow(row)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(str(linked.root))
+                self.linked_table.setItem(row, column, item)
+            if path_key(linked.root) == key:
+                self.linked_table.selectRow(row)
+        self._linked_selection_changed()
+
+    def _selected_linked(self):
+        rows = self.linked_table.selectionModel().selectedRows()
+        return self._linked[rows[0].row()] if len(rows) == 1 and rows[0].row() < len(self._linked) else None
+
+    def _linked_selection_changed(self):
+        linked = self._selected_linked()
+        if linked is not None:
+            self.table.clearSelection()
+        available = linked is not None and linked.available
+        self.open_linked_button.setEnabled(available)
+        self.count_linked_button.setEnabled(available and not self.import_in_progress)
+        if linked:
+            self.linked_detail.setText(f'{linked.origin}: {linked.root}\nRead-only link. No source files are copied, moved, overwritten or deleted. '
+                'Counts describe SWC files, not unique neurons or biological completeness. Recount after folder changes.')
+        elif self._linked_counter is None:
+            self.linked_detail.setText('Select a linked library to see its full path. Counts are read-only snapshots, not completeness checks.')
+
+    def open_linked_folder(self):
+        linked = self._selected_linked()
+        if linked and linked.root.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(linked.root)))
+
+    def count_selected_linked(self):
+        linked = self._selected_linked()
+        if self.import_in_progress or linked is None or not linked.available:
+            return
+        worker = _LinkedCountWorker(linked.root, self)
+        self._linked_counter = worker
+        for button in (self.import_button, self.register_button, self.neuprint_button,
+                       self.modeldb_button, self.swc_intake_button, self.consolidate_swcs_button,
+                       self.move_library_button, self.relink_button):
+            button.setEnabled(False)
+        self.cancel_count_button.setEnabled(True)
+        self.count_linked_button.setEnabled(False)
+        self.linked_detail.setText(f'Counting regular SWC files without changing them: {linked.root}')
+        worker.completed.connect(self._linked_count_complete)
+        worker.failed.connect(self._linked_count_failed)
+        worker.finished.connect(self._linked_count_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def cancel_linked_count(self):
+        if self._linked_counter:
+            self._linked_counter.cancel_event.set()
+            self.cancel_count_button.setEnabled(False)
+
+    def _linked_count_complete(self, count):
+        self._linked_counts[path_key(count.root)] = count
+        self._render_linked()
+        self.action_status.setText(f'Counted {count.swc_files:,} regular SWC files ({_human_bytes(count.swc_bytes)}); '
+                                   f'{count.skipped_links} links skipped. Source files unchanged.')
+
+    def _linked_count_failed(self, detail):
+        self.action_status.setText(f'SWC count did not complete: {detail}')
+
+    def _linked_count_finished(self):
+        self._linked_counter = None
+        for button in (self.import_button, self.register_button, self.neuprint_button,
+                       self.modeldb_button, self.swc_intake_button, self.consolidate_swcs_button,
+                       self.move_library_button, self.relink_button):
+            button.setEnabled(True)
+        self.cancel_count_button.setEnabled(False)
+        self._linked_selection_changed()
 
     def _selected_resource(self) -> ManagedResource | None:
         rows = self.table.selectionModel().selectedRows()
@@ -377,6 +528,8 @@ class DataLibraryPage(QWidget):
     @Slot()
     def _resource_selection_changed(self) -> None:
         resource = self._selected_resource()
+        if resource is not None:
+            self.linked_table.clearSelection()
         selected = resource is not None
         self.inspect_button.setEnabled(selected)
         self.reveal_selected_button.setEnabled(selected)
@@ -580,7 +733,7 @@ class DataLibraryPage(QWidget):
 
     @property
     def import_in_progress(self) -> bool:
-        return self._thread is not None
+        return self._thread is not None or self._linked_counter is not None
 
     @Slot()
     def register_existing_folder(self) -> None:

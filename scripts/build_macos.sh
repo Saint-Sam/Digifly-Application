@@ -172,6 +172,13 @@ rsync -a \
   --exclude '/outputs/' \
   --exclude '__pycache__/' \
   "$project_dir/" "$stage_root/"
+if [[ -n "${DIGIFLY_RELEASE_README:-}" ]]; then
+  if [[ ! -f "$DIGIFLY_RELEASE_README" || -L "$DIGIFLY_RELEASE_README" ]]; then
+    echo "DIGIFLY_RELEASE_README must be a reviewed regular file." >&2
+    exit 2
+  fi
+  cp "$DIGIFLY_RELEASE_README" "$stage_root/README.md"
+fi
 cat > "$stage_root/digifly_build.json" <<EOF
 {"version":"$release_version","build":"$build_number","built_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF

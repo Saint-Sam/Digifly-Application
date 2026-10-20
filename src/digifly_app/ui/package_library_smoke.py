@@ -62,6 +62,7 @@ def run_library_smoke(destination: Path) -> int:
     app = window = None
     saved_question = QMessageBox.question
     saved_item = QInputDialog.getItem
+    saved_text = QInputDialog.getText
     saved_directory = QFileDialog.getExistingDirectory
     saved_warning, saved_critical = QMessageBox.warning, QMessageBox.critical
     record["dialogs"] = []
@@ -295,6 +296,58 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError("Actual Circuit Builder did not visibly load the combined cell set")
         if not window.grab().save(str(destination / "combined-circuit.png")):
             raise ValueError("Could not capture the actual packaged Circuit Builder")
+        # The same compiled Data Library must expose existing full-folder
+        # sources separately from managed acquisitions. Tiny fixtures exercise
+        # discovery, actual Register controls and read-only background counts;
+        # their file counts do not claim real connectome completeness.
+        from dataclasses import replace
+        public = destination / 'linked-fixture/Public'
+        male = public / 'Phase 1/male-cns_v0.9/export_swc'
+        manc = destination / 'linked-fixture/full-manc'
+        native_files = (male / 'MN/TTMn/800146/800146.swc', male / 'IN/CT1/10009/10009.swc',
+                        manc / 'DN/DNp01/10000/10000_axodendro_with_synapses.swc')
+        for path in native_files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(swc)
+        (manc / '.phase2_export_index.json').write_text('{}')
+        (manc / 'edges').mkdir()
+        (manc / 'edges/master_edges_cache.sqlite').touch()
+        before_linked = {str(path): path.read_bytes() for path in native_files}
+        linked_profile = ResourceProfile.load(profile_path)
+        linked_profile = replace(linked_profile, resources=tuple(b for b in linked_profile.resources
+            if b.kind != ResourceKind.DIGIFLY_WORKSPACE) + (ResourceBinding('linked-public',
+            ResourceKind.DIGIFLY_WORKSPACE, str(public), AccessMode.READ_ONLY),))
+        linked_profile.save(profile_path, replace=True)
+        window.pages.setCurrentWidget(page)
+        page.refresh()
+        if page.linked_table.rowCount() != 1:
+            raise ValueError('Workspace Male CNS folder is absent from Data Library')
+        QFileDialog.getExistingDirectory = lambda *a, **kw: str(manc)
+        QInputDialog.getText = lambda *a, **kw: ('full-manc-example', True)
+        QTest.mouseClick(page.register_button, Qt.MouseButton.LeftButton)
+        if page.linked_table.rowCount() != 2:
+            raise ValueError('Registered local MANC folder did not appear')
+        for row in range(page.linked_table.rowCount()):
+            page.linked_table.selectRow(row)
+            if page.trash_button.isEnabled() or page.registration_button.isEnabled():
+                raise ValueError('Linked folder acquired managed deletion controls')
+            QTest.mouseClick(page.count_linked_button, Qt.MouseButton.LeftButton)
+            wait_for(lambda: not page.import_in_progress, 'Read-only linked folder count did not finish')
+        counts = {Path(link.root).resolve(): page.linked_table.item(i, 3).text()
+                  for i, link in enumerate(page._linked)}
+        if counts != {male.resolve(): '2', manc.resolve(): '1'}:
+            raise ValueError('Linked library counts differ from actual fixture SWCs')
+        if any(path.read_bytes() != before_linked[str(path)] for path in native_files):
+            raise ValueError('A linked source file was modified')
+        if any((root / 'digifly-resource.json').exists() for root in (male, manc)):
+            raise ValueError('Registration wrote a managed manifest into a linked source')
+        page.linked_table.selectRow(0)
+        if not window.grab().save(str(destination / 'linked-local-libraries.png')):
+            raise ValueError('Linked library view did not render')
+        record.update(linked_local_libraries_visible=True, linked_workspace_discovery=True,
+            linked_register_control=True, linked_readonly_counts=True, linked_sources_unchanged=True,
+            linked_no_managed_delete_controls=True,
+            linked_fixture_counts={'male-cns:v0.9': 2, 'manc:v1.2.1': 1})
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],
@@ -305,6 +358,7 @@ def run_library_smoke(destination: Path) -> int:
     finally:
         QMessageBox.question = saved_question
         QInputDialog.getItem = saved_item
+        QInputDialog.getText = saved_text
         QFileDialog.getExistingDirectory = saved_directory
         QMessageBox.warning, QMessageBox.critical = saved_warning, saved_critical
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

@@ -3644,9 +3644,9 @@ class MainWindow(QMainWindow):
         if self.data_library_page.import_in_progress:
             QMessageBox.warning(
                 self,
-                "A data import is still running",
-                "The app will remain open until staging, validation, and registration finish. "
-                "An incomplete bundle is never promoted into the Data Library.",
+                "A Data Library task is still running",
+                "Wait for the task to finish, or cancel the SWC count/library move in Data Library. "
+                "Source files stay unchanged during counting; incomplete imports are never promoted.",
             )
             event.ignore()
             return

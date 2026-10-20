@@ -14,8 +14,9 @@ Use the [release page](https://github.com/Saint-Sam/Digifly-Application/releases
 for packaged applications. Prefer explicitly versioned downloads; historical
 and rollback assets remain available for recovery.
 
-Latest editions: **Mac Apple silicon20261019.2** and
-**Windows x86-64 20261019.1**. Use the explicitly versioned ZIPs on the release
+Latest checked editions: **Mac Apple silicon20261019.2** and
+**Windows x86-64 20261019.1**. The October20 linked-library repair is being
+checked on both platforms. Use the explicitly versioned ZIPs on the release
 page. Release notes identify the exact checks and remaining limitations.
 
 - **Mac:** Apple silicon, macOS 14 or newer. Local tester builds are ad-hoc
@@ -28,6 +29,12 @@ page. Release notes identify the exact checks and remaining limitations.
   selected, checksum-pinned MANC connectivity Parquet; it contains no SWCs.
 
 ## Recent improvements
+
+The new Data Library source separates linked local SWC libraries from downloaded
+subsets. Workspace sources and registered folders appear without copying files;
+their complete paths are visible. Explicit background SWC-file counts are
+read-only snapshots, not biological completeness checks. Missing linked drives
+remain visible, and linked folders have no managed trash/move controls.
 
 - A growing SWC library for each exact server and dataset release, with
   `export_swc/family/type/body-ID/` folders shared by individual and list searches.
