@@ -678,12 +678,12 @@
       "bytes": 72558
     },
     "src/digifly_app/ui/connectome_picker.py": {
-      "sha256": "95905d0fedc99d30eed101c6e8961165f2276fa9e11be4ee55c27f755afd78c2",
-      "bytes": 6477
+      "sha256": "9841d15a46325648759dc5a26059f40a10d667cf9e99e779381455bc5f5efa18",
+      "bytes": 6006
     },
     "src/digifly_app/ui/data_library.py": {
-      "sha256": "5e09cfabb60d51b7096d9ba027e21dfb708915e31c88a17166e03980488a07c8",
-      "bytes": 55665
+      "sha256": "729fcd6415bcf18681876be20461454acfea3af0cdcc10e99d518e130ee99ee2",
+      "bytes": 59361
     },
     "src/digifly_app/ui/experiment_builder.py": {
       "sha256": "c2844fc89c07eac5168c90468426655558d57dbd8b9d9c54303a94f532195cdb",
@@ -706,8 +706,8 @@
       "bytes": 47240
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "76db462dc3b1185ffb7cddb0aee868cf276cd1c5b4d5a373cc2a1ac1438d474f",
-      "bytes": 29775
+      "sha256": "019fa204ec91ff2b6f0bab5833c6774301e6887f2e83435169648966052c9bac",
+      "bytes": 31776
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -854,7 +854,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "26c5bb8d7f39c3fbb8cacd5b769238ffeb39641d710019b141fd0ae47b108921",
+      "sha256": "8d2c6872549c4c9180b47160824f8b93a6a25dfebb4bf11d997cf8ba2262428c",
       "bytes": 10085
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -882,8 +882,8 @@
       "bytes": 6533
     },
     "tests/test_linked_libraries_ui.py": {
-      "sha256": "95f280ac8e854c5234b6c9b6edb6c5f62fd0eede62c7dee6182ce6220d0cb146",
-      "bytes": 7177
+      "sha256": "956d346cb53709d3724c7418c3f6d9aea3a6f6ab09383515ead1b236e2d603d8",
+      "bytes": 7452
     },
     "tests/test_updates.py": {
       "sha256": "c059e8e1da9ce2e3c59811cf274811195816817430d7afc0a5fbdd2478269869",
@@ -942,8 +942,8 @@
       "bytes": 4012
     },
     "tests/test_connectome_picker.py": {
-      "sha256": "ad6530a2aa965fff769f5a9f993bfaabde322f496869c4ac1286fbae4cc2cdd4",
-      "bytes": 4412
+      "sha256": "e2a499e772957e6b60c2f72280f0ab2393b1be4071734207a18fb2879c60f868",
+      "bytes": 5943
     },
     "tests/test_windows_release.py": {
       "sha256": "22da0b6f3590124ce9cfa565f318b876f8885c2ae485f569a21034b22083f18d",

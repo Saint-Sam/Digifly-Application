@@ -21,6 +21,7 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
     path = p.save(tmp_path / 'profile.json')
     monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
     page = DataLibraryPage()
+    page.connectome_picker.buttons['male_cns'].click()
     before = source.read_bytes()
     try:
         assert page.linked_table.rowCount() == 1 and page.table.rowCount() == 0
@@ -74,6 +75,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     link = tmp_path / 'config/library-links/male.digifly-library.json'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(link), ''))
     page = DataLibraryPage()
+    page.connectome_picker.buttons['male_cns'].click()
     page.resize(840, 650)
     page.show()
     app.processEvents()
@@ -87,6 +89,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     from digifly_app.core.resource_profile import ResourceKind
     replace(restored, resources=tuple(b for b in restored.resources if b.kind != ResourceKind.DIGIFLY_WORKSPACE)).save(path, replace=True)
     page = DataLibraryPage()
+    page.connectome_picker.buttons['male_cns'].click()
     assert page.linked_table.rowCount() == 1
     page.close()
     other = make_default_profile(workspace_root=None, output_root=tmp_path / 'other-runs', managed_data_root=tmp_path / 'other-data')
@@ -94,6 +97,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(link), ''))
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Cancel)
     page = DataLibraryPage()
+    page.connectome_picker.buttons['male_cns'].click()
     before = path.read_bytes()
     page.load_link_button.click()
     assert path.read_bytes() == before
@@ -127,6 +131,7 @@ def test_open_shortcut_can_locate_other_device_folder_without_rewriting_link(tmp
     monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a, **k: str(local))
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Yes)
     page = DataLibraryPage()
+    page.connectome_picker.buttons['male_cns'].click()
     try:
         page.load_link_button.click()
         assert page.linked_table.rowCount() == 1

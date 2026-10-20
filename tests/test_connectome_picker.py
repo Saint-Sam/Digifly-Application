@@ -5,7 +5,9 @@ import hashlib
 import json
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt
 from digifly_app.ui.connectome_picker import CONNECTOMES, ConnectomePicker, picture_path
 from digifly_app.ui.data_library import DataLibraryPage
 from digifly_app.ui.neuprint_import import NeuPrintImportDialog
@@ -40,10 +42,15 @@ def test_picker_images_exclusive_choice_releases_and_responsive_layout(width):
         assert all(not image.pixmap().isNull() for image in picker.pictures.values())
         picker.buttons['male_cns'].click()
         assert picker.selected_dataset == 'male-cns:v1.0'
-        picker.releases['male_cns'].setCurrentIndex(1)
+        picker.select_release('male-cns:v0.9')
         assert picker.selected_dataset == 'male-cns:v0.9'
         picker.buttons['manc'].click()
         assert picker.selected_dataset == 'manc:v1.2.3'
+        picker.buttons['male_cns'].click()
+        assert picker.selected_dataset == 'male-cns:v0.9'
+        with pytest.raises(ValueError):
+            picker.select_release('manc:v1.2.1')
+        assert not picker.findChildren(QComboBox)
         assert sum(button.isChecked() for button in picker.buttons.values()) == 1
         rects = [card.geometry() for card in picker.cards.values()]
         assert all(not a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:])
@@ -52,13 +59,14 @@ def test_picker_images_exclusive_choice_releases_and_responsive_layout(width):
         picker.close()
 
 
-def test_page_places_chooser_first_and_passes_release_without_changing_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize('width', [840, 1120, 1700])
+def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     p = make_standalone_profile(workstation_root=tmp_path / 'work')
     path = p.save(tmp_path / 'resources.json')
     monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (p, path))
     page = DataLibraryPage()
-    page.resize(1120, 760)
+    page.resize(width, 760)
     page.show()
     app.processEvents()
     before = path.read_bytes()
@@ -68,12 +76,31 @@ def test_page_places_chooser_first_and_passes_release_without_changing_profile(t
         return 0
     monkeypatch.setattr(NeuPrintImportDialog, 'exec', inspect_dialog)
     try:
-        page.connectome_picker.releases['manc'].setCurrentIndex(1)
-        page.neuprint_button.click()
+        assert page.view_stack.currentWidget() is page.picker_scroll
+        assert page.connectome_picker.isVisible() and not page.import_button.isVisible()
+        QTest.mouseClick(page.connectome_picker.buttons['male_cns'], Qt.MouseButton.LeftButton)
+        app.processEvents()
+        assert page.view_stack.currentWidget() is page.scroll
+        assert page.import_button.isVisible() and not page.connectome_picker.isVisible()
+        assert page.connectome_title.text() == 'Male CNS'
+        assert QApplication.activeModalWidget() is None
+        assert page.release_buttons['male-cns:v0.9'].isVisible()
+        assert not page.release_buttons['manc:v1.2.1'].isVisible()
+        QTest.mouseClick(page.release_buttons['male-cns:v0.9'], Qt.MouseButton.LeftButton)
+        assert page.connectome_picker.selected_dataset == 'male-cns:v0.9'
+        assert QApplication.activeModalWidget() is None
+        QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        assert page.view_stack.currentWidget() is page.picker_scroll
+        assert not page.import_button.isVisible()
+        QTest.mouseClick(page.connectome_picker.buttons['manc'], Qt.MouseButton.LeftButton)
+        app.processEvents()
+        QTest.mouseClick(page.release_buttons['manc:v1.2.1'], Qt.MouseButton.LeftButton)
+        assert QApplication.activeModalWidget() is None
+        page.scroll.ensureWidgetVisible(page.neuprint_button)
+        app.processEvents()
+        QTest.mouseClick(page.neuprint_button, Qt.MouseButton.LeftButton)
         assert chosen == ['manc:v1.2.1']
-        picker_bottom = page.connectome_picker.mapTo(page.scroll.widget(), page.connectome_picker.rect().bottomLeft()).y()
-        actions_top = page.import_button.mapTo(page.scroll.widget(), page.import_button.rect().topLeft()).y()
-        assert picker_bottom < actions_top
         assert path.read_bytes() == before and not p.managed_data_root.exists()
         assert page.scroll.verticalScrollBar().maximum() > 0
     finally:

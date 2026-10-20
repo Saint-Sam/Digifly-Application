@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
+    QButtonGroup,
     QHBoxLayout,
     QGridLayout,
     QLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -60,7 +62,7 @@ from digifly_app.core.resource_management import (
 )
 
 from .widgets import Card
-from .connectome_picker import ConnectomePicker
+from .connectome_picker import CONNECTOMES, ConnectomePicker
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
 from .pair_graph_import import PairGraphImportDialog
@@ -192,17 +194,67 @@ class DataLibraryPage(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        self.view_stack = QStackedWidget()
+        outer.addWidget(self.view_stack)
+        self.picker_scroll = QScrollArea()
+        self.picker_scroll.setWidgetResizable(True)
+        self.picker_scroll.setObjectName('ConnectomeHomeScroll')
+        picker_content = QWidget()
+        picker_content.setMinimumWidth(760)
+        picker_layout = QVBoxLayout(picker_content)
+        picker_layout.setContentsMargins(30, 26, 30, 32)
+        self.connectome_picker = ConnectomePicker()
+        self.connectome_picker.dataset_selected.connect(self.open_connectome)
+        picker_layout.addWidget(self.connectome_picker)
+        picker_layout.addStretch()
+        self.picker_scroll.setWidget(picker_content)
+        self.view_stack.addWidget(self.picker_scroll)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setObjectName('DataLibraryScroll')
         content = QWidget()
         content.setMinimumWidth(760)
         self.scroll.setWidget(content)
-        outer.addWidget(self.scroll)
+        self.view_stack.addWidget(self.scroll)
         root = QVBoxLayout(content)
         root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         root.setContentsMargins(30, 26, 30, 32)
         root.setSpacing(16)
+        context = Card()
+        context_layout = QVBoxLayout(context)
+        context_layout.setContentsMargins(18, 18, 18, 18)
+        header = QHBoxLayout()
+        self.back_to_connectomes = QPushButton('← Back to connectomes')
+        self.back_to_connectomes.clicked.connect(self.show_connectomes)
+        header.addWidget(self.back_to_connectomes)
+        header.addStretch()
+        context_layout.addLayout(header)
+        self.connectome_title = QLabel()
+        self.connectome_title.setObjectName('PageTitle')
+        context_layout.addWidget(self.connectome_title)
+        context_layout.addWidget(QLabel('Release for neuPrint downloads'))
+        release_row = QHBoxLayout()
+        self.release_group = QButtonGroup(self)
+        self.release_group.setExclusive(True)
+        self.release_buttons = {}
+        for choice in CONNECTOMES:
+            for dataset in choice.releases:
+                button = QPushButton(dataset)
+                button.setObjectName('ConnectomeChoiceButton')
+                button.setAccessibleName(f'Use {dataset} release')
+                button.setCheckable(True)
+                self.release_group.addButton(button)
+                button.clicked.connect(lambda checked=False, value=dataset: self.select_connectome_release(value))
+                release_row.addWidget(button)
+                self.release_buttons[dataset] = button
+                button.hide()
+        release_row.addStretch()
+        context_layout.addLayout(release_row)
+        self.release_detail = QLabel()
+        self.release_detail.setObjectName('Muted')
+        self.release_detail.setWordWrap(True)
+        context_layout.addWidget(self.release_detail)
+        root.addWidget(context)
         eyebrow = QLabel("LOCAL AND DOWNLOADED DATA")
         eyebrow.setObjectName("Eyebrow")
         title = QLabel("Data Library")
@@ -215,8 +267,6 @@ class DataLibraryPage(QWidget):
         detail.setWordWrap(True)
         root.addWidget(eyebrow)
         root.addWidget(title)
-        self.connectome_picker = ConnectomePicker()
-        root.addWidget(self.connectome_picker)
         root.addWidget(detail)
 
         actions = Card()
@@ -387,7 +437,31 @@ class DataLibraryPage(QWidget):
         resource_actions.addWidget(self.relink_button, 1, 2)
         library_layout.addLayout(resource_actions)
         root.addWidget(library, 1)
+        self.view_stack.setCurrentWidget(self.picker_scroll)
         self.refresh()
+
+    def open_connectome(self, dataset: str) -> None:
+        choice = next(choice for choice in CONNECTOMES if dataset in choice.releases)
+        self.connectome_title.setText(choice.name)
+        for release, button in self.release_buttons.items():
+            button.setVisible(release in choice.releases)
+        self.select_connectome_release(dataset)
+        self.view_stack.setCurrentWidget(self.scroll)
+        self.scroll.verticalScrollBar().setValue(0)
+        self.back_to_connectomes.setFocus()
+
+    def select_connectome_release(self, dataset: str) -> None:
+        self.connectome_picker.select_release(dataset)
+        self.release_buttons[dataset].setChecked(True)
+        self.release_detail.setText(f'Download from neuPrint will start with {dataset}. '
+                                   'Your existing libraries and project settings are unchanged; all saved libraries remain listed below.')
+
+    def show_connectomes(self) -> None:
+        self.view_stack.setCurrentWidget(self.picker_scroll)
+        self.picker_scroll.verticalScrollBar().setValue(0)
+        key = self.connectome_picker.selected_key
+        if key:
+            self.connectome_picker.buttons[key].setFocus()
 
     def _profile(self) -> tuple[ResourceProfile, Path]:
         return load_or_create_default_profile()

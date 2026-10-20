@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QButtonGroup, QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 from .widgets import Card
 
@@ -47,6 +47,8 @@ class ConnectomePicker(Card):
         super().__init__(parent)
         self.setAccessibleName('Connectome choices')
         self.selected_dataset = ''
+        self.selected_key = ''
+        self._selected_releases = {}
         self._columns = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -55,7 +57,7 @@ class ConnectomePicker(Card):
         title.setObjectName('SectionTitle')
         title.setWordWrap(True)
         layout.addWidget(title)
-        help_label = QLabel('Choose a connectome and its release. Your local libraries and all other tools remain below.')
+        help_label = QLabel('Choose a connectome to open its data tools here. You can choose its release on the next page.')
         help_label.setObjectName('Muted')
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -64,7 +66,7 @@ class ConnectomePicker(Card):
         layout.addLayout(self.grid)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
-        self.cards, self.buttons, self.releases, self.pictures = {}, {}, {}, {}
+        self.cards, self.buttons, self.pictures = {}, {}, {}
         for choice in CONNECTOMES:
             card = Card()
             card.setMinimumWidth(220)
@@ -95,20 +97,8 @@ class ConnectomePicker(Card):
             description.setWordWrap(True)
             description.setMinimumHeight(34)
             body.addWidget(description)
-            release = QComboBox()
-            release.setObjectName('ConnectomeRelease_' + choice.key)
-            release.setAccessibleName(f'{choice.name} release')
-            release.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            for dataset in choice.releases:
-                release.addItem(dataset, dataset)
-            release.currentIndexChanged.connect(lambda index, key=choice.key: self.choose(key))
-            body.addWidget(release)
             self.cards[choice.key], self.buttons[choice.key] = card, button
-            self.releases[choice.key], self.pictures[choice.key] = release, image
-        self.selection_label = QLabel('Nothing selected yet. Choosing here does not download or change any existing data.')
-        self.selection_label.setObjectName('ConnectomeSelectionStatus')
-        self.selection_label.setWordWrap(True)
-        layout.addWidget(self.selection_label)
+            self.pictures[choice.key] = image
         credit = QLabel('Pictures: Janelia FlyEM and collaborators, as shown on '
                         '<a href="https://neuprint.janelia.org/">neuPrint</a> · '
                         '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. '
@@ -120,11 +110,18 @@ class ConnectomePicker(Card):
         self._reflow()
 
     def choose(self, key: str):
+        choice = next(choice for choice in CONNECTOMES if choice.key == key)
         self.buttons[key].setChecked(True)
-        self.selected_dataset = str(self.releases[key].currentData())
-        self.selection_label.setText(f'Selected: {self.selected_dataset}. Download from neuPrint below will start with this release. '
-                                     'Existing libraries are unchanged.')
+        self.selected_key = key
+        self.selected_dataset = self._selected_releases.get(key, choice.releases[0])
         self.dataset_selected.emit(self.selected_dataset)
+
+    def select_release(self, dataset: str):
+        choice = next(choice for choice in CONNECTOMES if choice.key == self.selected_key)
+        if dataset not in choice.releases:
+            raise ValueError('Release does not belong to the selected connectome')
+        self.selected_dataset = dataset
+        self._selected_releases[choice.key] = dataset
 
     def _reflow(self):
         columns = 3 if self.width() >= 950 else 2

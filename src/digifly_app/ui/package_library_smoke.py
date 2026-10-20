@@ -106,13 +106,50 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError("Existing simulator profile breaks Data Library.")
         record["existing_simulator_profile_loaded"] = [kind.value for kind in runtimes]
 
-        # The pictured first step is offline; an explicit choice only prefills
-        # the existing download dialog and never mutates a source/profile.
+        # The home box and details are separate inline views. Family/release
+        # choices never open a modal or mutate saved data/project settings.
         picker = page.connectome_picker
         from digifly_app.ui.connectome_picker import CONNECTOMES, picture_path
         before_choice = profile_path.read_bytes()
         if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
             raise ValueError('Initial connectome choices or bundled pictures are missing')
+        if page.view_stack.currentWidget() is not page.picker_scroll or page.import_button.isVisible():
+            raise ValueError('Data Library home must show only the connectome chooser')
+        layout_sizes = []
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            page.picker_scroll.verticalScrollBar().setValue(0)
+            QTest.qWait(120)
+            rects = [card.geometry() for card in picker.cards.values()]
+            if any(a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:]):
+                raise ValueError('Connectome cards overlap')
+            if not window.grab().save(str(destination / f'connectome-choices-{width}.png')):
+                raise ValueError('Connectome home view did not render')
+            QTest.mouseClick(picker.buttons['male_cns'], Qt.MouseButton.LeftButton)
+            QTest.qWait(80)
+            if app.activeModalWidget() or page.view_stack.currentWidget() is not page.scroll or picker.isVisible():
+                raise ValueError('Connectome choice must navigate inline without a window')
+            if not page.import_button.isVisible() or not page.linked_table.isVisible() or not page.table.isVisible():
+                raise ValueError('Existing data tools disappeared from the details view')
+            QTest.mouseClick(page.release_buttons['male-cns:v0.9'], Qt.MouseButton.LeftButton)
+            if app.activeModalWidget() or picker.selected_dataset != 'male-cns:v0.9':
+                raise ValueError('Release selection must be inline and exact')
+            if not window.grab().save(str(destination / f'connectome-details-{width}.png')):
+                raise ValueError('Connectome details view did not render')
+            QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
+            QTest.qWait(80)
+            if page.view_stack.currentWidget() is not page.picker_scroll or page.import_button.isVisible():
+                raise ValueError('Back did not restore the connectome-only home')
+            layout_sizes.append(width)
+        QTest.mouseClick(picker.buttons['manc'], Qt.MouseButton.LeftButton)
+        QTest.qWait(80)
+        if page.connectome_title.text() != 'MANC' or not page.release_buttons['manc:v1.2.1'].isVisible():
+            raise ValueError('Back/switch did not open the next connectome')
+        QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(picker.buttons['male_cns'], Qt.MouseButton.LeftButton)
+        QTest.qWait(80)
+        if picker.selected_dataset != 'male-cns:v0.9' or app.activeModalWidget():
+            raise ValueError('Inline release was not retained across Back/switch')
         from digifly_app.ui import data_library as library_module
         saved_import_dialog = library_module.NeuPrintImportDialog
         class CatalogueOnlyDialog(saved_import_dialog):
@@ -132,28 +169,17 @@ def run_library_smoke(destination: Path) -> int:
                 self.reject()
         library_module.NeuPrintImportDialog = CatalogueOnlyDialog
         try:
-            picker.releases['male_cns'].setCurrentIndex(1)
             page.scroll.ensureWidgetVisible(page.neuprint_button)
             QTest.mouseClick(page.neuprint_button, Qt.MouseButton.LeftButton)
         finally:
             library_module.NeuPrintImportDialog = saved_import_dialog
         if not record.get('connectome_download_release_prefilled') or profile_path.read_bytes() != before_choice:
             raise ValueError('Pictured choice changed saved data or failed to prefill the exact release')
-        layout_sizes = []
-        for width in (1120, 1700):
-            window.resize(width, 900)
-            page.scroll.verticalScrollBar().setValue(0)
-            QTest.qWait(120)
-            rects = [card.geometry() for card in picker.cards.values()]
-            if any(a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:]):
-                raise ValueError('Connectome cards overlap')
-            if picker.mapTo(page.scroll.widget(), picker.rect().bottomLeft()).y() >= page.import_button.mapTo(page.scroll.widget(), page.import_button.rect().topLeft()).y():
-                raise ValueError('Existing tools were not moved below the pictured chooser')
-            if not window.grab().save(str(destination / f'connectome-choices-{width}.png')):
-                raise ValueError('Connectome choice view did not render')
-            layout_sizes.append(width)
         record.update(connectome_pictures_loaded=True, connectome_choices_first=True,
                       connectome_choice_preserves_data=True, connectome_layout_no_overlap=True,
+                      connectome_home_only=True, connectome_inline_navigation=True,
+                      connectome_back_navigation=True, connectome_release_inline_no_dialog=True,
+                      connectome_existing_tools_preserved=True,
                       connectome_choices=[choice.name for choice in CONNECTOMES],
                       connectome_releases=[r for choice in CONNECTOMES for r in choice.releases],
                       connectome_layout_sizes=layout_sizes,
