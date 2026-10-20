@@ -12,6 +12,7 @@ import threading
 import hashlib
 import json
 import stat
+import re
 
 from .connectomes import discover_connectomes
 from .providers import profile_connectome_sources
@@ -19,6 +20,25 @@ from .resource_profile import AccessMode, ResourceBinding, ResourceKind, Resourc
 
 LINK_SCHEMA = 'digifly-library-link-v1'
 LINK_SUFFIX = '.digifly-library.json'
+
+
+def canonical_dataset(value: str) -> str:
+    """Normalize only explicit release IDs, never infer identity from a label/path."""
+    value = str(value).strip().casefold()
+    if value == 'mushroombody':
+        return value
+    match = re.fullmatch(r'(male-cns|manc|hemibrain|optic-lobe)[:_]v(\d+(?:\.\d+){1,2})', value)
+    return f'{match[1]}:v{match[2]}' if match else ''
+
+
+def pair_binding_dataset(metadata: dict) -> str:
+    from .bundled_pair_graph import PAIR_DATASET, PAIR_SHA256
+    if metadata.get('source_sha256') == PAIR_SHA256:
+        return PAIR_DATASET
+    explicit = canonical_dataset(metadata.get('dataset', ''))
+    if explicit:
+        return explicit
+    return canonical_dataset(metadata.get('morphology_dataset', ''))
 
 
 def save_library_link(library: LinkedLibrary, destination: Path) -> Path:

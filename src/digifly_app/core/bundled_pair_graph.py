@@ -12,6 +12,9 @@ PAIR_PATH = "bundled_data/manc/unique_pairs_by_id.parquet"
 PAIR_NOTICE = "bundled_data/manc/DATA_NOTICE.json"
 PAIR_SIZE = 12_092_298
 PAIR_SHA256 = "e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099"
+# Human-specified library association, October20. The original file's release
+# metadata remains unverified; this is not a new scientific certification.
+PAIR_DATASET = "manc:v1.2.1"
 NOTICE = {
     "schema": "digifly-user-supplied-manc-pairs-v1", "file": "unique_pairs_by_id.parquet",
     "bytes": PAIR_SIZE, "sha256": PAIR_SHA256, "dataset": "MANC (user supplied)",

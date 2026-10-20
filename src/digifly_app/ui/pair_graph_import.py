@@ -10,7 +10,8 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer
 from PySide6.QtWidgets import QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from digifly_app.core.circuit import ConnectomeRef
-from digifly_app.core.bundled_pair_graph import included_pair_path, install_included_pair
+from digifly_app.core.bundled_pair_graph import included_pair_path, install_included_pair, PAIR_DATASET, PAIR_SHA256
+from digifly_app.core.linked_libraries import canonical_dataset
 from digifly_app.core.paths import worker_path
 from digifly_app.core.pair_graph import validated_manifest
 from digifly_app.core.process_environment import external_runtime_launcher, sanitized_external_environment
@@ -41,6 +42,8 @@ class PairGraphImportDialog(QDialog):
         self._included_pair = None
         try:
             self._included_pair = included_pair_path()
+            if source is not None and canonical_dataset(source.dataset) != PAIR_DATASET:
+                self._included_pair = None
             if self._included_pair:
                 self.file_edit.setText(str(self._included_pair))
         except (OSError, ValueError) as exc:
@@ -64,7 +67,7 @@ class PairGraphImportDialog(QDialog):
         note = QLabel("The data reader needs duckdb, not NEURON. This creates a separate lookup index outside the app and registers the original file read-only. It does not copy morphologies, download data, change runtimes or interpret total_weight as µS.")
         note.setWordWrap(True)
         root.addWidget(note)
-        self.status = QLabel("Included MANC pair Parquet selected (release unverified). Use retains a copy in your Data Library; no SWCs are included."
+        self.status = QLabel("Included MANC v1.2.1 pair Parquet selected (release assigned by you). Use retains a copy in your Data Library; no SWCs are included."
                              if self._included_pair else "Choose the file to use.")
         self.status.setWordWrap(True)
         self.status.setObjectName("PairGraphImportStatus")
@@ -183,6 +186,9 @@ class PairGraphImportDialog(QDialog):
 
     def _register(self, source):
         verified = validated_manifest(source)
+        dataset = canonical_dataset(self.source.dataset)
+        if verified['source_sha256'] == PAIR_SHA256 and dataset and dataset != PAIR_DATASET:
+            raise ValueError('This supplied Parquet belongs to MANC v1.2.1, not the selected release')
         profile, profile_path = load_or_create_default_profile()
         remaining = tuple(binding for binding in profile.resources if not (
             binding.kind == ResourceKind.DATA_SOURCE and binding.metadata.get("format") == "digifly-weighted-pair-graph-v1"
@@ -192,7 +198,9 @@ class PairGraphImportDialog(QDialog):
             source.pair_graph_path, AccessMode.READ_ONLY, label="MANC pair connectivity · " + self.original_file.name,
             metadata={"format": verified["schema"], "morphology_key": self.source.key, "morphology_root": self.source.root,
                       "index": source.pair_graph_index, "source_sha256": source.pair_graph_sha256,
-                      "reader_python": self.python_edit.text(), "release": "not_declared_in_file"})
+                      "reader_python": self.python_edit.text(), "release": "not_declared_in_file",
+                      "dataset": dataset,
+                      "dataset_association": "selected_connectome_release_not_file_verification"})
         # Retain every previous index directory; this only changes the selected binding.
         replace(profile, resources=(*remaining, binding)).save(profile_path, replace=True)
         self.registered_source = source

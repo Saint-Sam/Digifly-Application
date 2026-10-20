@@ -31,6 +31,7 @@ from PySide6.QtCore import QUrl
 from digifly_app.core.linked_libraries import (
     LinkedLibrary, LinkedCount, list_linked_libraries, count_linked_swcs, path_key,
     LINK_SUFFIX, save_library_link, read_library_link, remember_library_link,
+    canonical_dataset, pair_binding_dataset,
 )
 
 from digifly_app.core.data_library import (
@@ -47,7 +48,8 @@ from digifly_app.core.resource_profile import (
     load_or_create_default_profile,
 )
 from digifly_app.core.swc_library import LIBRARY_SCHEMA, add_bundle_to_library, library_root
-from digifly_app.core.bundled_pair_graph import included_pair_path
+from digifly_app.core.bundled_pair_graph import included_pair_path, PAIR_DATASET
+from digifly_app.core.circuit import ConnectomeRef
 from digifly_app.core.neuprint import DEFAULT_NEUPRINT_SERVER
 from digifly_app.core.resource_management import (
     LibraryMoveProgress,
@@ -188,6 +190,9 @@ class DataLibraryPage(QWidget):
         self._neuprint_dialog: NeuPrintImportDialog | None = None
         self._modeldb_dialog: ModelDBImportDialog | None = None
         self._resources: tuple[ManagedResource, ...] = ()
+        self._all_resources = ()
+        self._all_linked = ()
+        self._pair_graphs = ()
         self._linked: tuple[LinkedLibrary, ...] = ()
         self._linked_counts: dict[str, LinkedCount] = {}
         self._linked_counter: _LinkedCountWorker | None = None
@@ -232,7 +237,7 @@ class DataLibraryPage(QWidget):
         self.connectome_title = QLabel()
         self.connectome_title.setObjectName('PageTitle')
         context_layout.addWidget(self.connectome_title)
-        context_layout.addWidget(QLabel('Release for neuPrint downloads'))
+        context_layout.addWidget(QLabel('Connectome release'))
         release_row = QHBoxLayout()
         self.release_group = QButtonGroup(self)
         self.release_group.setExclusive(True)
@@ -301,12 +306,6 @@ class DataLibraryPage(QWidget):
         self.pair_graph_label = QLabel("Connectivity and SWC bundles are separate; no morphology is required to register a pair graph.")
         self.pair_graph_label.setObjectName("LibraryPairGraphStatus")
         self.pair_graph_label.setWordWrap(True)
-        try:
-            if included_pair_path():
-                self.pair_graph_button.setText("Use included MANC Parquet…")
-                self.pair_graph_label.setText("Your supplied MANC pair table is included (release unverified). SWCs are added separately to the dataset library.")
-        except (OSError, ValueError) as exc:
-            self.pair_graph_label.setText(str(exc))
         action_layout.addLayout(graph_row)
         action_layout.addWidget(self.pair_graph_label)
         self.consolidate_swcs_button = QPushButton("Add selected saved neuPrint bundle to dataset library")
@@ -329,7 +328,7 @@ class DataLibraryPage(QWidget):
         action_layout.addWidget(self.action_status)
         root.addWidget(actions)
 
-        linked_card = Card()
+        linked_card = self.linked_card = Card()
         linked_layout = QVBoxLayout(linked_card)
         linked_layout.addWidget(QLabel("Linked local SWC libraries — read-only, no copies"))
         self.linked_table = QTableWidget(0, 6)
@@ -364,7 +363,6 @@ class DataLibraryPage(QWidget):
         self.load_link_button.setObjectName('OpenLibraryLinkButton')
         self.load_link_button.clicked.connect(self.open_saved_link)
         link_buttons.addWidget(self.save_link_button)
-        link_buttons.addWidget(self.load_link_button)
         link_buttons.addStretch(1)
         linked_layout.addLayout(link_buttons)
         self.linked_detail = QLabel('Select a linked library to see its full path. Counts are read-only snapshots, not completeness checks.')
@@ -374,7 +372,7 @@ class DataLibraryPage(QWidget):
         linked_layout.addWidget(self.linked_detail)
         root.addWidget(linked_card)
 
-        library = Card()
+        library = self.managed_card = Card()
         library_layout = QVBoxLayout(library)
         library_layout.setContentsMargins(16, 15, 16, 15)
         library_layout.addWidget(QLabel('Downloaded subsets and app-managed libraries'))
@@ -438,6 +436,13 @@ class DataLibraryPage(QWidget):
         resource_actions.addWidget(self.relink_button, 1, 2)
         library_layout.addLayout(resource_actions)
         root.addWidget(library, 1)
+        # These general entry/recovery controls must remain reachable even
+        # when this release has no linked/downloaded data yet.
+        general = QHBoxLayout()
+        general.addWidget(self.load_link_button)
+        general.addWidget(refresh)
+        general.addWidget(self.manage_trash_button)
+        action_layout.addLayout(general)
         self.view_stack.setCurrentWidget(self.picker_scroll)
         self.refresh()
 
@@ -455,7 +460,8 @@ class DataLibraryPage(QWidget):
         self.connectome_picker.select_release(dataset)
         self.release_buttons[dataset].setChecked(True)
         self.release_detail.setText(f'Download from neuPrint will start with {dataset}. '
-                                   'Your existing libraries and project settings are unchanged; all saved libraries remain listed below.')
+                                   'Only data for this connectome and exact release is shown below. Other saved data is unchanged.')
+        self._apply_dataset_filter()
 
     def show_connectomes(self) -> None:
         self.view_stack.setCurrentWidget(self.picker_scroll)
@@ -475,7 +481,10 @@ class DataLibraryPage(QWidget):
             bindings = [binding for binding in profile.bindings(ResourceKind.DATA_SOURCE)
                         if binding.metadata.get("format") == "digifly-weighted-pair-graph-v1"]
             reader = str(bindings[-1].metadata.get("reader_python", "")) if bindings else ""
-            dialog = PairGraphImportDialog(None, reader, self)
+            dataset = self.connectome_picker.selected_dataset
+            if not dataset.startswith('manc:'):
+                raise ValueError('Choose a MANC release before importing this connectivity format')
+            dialog = PairGraphImportDialog(ConnectomeRef(dataset, dataset, '', dataset), reader, self)
             dialog.exec()
             if dialog.registered_source:
                 self.refresh()
@@ -490,19 +499,47 @@ class DataLibraryPage(QWidget):
         self._resources = ()
         try:
             profile, _ = self._profile()
-            self._linked = list_linked_libraries(profile)
-            self._render_linked()
+            self._all_linked = list_linked_libraries(profile)
             resources = list_managed_resources(profile)
         except (OSError, ValueError) as exc:
             self.root_label.setText(str(exc))
+            self._all_linked, self._all_resources, self._pair_graphs = (), (), ()
+            self._apply_dataset_filter()
+            self.action_status.setText(str(exc))
             self._resource_selection_changed()
             return
-        self._resources = resources
-        pair_graphs = [binding for binding in profile.bindings(ResourceKind.DATA_SOURCE)
-                       if binding.metadata.get("format") == "digifly-weighted-pair-graph-v1"]
-        if pair_graphs:
+        self._all_resources = resources
+        self._pair_graphs = tuple(binding for binding in profile.bindings(ResourceKind.DATA_SOURCE)
+                       if binding.metadata.get("format") == "digifly-weighted-pair-graph-v1")
+        root_state = "" if profile.managed_data_root.is_dir() else " — missing; relink if moved"
+        self.root_label.setText(f"{profile.managed_data_root}{root_state}")
+        self._apply_dataset_filter()
+
+    def _apply_dataset_filter(self):
+        dataset = canonical_dataset(self.connectome_picker.selected_dataset)
+        if dataset != getattr(self, '_display_dataset', ''):
+            self.action_status.setText('Ready')
+        self._display_dataset = dataset
+        self._linked = ()
+        self._resources = ()
+        self.linked_table.clearSelection()
+        self.table.clearSelection()
+        self._linked = tuple(item for item in self._all_linked
+                             if dataset and canonical_dataset(item.dataset) == dataset)
+        self._resources = tuple(item for item in self._all_resources
+                                if dataset and self._resource_dataset(item) == dataset)
+        self._render_linked()
+        self.linked_card.setVisible(bool(self._linked))
+        self.managed_card.setVisible(bool(self._resources))
+        self.table.setRowCount(0)
+        self.pair_graph_button.setVisible(dataset.startswith('manc:'))
+        self.pair_graph_button.setText('Use connectivity Parquet…')
+        self.pair_graph_label.clear()
+        matching_graphs = [binding for binding in self._pair_graphs
+                           if dataset and pair_binding_dataset(binding.metadata) == dataset]
+        if matching_graphs:
             graph_text = []
-            for binding in pair_graphs:
+            for binding in matching_graphs:
                 try:
                     import json
                     manifest = json.loads((Path(str(binding.metadata["index"])).parent / "manifest.json").read_text(encoding="utf-8"))
@@ -510,9 +547,15 @@ class DataLibraryPage(QWidget):
                 except (OSError, ValueError, KeyError):
                     graph_text.append(f"{Path(binding.path).name}: selected index unavailable; no fallback")
             self.pair_graph_label.setText("\n".join(graph_text))
-        root_state = "" if profile.managed_data_root.is_dir() else " — missing; relink if moved"
-        self.root_label.setText(f"{profile.managed_data_root}{root_state}")
-        for resource in resources:
+        elif dataset == PAIR_DATASET:
+            try:
+                if included_pair_path():
+                    self.pair_graph_button.setText('Use included MANC v1.2.1 Parquet…')
+                    self.pair_graph_label.setText('Included MANC v1.2.1 pair table (release association supplied by you). SWCs are separate.')
+            except (OSError, ValueError) as exc:
+                self.pair_graph_label.setText(str(exc))
+        self.pair_graph_label.setVisible(bool(self.pair_graph_label.text()))
+        for resource in self._resources:
             row = self.table.rowCount()
             self.table.insertRow(row)
             values = (
@@ -528,7 +571,15 @@ class DataLibraryPage(QWidget):
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
         self._resource_selection_changed()
-        self.status_message.emit(f"Data Library: {len(self._linked)} linked local libraries; {len(resources)} managed downloads/libraries")
+        self.status_message.emit(f"{dataset or 'Choose a connectome'}: {len(self._linked)} linked local libraries; {len(self._resources)} managed downloads/libraries")
+
+    @staticmethod
+    def _resource_dataset(resource):
+        try:
+            value = json.loads(resource.manifest.read_text(encoding='utf-8'))
+            return canonical_dataset(value.get('dataset') or resource.source_version)
+        except (OSError, ValueError):
+            return canonical_dataset(resource.source_version)
 
     @staticmethod
     def _managed_dataset(resource):
@@ -668,8 +719,9 @@ class DataLibraryPage(QWidget):
     def _linked_count_complete(self, count):
         self._linked_counts[path_key(count.root)] = count
         self._render_linked()
-        self.action_status.setText(f'Counted {count.swc_files:,} regular SWC files ({_human_bytes(count.swc_bytes)}); '
-                                   f'{count.skipped_links} links skipped. Source files unchanged.')
+        if any(path_key(item.root) == path_key(count.root) for item in self._linked):
+            self.action_status.setText(f'Counted {count.swc_files:,} regular SWC files ({_human_bytes(count.swc_bytes)}); '
+                                       f'{count.skipped_links} links skipped. Source files unchanged.')
 
     def _linked_count_failed(self, detail):
         self.action_status.setText(f'SWC count did not complete: {detail}')
@@ -924,12 +976,18 @@ class DataLibraryPage(QWidget):
         if not accepted:
             return
         try:
+            dataset = self.connectome_picker.selected_dataset
+            if not dataset or QMessageBox.question(self, 'Link SWCs to this release?',
+                    f'Link {root} read-only to {dataset}?\n\nConfirm that this folder belongs to this exact connectome and release. '
+                    'No SWCs will be copied or changed.') != QMessageBox.StandardButton.Yes:
+                return
             destination = register_existing_morphology(
                 profile,
                 root,
                 resource_id=resource_id,
                 profile_path=profile_path,
                 label=root.name,
+                dataset=dataset,
             )
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Could not register folder", str(exc))

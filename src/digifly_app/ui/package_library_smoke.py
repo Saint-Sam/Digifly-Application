@@ -110,6 +110,14 @@ def run_library_smoke(destination: Path) -> int:
         # choices never open a modal or mutate saved data/project settings.
         picker = page.connectome_picker
         from digifly_app.ui.connectome_picker import CONNECTOMES, picture_path
+        def choose_release(dataset):
+            if page.view_stack.currentWidget() is page.scroll:
+                page.scroll.verticalScrollBar().setValue(0)
+                QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
+            choice = next(c for c in CONNECTOMES if dataset in c.releases)
+            QTest.mouseClick(picker.buttons[choice.key], Qt.MouseButton.LeftButton)
+            QTest.mouseClick(page.release_buttons[dataset], Qt.MouseButton.LeftButton)
+            QTest.qWait(60)
         before_choice = profile_path.read_bytes()
         if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
             raise ValueError('Initial connectome choices or bundled pictures are missing')
@@ -131,8 +139,10 @@ def run_library_smoke(destination: Path) -> int:
             QTest.qWait(80)
             if app.activeModalWidget() or page.view_stack.currentWidget() is not page.scroll or picker.isVisible():
                 raise ValueError('Connectome choice must navigate inline without a window')
-            if not page.import_button.isVisible() or not page.linked_table.isVisible() or not page.table.isVisible():
-                raise ValueError('Existing data tools disappeared from the details view')
+            if not page.import_button.isVisible() or not page.load_link_button.isVisible():
+                raise ValueError('Common import tools disappeared from an empty release')
+            if page.linked_card.isVisible() or page.managed_card.isVisible():
+                raise ValueError('Empty data sections must be hidden')
             QTest.mouseClick(page.release_buttons['male-cns:v0.9'], Qt.MouseButton.LeftButton)
             page.release_buttons['male-cns:v1.0'].setChecked(True)
             if picker.selected_dataset != 'male-cns:v1.0':
@@ -412,33 +422,36 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Workspace Male CNS folder is absent from Data Library')
         QFileDialog.getExistingDirectory = lambda *a, **kw: str(manc)
         QInputDialog.getText = lambda *a, **kw: ('full-manc-example', True)
+        choose_release('manc:v1.2.1')
         QTest.mouseClick(page.register_button, Qt.MouseButton.LeftButton)
-        if page.linked_table.rowCount() != 2:
+        if page.linked_table.rowCount() != 1 or len(page._all_linked) != 2:
             raise ValueError('Registered local MANC folder did not appear')
-        for row in range(page.linked_table.rowCount()):
-            page.linked_table.selectRow(row)
+        counts = {}
+        shortcuts = []
+        for dataset in ('male-cns:v0.9', 'manc:v1.2.1'):
+            choose_release(dataset)
+            if page.linked_table.rowCount() != 1:
+                raise ValueError('Exact release must show only its own linked library')
+            page.linked_table.selectRow(0)
             if page.trash_button.isEnabled() or page.registration_button.isEnabled():
                 raise ValueError('Linked folder acquired managed deletion controls')
             QTest.mouseClick(page.count_linked_button, Qt.MouseButton.LeftButton)
             wait_for(lambda: not page.import_in_progress, 'Read-only linked folder count did not finish')
-        counts = {Path(link.root).resolve(): page.linked_table.item(i, 3).text()
-                  for i, link in enumerate(page._linked)}
+            linked = page._linked[0]
+            counts[linked.root] = page.linked_table.item(0, 3).text()
+            shortcut = destination / ('library-links/' + ('male' if linked.root == male.resolve() else 'manc') + '.digifly-library.json')
+            QFileDialog.getSaveFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
+            page.scroll.ensureWidgetVisible(page.save_link_button)
+            QTest.mouseClick(page.save_link_button, Qt.MouseButton.LeftButton)
+            if not shortcut.is_file():
+                raise ValueError('Save library shortcut did not save the selected release source')
+            shortcuts.append(shortcut)
         if counts != {male.resolve(): '2', manc.resolve(): '1'}:
             raise ValueError('Linked library counts differ from actual fixture SWCs')
         if any(path.read_bytes() != before_linked[str(path)] for path in native_files):
             raise ValueError('A linked source file was modified')
         if any((root / 'digifly-resource.json').exists() for root in (male, manc)):
             raise ValueError('Registration wrote a managed manifest into a linked source')
-        shortcuts = []
-        for row, linked in enumerate(page._linked):
-            page.linked_table.selectRow(row)
-            shortcut = destination / ('library-links/' + ('male' if linked.root == male.resolve() else 'manc') + '.digifly-library.json')
-            QFileDialog.getSaveFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
-            page.scroll.ensureWidgetVisible(page.save_link_button)
-            QTest.mouseClick(page.save_link_button, Qt.MouseButton.LeftButton)
-            if not shortcut.is_file():
-                raise ValueError('The actual Save library shortcut control did not save a file')
-            shortcuts.append(shortcut)
         # Reopen both files through the actual app controls with workspace
         # discovery removed: this tests portable files, not cached table rows.
         current = ResourceProfile.load(profile_path)
@@ -459,18 +472,63 @@ def run_library_smoke(destination: Path) -> int:
             page.scroll.ensureWidgetVisible(page.load_link_button)
             QTimer.singleShot(100, accept_link)
             QTest.mouseClick(page.load_link_button, Qt.MouseButton.LeftButton)
-        if {link.root for link in page._linked} != {male.resolve(), manc.resolve()}:
+        if {link.root for link in page._all_linked} != {male.resolve(), manc.resolve()}:
             raise ValueError('Saved library shortcuts did not restore both exact external sources')
         if any(path.read_bytes() != before_linked[str(path)] for path in native_files):
             raise ValueError('Shortcut controls modified a source SWC')
         if (page.linked_table.geometry().intersects(page.open_linked_button.geometry())
-                or page.table.geometry().intersects(page.inspect_button.geometry())):
+                or (page.managed_card.isVisible() and page.table.geometry().intersects(page.inspect_button.geometry()))):
             raise ValueError('Data Library controls overlap a table at the native test window size')
         page.linked_table.selectRow(0)
         page.scroll.ensureWidgetVisible(page.linked_detail)
         app.processEvents()
         if not window.grab().save(str(destination / 'linked-local-libraries.png')):
             raise ValueError('Linked library view did not render')
+        # Use an explicit presentation fixture, not fabricated scientific data.
+        scope_index = destination / 'scope-fixture-index'
+        scope_index.mkdir()
+        (scope_index / 'manifest.json').write_text(json.dumps({'rows': 2, 'represented_neurons': 3}))
+        unknown_root = destination / 'unassigned-fixture'
+        unknown_root.mkdir()
+        (unknown_root / '3.swc').write_bytes(swc)
+        scoped_profile = ResourceProfile.load(profile_path)
+        scoped_profile = replace(scoped_profile, resources=(*scoped_profile.resources,
+            ResourceBinding('scope-fixture', ResourceKind.DATA_SOURCE, str(destination / 'scope-fixture.parquet'),
+                AccessMode.READ_ONLY, metadata={'format': 'digifly-weighted-pair-graph-v1',
+                    'index': str(scope_index / 'pairs.sqlite'), 'dataset': 'manc:v1.2.1'}),
+            ResourceBinding('unassigned-fixture', ResourceKind.MORPHOLOGY_SOURCE, str(unknown_root),
+                AccessMode.READ_ONLY, metadata={'dataset': 'phase2-local'})))
+        scoped_profile.save(profile_path, replace=True)
+        scope_before = profile_path.read_bytes()
+        page.refresh()
+        expected_manc_count = sum(json.loads(x.manifest.read_text()).get('dataset') == 'manc:v1.2.1'
+                                  for x in page._all_resources)
+        if expected_manc_count < 1:
+            raise ValueError('The scoped check lost the existing app-owned managed downloads')
+        for dataset, linked_root, managed_count in (
+                ('male-cns:v0.9', male.resolve(), 0), ('male-cns:v1.0', None, 0),
+                ('manc:v1.2.3', None, 0), ('manc:v1.2.1', manc.resolve(), expected_manc_count),
+                ('manc:v1.0', None, 0)):
+            choose_release(dataset)
+            if {x.root for x in page._linked} != ({linked_root} if linked_root else set()):
+                raise ValueError('A library from a different connectome/release leaked into this view')
+            if page.table.rowCount() != managed_count:
+                raise ValueError('Managed downloads did not filter by exact release')
+            if page.linked_card.isVisible() != bool(linked_root) or page.managed_card.isVisible() != bool(managed_count):
+                raise ValueError('Empty/unrelated sections remained visible')
+            if ('scope-fixture.parquet' in page.pair_graph_label.text()) != (dataset == 'manc:v1.2.1'):
+                raise ValueError('Connectivity file crossed its exact release boundary')
+            if page.trash_button.isEnabled() or page._selected_linked() is not None:
+                raise ValueError('A stale row selection survived a release switch')
+            window.grab().save(str(destination / ('scope-' + dataset.replace(':', '-').replace('.', '_') + '.png')))
+            if page.table.rowCount():
+                page.table.selectRow(0)
+        if profile_path.read_bytes() != scope_before:
+            raise ValueError('Filtering changed the saved profile')
+        choose_release('manc:v1.2.1')
+        record.update(connectome_exact_release_filter=True, connectome_empty_sections_hidden=True,
+                      connectome_stale_selection_cleared=True, connectome_parquet_scoped=True,
+                      connectome_scope_preserves_sources=True, connectome_unknown_not_guessed=True)
         record.update(linked_local_libraries_visible=True, linked_workspace_discovery=True,
             linked_register_control=True, linked_readonly_counts=True, linked_sources_unchanged=True,
             linked_no_managed_delete_controls=True,

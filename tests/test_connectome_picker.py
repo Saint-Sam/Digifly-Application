@@ -108,7 +108,8 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
         QTest.mouseClick(page.neuprint_button, Qt.MouseButton.LeftButton)
         assert chosen == ['manc:v1.2.1']
         assert path.read_bytes() == before and not p.managed_data_root.exists()
-        assert page.scroll.verticalScrollBar().maximum() > 0
+        assert not page.linked_card.isVisible() and not page.managed_card.isVisible()
+        assert page.load_link_button.isVisible()
     finally:
         page.close()
 
@@ -129,3 +130,70 @@ def test_unavailable_preferred_release_does_not_silently_select_a_different_conn
         assert dialog.preview_button.isEnabled()
     finally:
         dialog.close()
+
+
+def test_strict_release_identity_and_parquet_pin():
+    from digifly_app.core.linked_libraries import canonical_dataset, pair_binding_dataset
+    from digifly_app.core.bundled_pair_graph import PAIR_SHA256
+    assert canonical_dataset('male-cns_v0.9') == 'male-cns:v0.9'
+    assert canonical_dataset('manc_v1.2.1') == 'manc:v1.2.1'
+    for unknown in ('MANC', 'phase2-local', 'manc:v1.2.1:full-local', '/manc:v1.2.1', 'v1.2.1'):
+        assert canonical_dataset(unknown) == ''
+    assert pair_binding_dataset({'source_sha256': PAIR_SHA256}) == 'manc:v1.2.1'
+    assert pair_binding_dataset({'source_sha256': PAIR_SHA256, 'dataset': 'male-cns:v1.0'}) == 'manc:v1.2.1'
+    assert pair_binding_dataset({'source_sha256': 'other', 'release': 'not_declared_in_file'}) == ''
+
+
+def test_exact_scope_filters_rows_empty_cards_and_stale_actions(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from digifly_app.core.resource_profile import ResourceBinding, ResourceKind, AccessMode, ResourceProfile
+    from digifly_app.core.data_library import import_local_source
+    from digifly_app.core.bundled_pair_graph import PAIR_SHA256
+    app = QApplication.instance() or QApplication([])
+    p = make_standalone_profile(workstation_root=tmp_path / 'work')
+    bindings = []
+    for key, dataset in (('male', 'male-cns_v0.9'), ('manc', 'manc_v1.2.1'), ('unknown', 'phase2-local')):
+        folder = tmp_path / key
+        folder.mkdir()
+        (folder / '1.swc').write_text('1 1 0 0 0 1 -1\n')
+        bindings.append(ResourceBinding(key, ResourceKind.MORPHOLOGY_SOURCE, str(folder),
+            AccessMode.READ_ONLY, key, metadata={'dataset': dataset}))
+    index = tmp_path / 'index'
+    index.mkdir()
+    (index / 'manifest.json').write_text(json.dumps({'rows': 2, 'represented_neurons': 3}))
+    bindings.append(ResourceBinding('pairs', ResourceKind.DATA_SOURCE, str(tmp_path / 'unique_pairs_by_id.parquet'),
+        AccessMode.READ_ONLY, metadata={'format':'digifly-weighted-pair-graph-v1', 'index':str(index/'pairs.sqlite'),
+                                      'source_sha256': PAIR_SHA256, 'release':'not_declared_in_file'}))
+    p = replace(p, resources=(*p.resources, *bindings))
+    path = p.save(tmp_path / 'profile.json')
+    for dataset in ('male-cns:v0.9', 'manc:v1.2.1'):
+        source = tmp_path / ('download-' + dataset.replace(':','-'))
+        source.mkdir()
+        (source / '2.swc').write_text('1 1 0 0 0 1 -1\n')
+        import_local_source(ResourceProfile.load(path), source, provider='local', resource_id=source.name,
+                            source_version='snapshot', profile_path=path, dataset=dataset)
+    monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
+    page = DataLibraryPage()
+    page.resize(1120, 900)
+    page.show()
+    before = path.read_bytes()
+    try:
+        for family, dataset, roots in (('male_cns','male-cns:v0.9',{'male'}),
+                ('male_cns','male-cns:v1.0',set()), ('manc','manc:v1.2.1',{'manc'}),
+                ('manc','manc:v1.2.3',set()), ('manc','manc:v1.0',set())):
+            page.connectome_picker.choose(family)
+            page.release_buttons[dataset].setChecked(True)
+            app.processEvents()
+            assert {x.root.name for x in page._linked} == roots
+            assert page.table.rowCount() == int(bool(roots))
+            assert page.linked_card.isVisible() == bool(roots)
+            assert page.managed_card.isVisible() == bool(roots)
+            assert page.pair_graph_label.isVisible() == (dataset == 'manc:v1.2.1')
+            assert not page.trash_button.isEnabled()
+            if roots:
+                page.table.selectRow(0)
+                assert page.trash_button.isEnabled()
+        assert path.read_bytes() == before
+        assert len(page._all_linked) == 3
+    finally:
+        page.close()

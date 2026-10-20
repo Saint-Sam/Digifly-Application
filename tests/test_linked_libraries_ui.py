@@ -22,6 +22,7 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
     monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
+    page.release_buttons['male-cns:v0.9'].setChecked(True)
     before = source.read_bytes()
     try:
         assert page.linked_table.rowCount() == 1 and page.table.rowCount() == 0
@@ -30,6 +31,7 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
         (other / '2.swc').write_bytes(before)
         monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a, **k: str(other))
         monkeypatch.setattr(QInputDialog, 'getText', lambda *a, **k: ('another-library', True))
+        monkeypatch.setattr(QMessageBox, 'question', lambda *a, **k: QMessageBox.StandardButton.Yes)
         page.register_button.click()
         assert page.linked_table.rowCount() == 2
         assert page.table.rowCount() == 0
@@ -41,7 +43,7 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
         imported.mkdir()
         (imported / '3.swc').write_bytes(before)
         import_local_source(ResourceProfile.load(path), imported, provider='local',
-                            resource_id='download', source_version='v1', profile_path=path)
+                            resource_id='download', source_version='v1', profile_path=path, dataset='male-cns:v0.9')
         page.refresh()
         page.table.selectRow(0)
         assert page.trash_button.isEnabled()
@@ -76,6 +78,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(link), ''))
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
+    page.release_buttons['male-cns:v0.9'].setChecked(True)
     page.resize(840, 650)
     page.show()
     app.processEvents()
@@ -90,6 +93,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     replace(restored, resources=tuple(b for b in restored.resources if b.kind != ResourceKind.DIGIFLY_WORKSPACE)).save(path, replace=True)
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
+    page.release_buttons['male-cns:v0.9'].setChecked(True)
     assert page.linked_table.rowCount() == 1
     page.close()
     other = make_default_profile(workspace_root=None, output_root=tmp_path / 'other-runs', managed_data_root=tmp_path / 'other-data')
@@ -98,6 +102,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Cancel)
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
+    page.release_buttons['male-cns:v0.9'].setChecked(True)
     before = path.read_bytes()
     page.load_link_button.click()
     assert path.read_bytes() == before
@@ -109,7 +114,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     app.processEvents()
     assert page.scroll.verticalScrollBar().maximum() > 0
     assert page.linked_table.geometry().bottom() < page.open_linked_button.geometry().top()
-    assert page.table.geometry().bottom() < page.inspect_button.geometry().top()
+    assert not page.managed_card.isVisible()
     assert source.read_text() == '1 1 0 0 0 1 -1\n'
     page.close()
 
@@ -132,6 +137,7 @@ def test_open_shortcut_can_locate_other_device_folder_without_rewriting_link(tmp
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Yes)
     page = DataLibraryPage()
     page.connectome_picker.buttons['male_cns'].click()
+    page.release_buttons['male-cns:v0.9'].setChecked(True)
     try:
         page.load_link_button.click()
         assert page.linked_table.rowCount() == 1
