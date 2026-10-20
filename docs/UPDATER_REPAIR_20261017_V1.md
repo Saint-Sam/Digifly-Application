@@ -71,32 +71,6 @@ repair is not a periodic sweep or permission for one.
 
 Evidence: `workstation_active_v1.json:shared_fix_delivery.repair_20261019`.
 
-Measured Mac delivery: current20261019.1, archive SHA256
-`b17248cddbf7470c9d802bb12b848003dc44d4ff3bc1997983029d040f4d72aa`,
-executable SHA256 `a72ddcbd20b339de8009558a84dd9d9daf461ce70555ccbfdb56f4785d5feab7`.
-All3086archive/installed files,140source inputs and2897unchanged runtime files
-checked. Packaged Data Library saved-simulator fixture, normal/legacy cleanup,
-failed-startup recovery and historical-catalog refusal pass. An additional
-disposable actual-app test feeds the exact old archive that caused the failure;
-the app refuses before helper creation or replacement and retains its full tree.
-The real human profile remains byte-identical with17bindings; native Refresh,
-SWC-registration and neuPrint-dialog controls open correctly, and actual public
-Check for updates says `This build is current.` No neuron download or simulator
-run occurred. Only the intended current app remains open on Data Library.
-
-Thirty retired expanded app copies were removed from `dist` after exact retained
-archive checks. Four unmatched/failed copies were preserved in new checked
-recovery ZIPs before removal, rather than erasing their changed bytes. One
-redundant pre-repair backup was also archive-checked. Seven finished disposable
-app test copies were separately removed; all small records/images remain. Current
-app, checked20261019.1 and fallback20261018.5 remain. Logical removed file sizes
-are not presented as net filesystem savings. Local194source cases:190pass,
-4platform skips;38focused harness cases pass. Windows counterpart source3a5d94b
-is queued at run39280615048 with no windows-2022 runner assigned, no pending
-deployment approvals and no diagnostic annotation. It is not accepted or
-published; both-platform completion remains open rather than reusing stale
-Windows source evidence. Existing published Windows20261018.4 is unchanged.
-
 ## October18 cleanup override — current repair
 
 The user now requires obsolete update files to be removed automatically after

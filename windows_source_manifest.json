@@ -30,8 +30,8 @@
       "bytes": 8916
     },
     "docs/PACKAGING_BOUNDARY.md": {
-      "sha256": "3eb930ce21049820909b8d423f38bddafecaad0785c258731e3ed735328bc585",
-      "bytes": 8459
+      "bytes": 8923,
+      "sha256": "cc159d2ec365d1a4360b8f0c598dad30c67e1d9dac2e6d6ff3111d6f6bc922c3"
     },
     "docs/PDCM_ATHENE_RUNBOOK.md": {
       "sha256": "0ec6b14884e4d77108e102f3c5e91ca379fd7c6cc7412fc20e048583abf37de1",
@@ -50,12 +50,12 @@
       "bytes": 5017
     },
     "docs/UPDATER_REPAIR_20261017_V1.md": {
-      "sha256": "23d58cec04aca268cf9b40383ca857009cbd4618da2a9225d9e1d849daf94fef",
-      "bytes": 19027
+      "bytes": 17178,
+      "sha256": "db4582a95b6e6ac1438cd4036887f57613ca7ea586d4a415def5f4780bb35807"
     },
     "docs/WINDOWS_TESTER.md": {
-      "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350",
-      "bytes": 5635
+      "bytes": 6142,
+      "sha256": "3dc27dc6b1b40b9478bab7566063e314f8df2a8c960e95598bd7fecd74052ac0"
     },
     "main.py": {
       "sha256": "ae53f950eca206683358eed365b0ca8388996bb35562bbd0dacbee36f6f0d5b2",
@@ -262,8 +262,8 @@
       "bytes": 3446
     },
     "scripts/stage_windows_source.py": {
-      "sha256": "c6e32e5ea52e806939d8f81196bc8393f7b6d2e7d8991933950ddaf6da31319a",
-      "bytes": 5228
+      "sha256": "e6cdc39bb2ef9ee1e92658bec5df75bb0ed58f82fd0e3dd010242247bdb7a1dd",
+      "bytes": 5942
     },
     "scripts/windows_package.py": {
       "sha256": "b348437ca5c36949a24fa7880471dd7b83a48885d46e11184246a0951d7184e7",
@@ -854,8 +854,8 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "66c9d5913fcecb15c3545c82a6c75290c691ae816626519172cab9d5657e74c2",
-      "bytes": 9964
+      "sha256": "26c5bb8d7f39c3fbb8cacd5b769238ffeb39641d710019b141fd0ae47b108921",
+      "bytes": 10085
     },
     "scripts/build_windows_neuron_payload.py": {
       "sha256": "0be75bb67fab0c8e9c0eca66eacba477671bade7248cbedebbbc543c286c36f2",
@@ -876,6 +876,14 @@
     "tests/test_generic_experiment.py": {
       "sha256": "8ceec76ee1bb49e42cd23eae1bddb1ef430b675e1dcf66e7aeed4016d962a261",
       "bytes": 52426
+    },
+    "tests/test_linked_libraries.py": {
+      "sha256": "f8a91ce91edd25924fb5844f62d4501cc2671daccb9adcf90869e104365e2d3f",
+      "bytes": 6533
+    },
+    "tests/test_linked_libraries_ui.py": {
+      "sha256": "95f280ac8e854c5234b6c9b6edb6c5f62fd0eede62c7dee6182ce6220d0cb146",
+      "bytes": 7177
     },
     "tests/test_updates.py": {
       "sha256": "c059e8e1da9ce2e3c59811cf274811195816817430d7afc0a5fbdd2478269869",
@@ -960,6 +968,70 @@
     "scripts/build_macos.sh": {
       "sha256": "8cf411f02fd82e8933c067cd9debdf27cba54ebf0d65ee83176ffe157f89c638",
       "bytes": 16633
+    },
+    "scripts/setup_dev.sh": {
+      "sha256": "f3abe0f4397765d6145a46f4cff1af08e3b037a23a2e94b9cf0f06078b8d532f",
+      "bytes": 1263
+    },
+    "scripts/run_dev.sh": {
+      "bytes": 398,
+      "sha256": "a34b62d0fa9dc59c7537f5ac73c61d61fc8575a4fd3f6b5960da4b5f39e5c28f"
+    },
+    "pysidedeploy.spec": {
+      "sha256": "982e044bc7fba2b70138610650f8649a6fd89dddb8a589595a522adcb922e195",
+      "bytes": 6204
+    },
+    "scripts/stage_build_source_manifest.py": {
+      "sha256": "3dbcacbfc2957cb864bb480e23484d728e3d8763a09b1a071340efe40bf4bb3b",
+      "bytes": 3929
+    },
+    "scripts/archive_macos_app.sh": {
+      "sha256": "4b8b9ac0e16b998360a9b99caef57bd94f87decfc2182bd07c9bd1a735aaa0cf",
+      "bytes": 1136
+    },
+    "scripts/sign_macos_app.sh": {
+      "sha256": "d307ea2a0a321cc7a490f2eed52b32a37acf193b22e0a0d73a660b500f2e3087",
+      "bytes": 3345
+    },
+    "scripts/notarize_macos_app.sh": {
+      "sha256": "26a561091d0a7b305588790817e0005a0cfafff7099a39aa0c8ff948632eab83",
+      "bytes": 5047
+    },
+    "scripts/bundle_arbor_runtime_macos.sh": {
+      "sha256": "874754a1876590f5c7cd4e7b5bae52323a9514741519b41f107c285c50c5e081",
+      "bytes": 3868
+    },
+    "scripts/check_swc_library_gui.py": {
+      "sha256": "faf51f9fb051cfb3a25c328c3950ddd55aac3f66b3559f58fbf09fbc67734eed",
+      "bytes": 3289
+    },
+    "scripts/collect_macos_release_notices.py": {
+      "sha256": "f4040e93907890e9798ac4a9ac6945e43759b3b86b299765d24916d40f975dc7",
+      "bytes": 9557
+    },
+    "scripts/stage_macos_notices.py": {
+      "sha256": "fbc51cd3ab38491ee9914e48b62d336fe38e60e2701956a6c51903269b325592",
+      "bytes": 2562
+    },
+    "tests/test_stage_macos_notices.py": {
+      "sha256": "86d8b8347dcbe94e6985264599bc6709e9ec348d97f216ee354f63cceb4b14f4",
+      "bytes": 2150
+    },
+    "tests/test_stage_build_source_manifest.py": {
+      "sha256": "18e5013fcd33f368a0e2545bb5d32e862059e0f44ab290752d584dfb8ac3c5b2",
+      "bytes": 4586
+    },
+    "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt": {
+      "sha256": "e229f348b46cd266ff654e3d9963b08af91399cf88d3a0c4153a639977996240",
+      "bytes": 1531
+    },
+    "docs/MACOS_TESTER.md": {
+      "sha256": "d2f34b92d33c590b3aa2595aab0b642df355fc62aa0795f56776baa076a8e350",
+      "bytes": 2299
+    },
+    "docs/CHANNEL_EXECUTION_REPAIR.md": {
+      "sha256": "7db910e98cc30bfc3133a1f5f81e5b603ced1dc0822a3cd5b1f2ec146578d580",
+      "bytes": 33935
     },
     "bundled_data/manc/unique_pairs_by_id.parquet": {
       "sha256": "e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099",
