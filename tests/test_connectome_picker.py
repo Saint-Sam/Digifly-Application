@@ -114,6 +114,29 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
         page.close()
 
 
+def test_empty_release_does_not_stretch_headings_in_a_tall_window(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path / 'work')
+    path = profile.save(tmp_path / 'resources.json')
+    monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (profile, path))
+    page = DataLibraryPage()
+    page.resize(1700, 1400)
+    page.show()
+    try:
+        for dataset in ('manc:v1.2.3', 'manc:v1.2.1', 'male-cns:v1.0'):
+            family = next(choice.key for choice in CONNECTOMES if dataset in choice.releases)
+            page.connectome_picker.choose(family)
+            page.release_buttons[dataset].setChecked(True)
+            app.processEvents()
+            layout = page.scroll.widget().layout()
+            for index in (1, 2, 3):
+                label = layout.itemAt(index).widget()
+                natural = label.heightForWidth(label.width()) if label.hasHeightForWidth() else label.sizeHint().height()
+                assert label.height() <= natural + 2
+    finally:
+        page.close()
+
+
 def test_unavailable_preferred_release_does_not_silently_select_a_different_connectome(tmp_path):
     app = QApplication.instance() or QApplication([])
     p = make_standalone_profile(workstation_root=tmp_path / 'work')

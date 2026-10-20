@@ -682,8 +682,8 @@
       "bytes": 5792
     },
     "src/digifly_app/ui/data_library.py": {
-      "sha256": "6732cdd145c568cf7a802b48a72d2ceb079c8c4fc68e40f343185a16258e4b05",
-      "bytes": 62663
+      "sha256": "a3f4f87142dd5a74a0250eda2819f6bb96db0873862eeac67b4fb834544ac156",
+      "bytes": 62894
     },
     "src/digifly_app/ui/experiment_builder.py": {
       "sha256": "c2844fc89c07eac5168c90468426655558d57dbd8b9d9c54303a94f532195cdb",
@@ -706,8 +706,8 @@
       "bytes": 47240
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "1ba71f13416c4a6023b676ab543b2246ea1587eda02da0c9890d45d22c5ba21c",
-      "bytes": 36424
+      "sha256": "01aac9250f4686c91a3e4211ca104a022fb5759fbc4486bac2f6a81aeb50bfa7",
+      "bytes": 37652
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -942,8 +942,8 @@
       "bytes": 4012
     },
     "tests/test_connectome_picker.py": {
-      "sha256": "52d7cdb9afd596c6f58cd06a6b27361e67dc1dcc9e8ea65a7b49811c215d2c4b",
-      "bytes": 10304
+      "sha256": "378f058b9b3824b8b46478ff5b98a8e166a2b0988c139747da321ec8bccfd90c",
+      "bytes": 11399
     },
     "tests/test_windows_release.py": {
       "sha256": "22da0b6f3590124ce9cfa565f318b876f8885c2ae485f569a21034b22083f18d",

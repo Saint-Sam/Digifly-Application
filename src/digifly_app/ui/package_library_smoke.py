@@ -525,10 +525,28 @@ def run_library_smoke(destination: Path) -> int:
                 page.table.selectRow(0)
         if profile_path.read_bytes() != scope_before:
             raise ValueError('Filtering changed the saved profile')
+        window.resize(1700, 1400)
+        top_positions = {}
+        for dataset in ('manc:v1.2.3', 'manc:v1.2.1', 'male-cns:v1.0'):
+            choose_release(dataset)
+            layout = page.scroll.widget().layout()
+            for index in (1, 2, 3):
+                label = layout.itemAt(index).widget()
+                natural = label.heightForWidth(label.width()) if label.hasHeightForWidth() else label.sizeHint().height()
+                if label.height() > natural + 2:
+                    raise ValueError('Empty-release headings stretch apart in a tall native window')
+            top_positions[dataset] = page.import_button.mapTo(page.scroll.widget(), QPoint()).y()
+            window.grab().save(str(destination / ('tall-' + dataset.replace(':', '-').replace('.', '_') + '.png')))
+        if top_positions['manc:v1.2.3'] != top_positions['manc:v1.2.1']:
+            raise ValueError('MANC releases do not retain the same top action position')
+        if profile_path.read_bytes() != scope_before:
+            raise ValueError('Layout switching changed the saved profile')
+        window.resize(1120, 760)
         choose_release('manc:v1.2.1')
         record.update(connectome_exact_release_filter=True, connectome_empty_sections_hidden=True,
                       connectome_stale_selection_cleared=True, connectome_parquet_scoped=True,
-                      connectome_scope_preserves_sources=True, connectome_unknown_not_guessed=True)
+                      connectome_scope_preserves_sources=True, connectome_unknown_not_guessed=True,
+                      connectome_consistent_compact_spacing=True, connectome_tall_action_top=top_positions)
         record.update(linked_local_libraries_visible=True, linked_workspace_discovery=True,
             linked_register_control=True, linked_readonly_counts=True, linked_sources_unchanged=True,
             linked_no_managed_delete_controls=True,

@@ -225,6 +225,9 @@ class DataLibraryPage(QWidget):
         root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         root.setContentsMargins(30, 26, 30, 32)
         root.setSpacing(16)
+        # Hiding empty library cards must not stretch the remaining headings
+        # across a tall window. Every release uses the same top-packed flow.
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
         context = Card()
         context_layout = QVBoxLayout(context)
         context_layout.setContentsMargins(18, 18, 18, 18)
@@ -435,7 +438,8 @@ class DataLibraryPage(QWidget):
         self.relink_button.clicked.connect(self.relink_library)
         resource_actions.addWidget(self.relink_button, 1, 2)
         library_layout.addLayout(resource_actions)
-        root.addWidget(library, 1)
+        root.addWidget(library)
+        root.addStretch(1)
         # These general entry/recovery controls must remain reachable even
         # when this release has no linked/downloaded data yet.
         general = QHBoxLayout()
