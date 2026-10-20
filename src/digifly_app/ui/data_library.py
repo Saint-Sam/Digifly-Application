@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 import threading
 import json
@@ -11,11 +12,14 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QGridLayout,
+    QLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QUrl
 from digifly_app.core.linked_libraries import (
     LinkedLibrary, LinkedCount, list_linked_libraries, count_linked_swcs, path_key,
+    LINK_SUFFIX, save_library_link, read_library_link, remember_library_link,
 )
 
 from digifly_app.core.data_library import (
@@ -184,7 +189,17 @@ class DataLibraryPage(QWidget):
         self._linked_counts: dict[str, LinkedCount] = {}
         self._linked_counter: _LinkedCountWorker | None = None
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setObjectName('DataLibraryScroll')
+        content = QWidget()
+        content.setMinimumWidth(760)
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll)
+        root = QVBoxLayout(content)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         root.setContentsMargins(30, 26, 30, 32)
         root.setSpacing(16)
         eyebrow = QLabel("LOCAL AND DOWNLOADED DATA")
@@ -205,21 +220,20 @@ class DataLibraryPage(QWidget):
         action_layout = QVBoxLayout(actions)
         action_layout.setContentsMargins(16, 15, 16, 15)
         action_layout.setSpacing(10)
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.import_button = QPushButton("Import other local data…")
         self.import_button.setProperty("primary", True)
         self.import_button.clicked.connect(self.import_local_data)
-        row.addWidget(self.import_button)
+        row.addWidget(self.import_button, 0, 0)
         self.register_button = QPushButton("Register existing SWC folder…")
         self.register_button.clicked.connect(self.register_existing_folder)
-        row.addWidget(self.register_button)
+        row.addWidget(self.register_button, 0, 1)
         self.neuprint_button = QPushButton("Download from neuPrint")
         self.neuprint_button.clicked.connect(self.open_neuprint_import)
-        row.addWidget(self.neuprint_button)
+        row.addWidget(self.neuprint_button, 1, 0)
         self.modeldb_button = QPushButton("Import model / ModelDB")
         self.modeldb_button.clicked.connect(self.open_modeldb_import)
-        row.addWidget(self.modeldb_button)
-        row.addStretch(1)
+        row.addWidget(self.modeldb_button, 1, 1)
         action_layout.addLayout(row)
         graph_row = QHBoxLayout()
         self.swc_intake_button = QPushButton("Add SWCs to dataset library…")
@@ -239,8 +253,8 @@ class DataLibraryPage(QWidget):
                 self.pair_graph_label.setText("Your supplied MANC pair table is included (release unverified). SWCs are added separately to the dataset library.")
         except (OSError, ValueError) as exc:
             self.pair_graph_label.setText(str(exc))
-        graph_row.addWidget(self.pair_graph_label, 1)
         action_layout.addLayout(graph_row)
+        action_layout.addWidget(self.pair_graph_label)
         self.consolidate_swcs_button = QPushButton("Add selected saved neuPrint bundle to dataset library")
         self.consolidate_swcs_button.setObjectName("LibraryConsolidateSwcsButton")
         self.consolidate_swcs_button.clicked.connect(self.consolidate_selected_swcs)
@@ -273,7 +287,7 @@ class DataLibraryPage(QWidget):
         self.linked_table.horizontalHeader().setStretchLastSection(True)
         for column, width in enumerate((260, 150, 150, 100, 100)):
             self.linked_table.setColumnWidth(column, width)
-        self.linked_table.setMinimumHeight(140)
+        self.linked_table.setMinimumHeight(190)
         self.linked_table.itemSelectionChanged.connect(self._linked_selection_changed)
         linked_layout.addWidget(self.linked_table)
         linked_buttons = QHBoxLayout()
@@ -288,6 +302,17 @@ class DataLibraryPage(QWidget):
             linked_buttons.addWidget(button)
         linked_buttons.addStretch(1)
         linked_layout.addLayout(linked_buttons)
+        link_buttons = QHBoxLayout()
+        self.save_link_button = QPushButton('Save library shortcut…')
+        self.save_link_button.setObjectName('SaveLibraryLinkButton')
+        self.save_link_button.clicked.connect(self.save_selected_link)
+        self.load_link_button = QPushButton('Open library shortcut…')
+        self.load_link_button.setObjectName('OpenLibraryLinkButton')
+        self.load_link_button.clicked.connect(self.open_saved_link)
+        link_buttons.addWidget(self.save_link_button)
+        link_buttons.addWidget(self.load_link_button)
+        link_buttons.addStretch(1)
+        linked_layout.addLayout(link_buttons)
         self.linked_detail = QLabel('Select a linked library to see its full path. Counts are read-only snapshots, not completeness checks.')
         self.linked_detail.setObjectName('LinkedLibraryDetails')
         self.linked_detail.setWordWrap(True)
@@ -302,7 +327,8 @@ class DataLibraryPage(QWidget):
         heading = QHBoxLayout()
         self.root_label = QLabel("No resource profile configured")
         self.root_label.setObjectName("Muted")
-        heading.addWidget(self.root_label, 1)
+        self.root_label.setWordWrap(True)
+        library_layout.addWidget(self.root_label)
         self.move_library_button = QPushButton("Move library…")
         self.move_library_button.clicked.connect(self.move_library)
         heading.addWidget(self.move_library_button)
@@ -314,6 +340,7 @@ class DataLibraryPage(QWidget):
         heading.addWidget(refresh)
         library_layout.addLayout(heading)
         self.table = QTableWidget(0, 8)
+        self.table.setMinimumHeight(190)
         self.table.setHorizontalHeaderLabels(
             (
                 "Provider",
@@ -332,30 +359,29 @@ class DataLibraryPage(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._resource_selection_changed)
         library_layout.addWidget(self.table)
-        resource_actions = QHBoxLayout()
+        resource_actions = QGridLayout()
         self.inspect_button = QPushButton("Inspect manifest")
         self.inspect_button.setEnabled(False)
         self.inspect_button.clicked.connect(self.inspect_selected)
-        resource_actions.addWidget(self.inspect_button)
+        resource_actions.addWidget(self.inspect_button, 0, 0)
         self.reveal_selected_button = QPushButton("Reveal selected")
         self.reveal_selected_button.setEnabled(False)
         self.reveal_selected_button.clicked.connect(self.reveal_selected)
-        resource_actions.addWidget(self.reveal_selected_button)
+        resource_actions.addWidget(self.reveal_selected_button, 0, 1)
         self.registration_button = QPushButton("Register")
         self.registration_button.setEnabled(False)
         self.registration_button.clicked.connect(self.toggle_registration)
-        resource_actions.addWidget(self.registration_button)
+        resource_actions.addWidget(self.registration_button, 0, 2)
         self.trash_button = QPushButton("Move to Library Trash…")
         self.trash_button.setEnabled(False)
         self.trash_button.clicked.connect(self.trash_selected)
-        resource_actions.addWidget(self.trash_button)
-        resource_actions.addStretch(1)
+        resource_actions.addWidget(self.trash_button, 1, 0)
         self.manage_trash_button = QPushButton("Manage Trash…")
         self.manage_trash_button.clicked.connect(self.manage_trash)
-        resource_actions.addWidget(self.manage_trash_button)
+        resource_actions.addWidget(self.manage_trash_button, 1, 1)
         self.relink_button = QPushButton("Relink moved library…")
         self.relink_button.clicked.connect(self.relink_library)
-        resource_actions.addWidget(self.relink_button)
+        resource_actions.addWidget(self.relink_button, 1, 2)
         library_layout.addLayout(resource_actions)
         root.addWidget(library, 1)
         self.refresh()
@@ -465,6 +491,8 @@ class DataLibraryPage(QWidget):
         available = linked is not None and linked.available
         self.open_linked_button.setEnabled(available)
         self.count_linked_button.setEnabled(available and not self.import_in_progress)
+        self.save_link_button.setEnabled(available and not self.import_in_progress)
+        self.load_link_button.setEnabled(not self.import_in_progress)
         if linked:
             self.linked_detail.setText(f'{linked.origin}: {linked.root}\nRead-only link. No source files are copied, moved, overwritten or deleted. '
                 'Counts describe SWC files, not unique neurons or biological completeness. Recount after folder changes.')
@@ -475,6 +503,63 @@ class DataLibraryPage(QWidget):
         linked = self._selected_linked()
         if linked and linked.root.is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(linked.root)))
+
+    def save_selected_link(self):
+        linked = self._selected_linked()
+        if self.import_in_progress or linked is None or not linked.available:
+            return
+        try:
+            profile, profile_path = self._profile()
+            folder = profile_path.parent / 'library-links'
+            folder.mkdir(parents=True, exist_ok=True)
+            name = safe_component(linked.label)[:70] + '-' + uuid.uuid5(uuid.NAMESPACE_URL, path_key(linked.root)).hex[:8] + LINK_SUFFIX
+            selected, _ = QFileDialog.getSaveFileName(self, 'Save SWC library shortcut', str(folder / name),
+                                                      'Digifly library shortcut (*' + LINK_SUFFIX + ')')
+            if not selected:
+                return
+            destination = save_library_link(linked, Path(selected))
+            remember_library_link(profile, profile_path, linked)
+            self.sources_changed.emit()
+            self.refresh()
+            self.action_status.setText(f'Saved library shortcut: {destination}\n'
+                'This device remembers the folder after restart and app updates. The file contains only its location '
+                'and dataset label, not SWCs. On another device, open the shortcut and locate the local folder if needed.')
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, 'Could not save library shortcut', str(error))
+
+    def open_saved_link(self):
+        if self.import_in_progress:
+            return
+        try:
+            selected, _ = QFileDialog.getOpenFileName(self, 'Open SWC library shortcut', '',
+                                                      'Digifly library shortcut (*' + LINK_SUFFIX + ')')
+            if not selected:
+                return
+            linked = read_library_link(Path(selected))
+            review = QMessageBox(self)
+            review.setWindowTitle('Remember this SWC folder?')
+            review.setTextFormat(Qt.TextFormat.PlainText)
+            review.setText(f'{linked.label}\nDataset: {linked.dataset}\nFolder: {linked.root}\n\n'
+                'Remember this read-only folder on this device? No SWCs are copied or changed. '
+                + ('The folder is unavailable; choose its local location next.' if not linked.available else
+                   'App updates retain this setting.'))
+            review.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+            review.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if review.exec() != QMessageBox.StandardButton.Yes:
+                return
+            if not linked.available:
+                local = QFileDialog.getExistingDirectory(self, 'Locate this SWC library on this device')
+                if not local:
+                    return
+                linked = replace(linked, root=Path(local).resolve(), available=True)
+            profile, profile_path = self._profile()
+            remember_library_link(profile, profile_path, linked)
+            self.sources_changed.emit()
+            self.refresh()
+            self.action_status.setText(f'Library shortcut remembered on this device: {linked.root}\n'
+                                      'The original shortcut and SWCs were not changed. No download is needed.')
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, 'Could not open library shortcut', str(error))
 
     def count_selected_linked(self):
         linked = self._selected_linked()
@@ -488,6 +573,8 @@ class DataLibraryPage(QWidget):
             button.setEnabled(False)
         self.cancel_count_button.setEnabled(True)
         self.count_linked_button.setEnabled(False)
+        self.save_link_button.setEnabled(False)
+        self.load_link_button.setEnabled(False)
         self.linked_detail.setText(f'Counting regular SWC files without changing them: {linked.root}')
         worker.completed.connect(self._linked_count_complete)
         worker.failed.connect(self._linked_count_failed)

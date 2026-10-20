@@ -2,10 +2,11 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from pathlib import Path
 import time
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 from PySide6.QtTest import QTest
 from digifly_app.core.resource_profile import make_default_profile, ResourceProfile
 from digifly_app.ui.data_library import DataLibraryPage
+from digifly_app.core.data_library import import_local_source
 
 
 def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_path, monkeypatch):
@@ -33,6 +34,16 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
         assert page.table.rowCount() == 0
         assert not p.managed_data_root.exists()
         assert source.read_bytes() == before
+        # Selecting a linked row must clear a previously selected managed
+        # download, so its trash/unregister controls cannot be confused.
+        imported = tmp_path / 'download'
+        imported.mkdir()
+        (imported / '3.swc').write_bytes(before)
+        import_local_source(ResourceProfile.load(path), imported, provider='local',
+                            resource_id='download', source_version='v1', profile_path=path)
+        page.refresh()
+        page.table.selectRow(0)
+        assert page.trash_button.isEnabled()
         page.linked_table.selectRow(0)
         assert not page.trash_button.isEnabled() and not page.registration_button.isEnabled()
         assert str(page._linked[0].root) in page.linked_detail.text()
@@ -49,3 +60,51 @@ def test_actual_register_button_shows_external_folder_without_copy_or_trash(tmp_
     finally:
         page.close()
         app.processEvents()
+
+
+def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    workspace = tmp_path / 'Public'
+    source = workspace / 'Phase 1/male-cns_v0.9/export_swc/MN/TTMn/1.swc'
+    source.parent.mkdir(parents=True)
+    source.write_text('1 1 0 0 0 1 -1\n')
+    p = make_default_profile(workspace_root=workspace, output_root=tmp_path / 'runs', managed_data_root=tmp_path / 'data')
+    path = p.save(tmp_path / 'config/resources.json')
+    monkeypatch.setattr(DataLibraryPage, '_profile', lambda self: (ResourceProfile.load(path), path))
+    link = tmp_path / 'config/library-links/male.digifly-library.json'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(link), ''))
+    page = DataLibraryPage()
+    page.resize(840, 650)
+    page.show()
+    app.processEvents()
+    page.linked_table.selectRow(0)
+    page.save_link_button.click()
+    assert link.is_file() and 'remembers' in page.action_status.text()
+    page.close()
+    # A new page/profile after restart, without the original workspace, retains the source.
+    from dataclasses import replace
+    restored = ResourceProfile.load(path)
+    from digifly_app.core.resource_profile import ResourceKind
+    replace(restored, resources=tuple(b for b in restored.resources if b.kind != ResourceKind.DIGIFLY_WORKSPACE)).save(path, replace=True)
+    page = DataLibraryPage()
+    assert page.linked_table.rowCount() == 1
+    page.close()
+    other = make_default_profile(workspace_root=None, output_root=tmp_path / 'other-runs', managed_data_root=tmp_path / 'other-data')
+    path = other.save(tmp_path / 'other-config/resources.json')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(link), ''))
+    monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Cancel)
+    page = DataLibraryPage()
+    before = path.read_bytes()
+    page.load_link_button.click()
+    assert path.read_bytes() == before
+    monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Yes)
+    page.load_link_button.click()
+    assert page.linked_table.rowCount() == 1 and not other.managed_data_root.exists()
+    page.resize(840, 650)
+    page.show()
+    app.processEvents()
+    assert page.scroll.verticalScrollBar().maximum() > 0
+    assert page.linked_table.geometry().bottom() < page.open_linked_button.geometry().top()
+    assert page.table.geometry().bottom() < page.inspect_button.geometry().top()
+    assert source.read_text() == '1 1 0 0 0 1 -1\n'
+    page.close()

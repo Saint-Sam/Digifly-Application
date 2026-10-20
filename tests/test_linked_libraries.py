@@ -2,8 +2,10 @@ from dataclasses import replace
 from pathlib import Path
 import threading
 import pytest
+import json
 from digifly_app.core.linked_libraries import list_linked_libraries, count_linked_swcs
 from digifly_app.core.resource_profile import make_default_profile, ResourceBinding, ResourceKind, AccessMode
+from digifly_app.core.linked_libraries import LinkedLibrary, save_library_link, read_library_link, remember_library_link
 
 
 def profile(tmp_path):
@@ -83,3 +85,48 @@ def test_unreadable_subtree_fails_count(tmp_path, monkeypatch):
     monkeypatch.setattr(module.os, 'walk', fail)
     with pytest.raises(PermissionError):
         count_linked_swcs(root)
+
+
+def test_saved_link_remembers_external_source_after_workspace_removed(tmp_path):
+    p = profile(tmp_path)
+    source = swc(tmp_path / 'outside/MN/TTMn/1.swc')
+    library = LinkedLibrary('male-cns:v0.9', 'Male CNS v0.9', 'male-cns:v0.9', source.parents[2], 'external', True)
+    path = p.save(tmp_path / 'config/resources.json')
+    before = source.read_bytes()
+    link = save_library_link(library, tmp_path / 'config/library-links/male.digifly-library.json')
+    remember_library_link(p, path, read_library_link(link))
+    restored = type(p).load(path)
+    remember_library_link(restored, path, library)
+    assert len(type(p).load(path).resources) == len(p.resources) + 1
+    standalone = replace(restored, resources=tuple(b for b in restored.resources if b.kind != ResourceKind.DIGIFLY_WORKSPACE))
+    found, = list_linked_libraries(standalone)
+    assert found.root == library.root and found.dataset == library.dataset and found.key == library.key
+    assert source.read_bytes() == before and not p.managed_data_root.exists()
+    assert set(json.loads(link.read_text())) == {'schema', 'label', 'dataset', 'source_key', 'folder', 'access'}
+    assert save_library_link(library, link) == link
+    with pytest.raises(FileExistsError):
+        save_library_link(replace(library, label='Different'), link)
+
+
+def test_shortcut_refuses_source_write_actions_relative_paths_and_symlinks(tmp_path):
+    source = swc(tmp_path / 'swcs/1.swc')
+    library = LinkedLibrary('local', 'Local', 'external', source.parent, 'external', True)
+    with pytest.raises(ValueError, match='outside'):
+        save_library_link(library, source.parent / 'unsafe.digifly-library.json')
+    link = save_library_link(library, tmp_path / 'valid.digifly-library.json')
+    payload = json.loads(link.read_text())
+    bad = tmp_path / 'bad.digifly-library.json'
+    for update in ({'folder': '../private'}, {'access': 'read_write'}, {'run': 'anything'}, {'folder': 'https://example.com/x'}):
+        bad.write_text(json.dumps({**payload, **update}))
+        with pytest.raises(ValueError):
+            read_library_link(bad)
+    bad.write_text(' ' * 65537)
+    with pytest.raises(ValueError):
+        read_library_link(bad)
+    target = tmp_path / 'symlink.digifly-library.json'
+    target.symlink_to(link)
+    with pytest.raises(ValueError):
+        read_library_link(target)
+    bad.write_text(json.dumps({**payload, 'folder': 'Z:\\another-device\\swcs'}))
+    foreign = read_library_link(bad)
+    assert foreign.label == library.label

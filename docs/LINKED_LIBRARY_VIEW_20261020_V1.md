@@ -24,3 +24,24 @@ download, scheduler check or new background schedule is required or authorized.
 
 Current progress and exact artifacts are in `workstation_active_v1.json` under
 `shared_fix_delivery.linked_libraries_20261020`.
+
+October20 extension: the user requests a saved shortcut file for external SWCs.
+Save library shortcut writes a small `.digifly-library.json` containing only
+the local folder, label and dataset identity, and remembers a read-only profile
+binding outside the app. Default storage is the profile's `config/library-links`
+folder. Existing identical links/bindings are reused; different file bytes are
+not overwritten. Open library shortcut reviews the location before registration
+and offers local-folder selection if the original device path is unavailable.
+No executable actions, credentials, downloads or SWC copies are embedded.
+On a different device its user must locate their own copy once; a link cannot
+make another computer's disk available. This is an app-readable shortcut, not
+an OS-specific Finder alias or Windows shell shortcut/file association.
+
+The first Windows20.1 native tests passed, but root visual inspection found
+cramped/overlapping controls at1120x760. This candidate is retained, not published.
+The successor uses a scrollable page, two-column action rows and noncollapsing
+tables. Both actual successor packages must pass shortcut Save/Open/review,
+reloaded external-profile discovery, source preservation and no-overlap checks.
+Native updater install/rollback also preserves a real saved-link file and its
+profile bytes. The earlier real Mac20.1 full-folder counts remain file-count
+observations, not unique-neuron/completeness acceptance.

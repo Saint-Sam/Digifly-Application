@@ -64,6 +64,7 @@ def run_library_smoke(destination: Path) -> int:
     saved_item = QInputDialog.getItem
     saved_text = QInputDialog.getText
     saved_directory = QFileDialog.getExistingDirectory
+    saved_open, saved_save = QFileDialog.getOpenFileName, QFileDialog.getSaveFileName
     saved_warning, saved_critical = QMessageBox.warning, QMessageBox.critical
     record["dialogs"] = []
     def journal(stage):
@@ -341,12 +342,53 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('A linked source file was modified')
         if any((root / 'digifly-resource.json').exists() for root in (male, manc)):
             raise ValueError('Registration wrote a managed manifest into a linked source')
+        shortcuts = []
+        for row, linked in enumerate(page._linked):
+            page.linked_table.selectRow(row)
+            shortcut = destination / ('library-links/' + ('male' if linked.root == male.resolve() else 'manc') + '.digifly-library.json')
+            QFileDialog.getSaveFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
+            page.scroll.ensureWidgetVisible(page.save_link_button)
+            QTest.mouseClick(page.save_link_button, Qt.MouseButton.LeftButton)
+            if not shortcut.is_file():
+                raise ValueError('The actual Save library shortcut control did not save a file')
+            shortcuts.append(shortcut)
+        # Reopen both files through the actual app controls with workspace
+        # discovery removed: this tests portable files, not cached table rows.
+        current = ResourceProfile.load(profile_path)
+        current = replace(current, resources=tuple(b for b in current.resources
+            if b.kind != ResourceKind.DIGIFLY_WORKSPACE and b.resolved_path not in {male.resolve(), manc.resolve()}))
+        current.save(profile_path, replace=True)
+        page.refresh()
+        if page.linked_table.rowCount() != 0:
+            raise ValueError('Shortcut reload fixture retained its original external source bindings')
+        def accept_link():
+            modal = app.activeModalWidget()
+            if not isinstance(modal, QMessageBox):
+                raise ValueError('Library shortcut did not request explicit read-only confirmation')
+            modal.grab().save(str(destination / 'library-shortcut-review.png'))
+            QTest.mouseClick(modal.button(QMessageBox.StandardButton.Yes), Qt.MouseButton.LeftButton)
+        for shortcut in shortcuts:
+            QFileDialog.getOpenFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
+            page.scroll.ensureWidgetVisible(page.load_link_button)
+            QTimer.singleShot(100, accept_link)
+            QTest.mouseClick(page.load_link_button, Qt.MouseButton.LeftButton)
+        if {link.root for link in page._linked} != {male.resolve(), manc.resolve()}:
+            raise ValueError('Saved library shortcuts did not restore both exact external sources')
+        if any(path.read_bytes() != before_linked[str(path)] for path in native_files):
+            raise ValueError('Shortcut controls modified a source SWC')
+        if (page.linked_table.geometry().intersects(page.open_linked_button.geometry())
+                or page.table.geometry().intersects(page.inspect_button.geometry())):
+            raise ValueError('Data Library controls overlap a table at the native test window size')
         page.linked_table.selectRow(0)
+        page.scroll.ensureWidgetVisible(page.linked_detail)
+        app.processEvents()
         if not window.grab().save(str(destination / 'linked-local-libraries.png')):
             raise ValueError('Linked library view did not render')
         record.update(linked_local_libraries_visible=True, linked_workspace_discovery=True,
             linked_register_control=True, linked_readonly_counts=True, linked_sources_unchanged=True,
             linked_no_managed_delete_controls=True,
+            library_shortcut_save_open=True, library_shortcut_explicit_review=True,
+            library_shortcut_restores_without_workspace=True, library_layout_no_overlap=True,
             linked_fixture_counts={'male-cns:v0.9': 2, 'manc:v1.2.1': 1})
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
@@ -360,6 +402,7 @@ def run_library_smoke(destination: Path) -> int:
         QInputDialog.getItem = saved_item
         QInputDialog.getText = saved_text
         QFileDialog.getExistingDirectory = saved_directory
+        QFileDialog.getOpenFileName, QFileDialog.getSaveFileName = saved_open, saved_save
         QMessageBox.warning, QMessageBox.critical = saved_warning, saved_critical
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         if window is not None:

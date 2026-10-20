@@ -106,6 +106,17 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         sentinels.mkdir()
         for filename in ("my-neuron.swc", "accepted-run.json", "private-runtime.txt", "original-project.digifly.json", "credential-placeholder.txt"):
             (sentinels / filename).write_text("keep unchanged: " + filename, "utf-8")
+        from digifly_app.core.linked_libraries import LinkedLibrary, save_library_link, remember_library_link
+        from digifly_app.core.resource_profile import make_default_profile
+        swcs = sentinels / 'swcs'
+        swcs.mkdir()
+        (swcs / '1.swc').write_text('1 1 0 0 0 1 -1\n', 'utf-8')
+        linked = LinkedLibrary('local-test', 'External SWCs', 'test-only', swcs.resolve(), 'external', True)
+        link = save_library_link(linked, sentinels / 'config/library-links/external.digifly-library.json')
+        link_profile = make_default_profile(workspace_root=None, output_root=sentinels / 'runs',
+                                           managed_data_root=sentinels / 'data')
+        link_profile_path = link_profile.save(sentinels / 'config/resources-v2.json')
+        remember_library_link(link_profile, link_profile_path, linked)
         user_before = tree_inventory(sentinels)
         args = [str(executable_in(target, system)), "--package-update-test", str(case / "gui"), "--update-archive", str(archive)]
         if failure:
@@ -161,6 +172,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         # Make compact evidence portable out of the native runner.
         shutil.copyfile(request_path.parent / "reopened-window.png", output / (name + "-window.png"))
         record["cases"][name] = {"status": result["status"], "external_files_unchanged": True,
+                "library_shortcut_file_and_profile_unchanged": True,
                 "draft_unchanged": True, "exact_tree_and_retained_backup_verified": failure,
                 "exact_tree_and_cleanup_verified": not failure, "cleanup": cleanup,
                 "startup": result.get("startup"), "expected_failure": result.get("error"),

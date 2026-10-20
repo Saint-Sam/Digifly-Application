@@ -7,12 +7,77 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import threading
+import hashlib
+import json
+import stat
 
 from .connectomes import discover_connectomes
 from .providers import profile_connectome_sources
-from .resource_profile import ResourceKind, ResourceProfile
+from .resource_profile import AccessMode, ResourceBinding, ResourceKind, ResourceProfile
+
+LINK_SCHEMA = 'digifly-library-link-v1'
+LINK_SUFFIX = '.digifly-library.json'
+
+
+def save_library_link(library: LinkedLibrary, destination: Path) -> Path:
+    """Save only a location/identity, never SWCs, credentials or executable actions."""
+    destination = Path(destination).expanduser().absolute()
+    if not destination.name.endswith(LINK_SUFFIX):
+        raise ValueError('Library links must end in ' + LINK_SUFFIX)
+    if destination.is_symlink() or destination.resolve().is_relative_to(library.root.resolve()):
+        raise ValueError('Save the library link outside the SWC source folder')
+    value = {'schema': LINK_SCHEMA, 'label': library.label, 'dataset': library.dataset,
+             'source_key': library.key, 'folder': str(library.root.resolve()), 'access': 'read_only'}
+    data = json.dumps(value, indent=2, ensure_ascii=False) + '\n'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.read_text(encoding='utf-8') == data:
+            return destination
+        raise FileExistsError('A different file already exists; choose a new link filename')
+    with destination.open('x', encoding='utf-8') as handle:
+        handle.write(data)
+    return destination
+
+
+def read_library_link(source: Path) -> LinkedLibrary:
+    """A link is inert metadata. Opening one never changes settings by itself."""
+    source = Path(source).expanduser().absolute()
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+        raise ValueError('Choose a regular library-link file smaller than 64 KB')
+    value = json.loads(source.read_text(encoding='utf-8'))
+    expected = {'schema', 'label', 'dataset', 'source_key', 'folder', 'access'}
+    if (not isinstance(value, dict) or set(value) != expected or value['schema'] != LINK_SCHEMA
+            or value['access'] != 'read_only' or any(not isinstance(v, str) or not v.strip() or len(v) > 4096
+                                                   for v in value.values())):
+        raise ValueError('Invalid read-only SWC library link')
+    root = Path(value['folder']).expanduser()
+    raw = value['folder']
+    if ('\x00' in raw or raw.startswith(('\\\\', '//'))
+            or not (PurePosixPath(raw).is_absolute() or PureWindowsPath(raw).is_absolute())):
+        raise ValueError('Library links require a local absolute folder path, not a URL or network share')
+    native = root.is_absolute()
+    return LinkedLibrary(value['source_key'], value['label'], value['dataset'], root.resolve() if native else root,
+                         'Saved library link', native and root.is_dir())
+
+
+def remember_library_link(profile: ResourceProfile, profile_path: Path, library: LinkedLibrary) -> Path:
+    """Persist an explicit read-only binding outside the app, deduplicated by path."""
+    if not library.root.is_absolute() or not library.root.is_dir():
+        raise ValueError('The linked folder is unavailable; locate it on this device first')
+    if library.root.resolve().is_relative_to(profile.managed_data_root.resolve()):
+        raise ValueError('App-managed libraries already persist; choose an external SWC folder')
+    if any(path_key(b.resolved_path) == path_key(library.root) for b in profile.resources
+           if b.kind in {ResourceKind.MORPHOLOGY_SOURCE, ResourceKind.CONNECTOME_SOURCE}):
+        return Path(profile_path)
+    identifier = 'library-link-' + hashlib.sha256(path_key(library.root).encode()).hexdigest()[:20]
+    binding = ResourceBinding(identifier, ResourceKind.MORPHOLOGY_SOURCE, str(library.root.resolve()),
+        AccessMode.READ_ONLY, library.label, False, {'provider': 'local', 'managed': False,
+        'dataset': library.dataset, 'connectome_key': library.key, 'saved_library_link': True})
+    updated = ResourceProfile(profile.profile_id, (*profile.resources, binding), profile.label)
+    return updated.save(profile_path, replace=Path(profile_path).exists())
 
 
 @dataclass(frozen=True)
