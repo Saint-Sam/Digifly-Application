@@ -113,6 +113,8 @@ def run_library_smoke(destination: Path) -> int:
         before_choice = profile_path.read_bytes()
         if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
             raise ValueError('Initial connectome choices or bundled pictures are missing')
+        if any(button.isCheckable() for button in picker.buttons.values()):
+            raise ValueError('Connectome navigation must use ordinary accessible push buttons')
         if page.view_stack.currentWidget() is not page.picker_scroll or page.import_button.isVisible():
             raise ValueError('Data Library home must show only the connectome chooser')
         layout_sizes = []
@@ -132,6 +134,10 @@ def run_library_smoke(destination: Path) -> int:
             if not page.import_button.isVisible() or not page.linked_table.isVisible() or not page.table.isVisible():
                 raise ValueError('Existing data tools disappeared from the details view')
             QTest.mouseClick(page.release_buttons['male-cns:v0.9'], Qt.MouseButton.LeftButton)
+            page.release_buttons['male-cns:v1.0'].setChecked(True)
+            if picker.selected_dataset != 'male-cns:v1.0':
+                raise ValueError('Accessible release activation did not update the selection')
+            page.release_buttons['male-cns:v0.9'].setChecked(True)
             if app.activeModalWidget() or picker.selected_dataset != 'male-cns:v0.9':
                 raise ValueError('Release selection must be inline and exact')
             if not window.grab().save(str(destination / f'connectome-details-{width}.png')):
@@ -180,6 +186,7 @@ def run_library_smoke(destination: Path) -> int:
                       connectome_home_only=True, connectome_inline_navigation=True,
                       connectome_back_navigation=True, connectome_release_inline_no_dialog=True,
                       connectome_existing_tools_preserved=True,
+                      connectome_accessible_navigation=True,
                       connectome_choices=[choice.name for choice in CONNECTOMES],
                       connectome_releases=[r for choice in CONNECTOMES for r in choice.releases],
                       connectome_layout_sizes=layout_sizes,

@@ -244,7 +244,8 @@ class DataLibraryPage(QWidget):
                 button.setAccessibleName(f'Use {dataset} release')
                 button.setCheckable(True)
                 self.release_group.addButton(button)
-                button.clicked.connect(lambda checked=False, value=dataset: self.select_connectome_release(value))
+                button.toggled.connect(lambda checked, value=dataset:
+                                       self.select_connectome_release(value) if checked else None)
                 release_row.addWidget(button)
                 self.release_buttons[dataset] = button
                 button.hide()

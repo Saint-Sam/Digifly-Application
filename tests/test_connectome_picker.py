@@ -31,7 +31,7 @@ def test_catalogue_matches_public_snapshot_and_exact_original_pictures():
 
 
 @pytest.mark.parametrize('width', [780, 1120, 1700])
-def test_picker_images_exclusive_choice_releases_and_responsive_layout(width):
+def test_picker_images_navigation_buttons_releases_and_responsive_layout(width):
     app = QApplication.instance() or QApplication([])
     picker = ConnectomePicker()
     picker.resize(width, 900)
@@ -51,7 +51,7 @@ def test_picker_images_exclusive_choice_releases_and_responsive_layout(width):
         with pytest.raises(ValueError):
             picker.select_release('manc:v1.2.1')
         assert not picker.findChildren(QComboBox)
-        assert sum(button.isChecked() for button in picker.buttons.values()) == 1
+        assert all(not button.isCheckable() for button in picker.buttons.values())
         rects = [card.geometry() for card in picker.cards.values()]
         assert all(not a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:])
         assert all(picker.rect().contains(rect) for rect in rects)
@@ -87,6 +87,12 @@ def test_page_inline_navigation_and_release_without_changing_profile(width, tmp_
         assert page.release_buttons['male-cns:v0.9'].isVisible()
         assert not page.release_buttons['manc:v1.2.1'].isVisible()
         QTest.mouseClick(page.release_buttons['male-cns:v0.9'], Qt.MouseButton.LeftButton)
+        assert page.connectome_picker.selected_dataset == 'male-cns:v0.9'
+        # Native accessibility activates a checkable button through its checked
+        # state, not necessarily the clicked signal. Both input routes work.
+        page.release_buttons['male-cns:v1.0'].setChecked(True)
+        assert page.connectome_picker.selected_dataset == 'male-cns:v1.0'
+        page.release_buttons['male-cns:v0.9'].setChecked(True)
         assert page.connectome_picker.selected_dataset == 'male-cns:v0.9'
         assert QApplication.activeModalWidget() is None
         QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)

@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 from .widgets import Card
 
@@ -64,8 +64,6 @@ class ConnectomePicker(Card):
         self.grid = QGridLayout()
         self.grid.setSpacing(12)
         layout.addLayout(self.grid)
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
         self.cards, self.buttons, self.pictures = {}, {}, {}
         for choice in CONNECTOMES:
             card = Card()
@@ -88,8 +86,6 @@ class ConnectomePicker(Card):
             button = QPushButton(choice.name)
             button.setObjectName('ConnectomeChoiceButton')
             button.setAccessibleName(f'Choose {choice.name} connectome')
-            button.setCheckable(True)
-            self.group.addButton(button)
             button.clicked.connect(lambda checked=False, key=choice.key: self.choose(key))
             body.addWidget(button)
             description = QLabel(choice.description)
@@ -111,7 +107,6 @@ class ConnectomePicker(Card):
 
     def choose(self, key: str):
         choice = next(choice for choice in CONNECTOMES if choice.key == key)
-        self.buttons[key].setChecked(True)
         self.selected_key = key
         self.selected_dataset = self._selected_releases.get(key, choice.releases[0])
         self.dataset_selected.emit(self.selected_dataset)
