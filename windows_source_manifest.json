@@ -854,7 +854,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "eac932508e0bf2ae131e59df04102fe73d51930c3bccf274d4ce98483b030939",
+      "sha256": "87aa1c32dc6846b6580ee59fa1917467deef031573565a5ab2fd8de8c93b966a",
       "bytes": 10085
     },
     "scripts/build_windows_neuron_payload.py": {
