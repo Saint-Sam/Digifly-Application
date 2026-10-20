@@ -106,6 +106,60 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError("Existing simulator profile breaks Data Library.")
         record["existing_simulator_profile_loaded"] = [kind.value for kind in runtimes]
 
+        # The pictured first step is offline; an explicit choice only prefills
+        # the existing download dialog and never mutates a source/profile.
+        picker = page.connectome_picker
+        from digifly_app.ui.connectome_picker import CONNECTOMES, picture_path
+        before_choice = profile_path.read_bytes()
+        if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
+            raise ValueError('Initial connectome choices or bundled pictures are missing')
+        from digifly_app.ui import data_library as library_module
+        saved_import_dialog = library_module.NeuPrintImportDialog
+        class CatalogueOnlyDialog(saved_import_dialog):
+            def __init__(self, *args, **kwargs):
+                class NoStore:
+                    available = False
+                kwargs['credential_store'] = NoStore()
+                super().__init__(*args, **kwargs)
+                QTimer.singleShot(100, self.inspect_choice)
+            def inspect_choice(self):
+                if self._preferred_dataset != 'male-cns:v0.9':
+                    self.reject()
+                    return
+                self._connected(tuple(NeuPrintDataset(release) for choice in CONNECTOMES for release in choice.releases))
+                record['connectome_download_release_prefilled'] = self.dataset_combo.currentData() == 'male-cns:v0.9'
+                self.grab().save(str(destination / 'connectome-download-release.png'))
+                self.reject()
+        library_module.NeuPrintImportDialog = CatalogueOnlyDialog
+        try:
+            picker.releases['male_cns'].setCurrentIndex(1)
+            page.scroll.ensureWidgetVisible(page.neuprint_button)
+            QTest.mouseClick(page.neuprint_button, Qt.MouseButton.LeftButton)
+        finally:
+            library_module.NeuPrintImportDialog = saved_import_dialog
+        if not record.get('connectome_download_release_prefilled') or profile_path.read_bytes() != before_choice:
+            raise ValueError('Pictured choice changed saved data or failed to prefill the exact release')
+        layout_sizes = []
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            page.scroll.verticalScrollBar().setValue(0)
+            QTest.qWait(120)
+            rects = [card.geometry() for card in picker.cards.values()]
+            if any(a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:]):
+                raise ValueError('Connectome cards overlap')
+            if picker.mapTo(page.scroll.widget(), picker.rect().bottomLeft()).y() >= page.import_button.mapTo(page.scroll.widget(), page.import_button.rect().topLeft()).y():
+                raise ValueError('Existing tools were not moved below the pictured chooser')
+            if not window.grab().save(str(destination / f'connectome-choices-{width}.png')):
+                raise ValueError('Connectome choice view did not render')
+            layout_sizes.append(width)
+        record.update(connectome_pictures_loaded=True, connectome_choices_first=True,
+                      connectome_choice_preserves_data=True, connectome_layout_no_overlap=True,
+                      connectome_choices=[choice.name for choice in CONNECTOMES],
+                      connectome_releases=[r for choice in CONNECTOMES for r in choice.releases],
+                      connectome_layout_sizes=layout_sizes,
+                      connectome_picture_hashes={choice.key: __import__('hashlib').sha256(picture_path(choice.key).read_bytes()).hexdigest() for choice in CONNECTOMES})
+        window.resize(1120, 760)
+
         swc = b"1 1 0 0 0 5 -1\n2 3 1 0 0 1 1\n"
         # Keep the production query builder and parser in this packaged UI
         # test. Only HTTP is replaced; the former fake preview bypassed both.

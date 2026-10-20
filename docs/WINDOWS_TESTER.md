@@ -1,7 +1,6 @@
 # Digifly Workstation — current Windows tester
 
-Build 20261020.2 (saved local-library shortcuts, linked-folder visibility, saved-simulator Data Library repair, downgrade protection,
-automatic post-update cleanup, combined neuron lists and shared SWC libraries)
+Build 20261017.2 (combined neuron lists, working updater, included NEURON and shared SWC libraries)
 Windows x86-64 · Arbor deferred
 
 Download the Windows ZIP, right-click it and choose **Extract All**, then open
@@ -34,16 +33,6 @@ the custom experimental presets; no new experiment is run here.
 
 ## One growing SWC folder per dataset
 
-Existing SWCs outside the app can stay in place. **Register existing SWC folder…**
-lists a read-only local folder; **Save library shortcut…** saves a small
-`.digifly-library.json` file and remembers the folder on this device. The default
-file lives in `config/library-links` beside external app settings, so updates
-retain it. **Open library shortcut…** reviews a saved location and can locate
-another user's local copy when needed. The file contains no SWCs or credentials;
-use Data Library to open it. Linked folders are shown separately from small
-downloads, with full paths, optional read-only counts and no managed-trash control.
-The page scrolls at smaller window sizes instead of overlapping its controls.
-
 neuPrint downloads and **Add SWCs to dataset library…** imports join the same
 library for the exact server/dataset/release. The visible download location and
 **Open SWC folder** control point to
@@ -56,7 +45,7 @@ exactly. Preview shows per-name returned counts and warns about missing names or
 the total limit. Exact matching and advanced regex remain separate options;
 commas inside a regex are literal, not a name list. Review the checked rows, then
 download. The original download/import snapshots are retained for
-source history; different releases and changed bytes for an existing body are never
+provenance; different releases and changed bytes for an existing body are never
 silently merged. Existing saved bundles can be explicitly added through Data
 Library without downloading again. Missing family labels stay UNKNOWN.
 
@@ -78,7 +67,7 @@ private installation, then **Use selected runtimes**. It expands to your
 LocalAppData/Digifly/Runtimes folder, not the app or another installation.
 There is no separate download, administrator access, registry/file-association
 or global PATH change. Reuse that included Python for the Parquet data reader.
-The official installer EXE is retained for source details; the normal Digifly
+The official installer EXE is retained for provenance; the normal Digifly
 button does not execute its registry/association changes. Failed/older
 installations are preserved, not overwritten or deleted.
 

@@ -39,21 +39,13 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             ".github/workflows/windows-current-release.yml", "scripts/publish_windows_release.py",
             ".github/workflows/windows-neuron-bundle.yml", "scripts/build_windows_neuron_payload.py",
             "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
-            "tests/test_generic_experiment.py", "tests/test_linked_libraries.py", "tests/test_linked_libraries_ui.py",
+            "tests/test_generic_experiment.py",
             "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_update_cleanup.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",
             "tests/test_app_settings.py", "tests/test_ui_wording.py",
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",
-            "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py",
+            "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py", "tests/test_connectome_picker.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
-            "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh",
-            "scripts/setup_dev.sh", "scripts/run_dev.sh", "pysidedeploy.spec",
-            "scripts/stage_build_source_manifest.py", "scripts/archive_macos_app.sh",
-            "scripts/sign_macos_app.sh", "scripts/notarize_macos_app.sh",
-            "scripts/bundle_arbor_runtime_macos.sh", "scripts/check_swc_library_gui.py",
-            "scripts/collect_macos_release_notices.py", "scripts/stage_macos_notices.py",
-            "tests/test_stage_macos_notices.py", "tests/test_stage_build_source_manifest.py",
-            "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt", "docs/MACOS_TESTER.md",
-            "docs/CHANNEL_EXECUTION_REPAIR.md"))
+            "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh"))
     records = {}
     for path in paths:
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source):

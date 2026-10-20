@@ -246,6 +246,11 @@ fi
 # ledger. Omitting this file previously allowed a historical public downgrade.
 cp "$stage_root/digifly_build.json" "$stage_bundle/Contents/MacOS/digifly_build.json"
 
+# Small illustrated connectome choices work offline in both platform packages.
+cp "$stage_root"/src/digifly_app/assets/connectome_*.png "$stage_bundle/Contents/MacOS/digifly_app/assets/"
+cp "$stage_root/src/digifly_app/assets/connectome_pictures.json" "$stage_bundle/Contents/MacOS/digifly_app/assets/"
+cp "$stage_root/src/digifly_app/assets/CONNECTOME_PICTURES.md" "$stage_bundle/Contents/MacOS/digifly_app/assets/"
+
 # Nuitka deliberately excludes .py from --include-data-dir. These frozen files
 # are source inputs to an external qualified interpreter, not GUI modules.
 "$stage_python" "$stage_root/scripts/stage_pdcm_bionet_assets.py" \

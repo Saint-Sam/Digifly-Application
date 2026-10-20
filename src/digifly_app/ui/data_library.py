@@ -60,6 +60,7 @@ from digifly_app.core.resource_management import (
 )
 
 from .widgets import Card
+from .connectome_picker import ConnectomePicker
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
 from .pair_graph_import import PairGraphImportDialog
@@ -214,6 +215,8 @@ class DataLibraryPage(QWidget):
         detail.setWordWrap(True)
         root.addWidget(eyebrow)
         root.addWidget(title)
+        self.connectome_picker = ConnectomePicker()
+        root.addWidget(self.connectome_picker)
         root.addWidget(detail)
 
         actions = Card()
@@ -1171,7 +1174,8 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Data Library is not configured", str(exc))
             return
-        dialog = NeuPrintImportDialog(profile, profile_path, self)
+        dialog = NeuPrintImportDialog(profile, profile_path, self,
+                                     preferred_dataset=self.connectome_picker.selected_dataset)
         dialog.resource_imported.connect(self._neuprint_completed)
         self._neuprint_dialog = dialog
         dialog.exec()

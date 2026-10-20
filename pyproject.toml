@@ -68,6 +68,7 @@ digifly_app = [
   "assets/*.ico",
   "assets/*.md",
   "assets/*.png",
+  "assets/*.json",
   "pdcm_bionet/mod/*.mod",
   "pdcm_bionet/primary_v3/*.json",
   "pdcm_bionet/primary_v3/scripts/*.py",

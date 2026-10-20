@@ -455,7 +455,7 @@ class NeuPrintImportDialog(QDialog):
             control.setEnabled(not busy)
         self.dataset_combo.setEnabled(not busy and bool(self._active_token) and self.dataset_combo.count() > 0)
         self.connect_button.setEnabled(not busy)
-        self.preview_button.setEnabled(not busy and bool(self._active_token) and self.dataset_combo.count() > 0)
+        self.preview_button.setEnabled(not busy and bool(self._active_token) and bool(self.dataset_combo.currentData()))
         self.download_button.setEnabled(not busy and bool(self._selected_neurons()))
         self.close_button.setEnabled(not busy)
         self.discard_checkpoint_button.setEnabled(
@@ -533,6 +533,7 @@ class NeuPrintImportDialog(QDialog):
     def _preview_invalidated(self, *_args: Any) -> None:
         if self._thread is None:
             self._clear_preview()
+            self.preview_button.setEnabled(bool(self._active_token) and bool(self.dataset_combo.currentData()))
 
     def _selection_mode_changed(self, index: int) -> None:
         self.selection_edit.setPlaceholderText(SELECTION_OPTIONS[index][2])
@@ -625,11 +626,17 @@ class NeuPrintImportDialog(QDialog):
         preferred_index = self.dataset_combo.findData(self._preferred_dataset)
         if preferred_index >= 0:
             self.dataset_combo.setCurrentIndex(preferred_index)
+        elif self._preferred_dataset:
+            # Never turn a chosen release into the server's first dataset.
+            self.dataset_combo.setCurrentIndex(-1)
         self.dataset_combo.blockSignals(False)
         self.dataset_combo.setEnabled(True)
-        self.preview_button.setEnabled(True)
+        self.preview_button.setEnabled(bool(self.dataset_combo.currentData()))
         self.connection_status.setText(f"Connected; {len(datasets)} dataset(s) available")
         self.status.setText("Choose the exact dataset and preview a bounded neuron selection.")
+        if self._preferred_dataset and preferred_index < 0:
+            self.status.setText(f'The selected release {self._preferred_dataset} is not available on this server. '
+                                'Choose another release explicitly; no replacement was selected.')
         self.token_edit.blockSignals(True)
         self.token_edit.clear()
         self.token_edit.blockSignals(False)

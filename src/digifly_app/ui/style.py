@@ -276,6 +276,10 @@ QPushButton {
 }
 QPushButton:hover { background: @button_hover@; border-color: @button_hover_border@; }
 QPushButton:pressed { background: @button_pressed@; }
+QPushButton#ConnectomeChoiceButton:checked {
+    color: white; background: @primary@; border-color: @primary_border@;
+}
+QLabel#ConnectomePicture { background: white; border-radius: 6px; }
 QPushButton:disabled { color: @button_disabled_text@; background: @button_disabled@; border-color: @button_disabled_border@; }
 QPushButton[primary="true"] { color: white; background: @primary@; border-color: @primary_border@; }
 QPushButton[primary="true"]:hover { background: @primary_hover@; }

@@ -1,0 +1,37 @@
+{
+  "schema": "digifly-connectome-pictures-v1",
+  "read_date": "2026-10-20",
+  "catalogue_url": "https://neuprint.janelia.org/api/dbmeta/datasets",
+  "catalogue_sha256": "6a58ad9d79339f04f3822057dead66588dbfa5c0e7fb05634200a81b9061e73b",
+  "credential_used": false,
+  "credit": "Janelia FlyEM and the collaborators named by neuPrint",
+  "license": "CC BY 4.0 as displayed by neuPrintExplorer",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "pictures": {
+    "connectome_male_cns.png": {
+      "source": "https://www.janelia.org/sites/default/files/Project%20Teams/Fly%20EM/malecns-median-size-per-type-angle-view-white-cropped-small.png",
+      "sha256": "10f54c4e3db1ac8ba47fb9a53af91c0ae28cd427f09ab059f69d45d6296746ea",
+      "datasets": ["male-cns:v0.9", "male-cns:v1.0"]
+    },
+    "connectome_manc.png": {
+      "source": "https://www.janelia.org/sites/default/files/Project%20Teams/Fly%20EM/manc-thumbnail-colors-adjusted-small.png",
+      "sha256": "5be0d4a3ebbd99b3b7df3367635ea0e14b588a2b970bc284a2fa412f51bb52b1",
+      "datasets": ["manc:v1.0", "manc:v1.2.1", "manc:v1.2.3"]
+    },
+    "connectome_hemibrain.png": {
+      "source": "https://www.janelia.org/sites/default/files/Project%20Teams/Fly%20EM/hemibrain-icon-one-per-type-small.png",
+      "sha256": "c60fe77101f4ce18c6b1b55071ad60d57649299a130d5293a8d4b8f3d88cd7ca",
+      "datasets": ["hemibrain:v1.2.1"]
+    },
+    "connectome_optic_lobe.png": {
+      "source": "https://www.janelia.org/sites/default/files/Project%20Teams/Fly%20EM/optic-lobe-logo-cropped.png",
+      "sha256": "2110d24b216e221b3c5355a3ab3bea21aa36864fb19318d602f67ddd18230cb7",
+      "datasets": ["optic-lobe:v1.0.1", "optic-lobe:v1.1"]
+    },
+    "connectome_mushroom_body.png": {
+      "source": "https://www.janelia.org/sites/default/files/Project%20Teams/Fly%20EM/mushroombody-logo.png",
+      "sha256": "33bcd6e0c17831dda6ed5615eb6f3542d7b9c1f861999796bde33e2ea7bdd3c5",
+      "datasets": ["mushroombody"]
+    }
+  }
+}
