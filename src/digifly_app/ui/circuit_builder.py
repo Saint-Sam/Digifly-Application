@@ -20,12 +20,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QMessageBox,
     QInputDialog,
     QMenu,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -284,7 +286,19 @@ class CircuitBuilderPage(QWidget):
         ] | None = None
         self._assemble_after_inventory = None
 
-        root = QVBoxLayout(self)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_scroll = QScrollArea()
+        self.page_scroll.setWidgetResizable(True)
+        content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.page_scroll.setWidget(content)
+        page_layout.addWidget(self.page_scroll)
+        # Expanding Browse or More options must scroll the page rather than
+        # compress its family rows into overlapping, partly hidden buttons.
+        root = QVBoxLayout(content)
+        root.setSizeConstraints(QLayout.SizeConstraint.SetNoConstraint,
+                                QLayout.SizeConstraint.SetMinimumSize)
         root.setContentsMargins(28, 22, 28, 24)
         root.setSpacing(14)
         root.addLayout(_header())

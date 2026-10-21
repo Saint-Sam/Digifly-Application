@@ -831,18 +831,40 @@ def run_library_smoke(destination: Path) -> int:
             boxes = [(w, w.mapTo(window, QPoint(0, 0)), w.size()) for w in widgets]
             for w, point, size in boxes:
                 if point.x() < 0 or point.x() + size.width() > window.width():
-                    raise ValueError('Compact circuit control overflows the window: ' + str(w.objectName()))
+                    raise ValueError('Compact circuit control overflows the window: ' +
+                        str(w.accessibleName() or w.objectName()) + f' x={point.x()} width={size.width()} window={window.width()}')
             window.grab().save(str(destination / f'circuit-library-compact-{width}.png'))
         QTest.mouseClick(builder.browse_button, Qt.MouseButton.LeftButton)
         cb = builder.saved_browser
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            QTest.qWait(100)
+            parent_rect = cb.stack.currentWidget().rect()
+            boxes = [button.geometry() for button in cb.family_buttons.values()]
+            if any(not parent_rect.contains(box) for box in boxes) or any(
+                    a.intersects(b) for i, a in enumerate(boxes) for b in boxes[i+1:]):
+                raise ValueError('Expanded Circuit family folders overlap or escape their panel')
+            for button in cb.family_buttons.values():
+                builder.page_scroll.ensureWidgetVisible(button)
+                QTest.qWait(20)
+                point = button.mapTo(builder.page_scroll.viewport(), QPoint(0, 0))
+                if not builder.page_scroll.viewport().rect().contains(point):
+                    raise ValueError('A Circuit family folder cannot be scrolled into view')
+            builder.page_scroll.ensureWidgetVisible(cb.family_buttons['DN'])
+            window.grab().save(str(destination / f'circuit-library-browse-{width}.png'))
+        record['circuit_library_expanded_browse_layout'] = True
+        builder.page_scroll.ensureWidgetVisible(cb.family_buttons['DN'])
         QTest.mouseClick(cb.family_buttons['DN'], Qt.MouseButton.LeftButton)
         QTest.mouseClick(cb.row_buttons[0], Qt.MouseButton.LeftButton)
         QTest.mouseClick(cb.row_buttons[0], Qt.MouseButton.LeftButton)
         builder.query_edit.clear()
+        builder.page_scroll.ensureWidgetVisible(cb.choose_neuron)
         QTest.mouseClick(cb.choose_neuron, Qt.MouseButton.LeftButton)
         if not builder.query_edit.text() or builder.loaded_records:
             raise ValueError('Saved-neuron selection must add a query without automatically loading')
+        builder.page_scroll.ensureWidgetVisible(builder.browse_button)
         QTest.mouseClick(builder.browse_button, Qt.MouseButton.LeftButton)
+        builder.page_scroll.verticalScrollBar().setValue(0)
         builder.query_edit.setText('DNp01, TTMn, PSI')
         QTest.mouseClick(builder.assemble_button, Qt.MouseButton.LeftButton)
         if set(builder.loaded_records) != {'42', '43', '45', '10000'}:

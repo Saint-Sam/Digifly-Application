@@ -118,6 +118,12 @@ def test_compact_controls_use_shared_inventory_and_browse_without_loading(tmp_pa
         assert not page.more_options.is_expanded and page.connectome_combo.isHidden()
         page.browse_button.setChecked(True)
         browser = page.saved_browser
+        page.resize(1120, 800)
+        page.show()
+        app.processEvents()
+        boxes = [b.geometry() for b in browser.family_buttons.values()]
+        assert all(browser.stack.currentWidget().rect().contains(r) for r in boxes)
+        assert all(not a.intersects(b) for i, a in enumerate(boxes) for b in boxes[i+1:])
         browser.family_buttons['DN'].click()
         browser.row_buttons[0].click()
         browser.row_buttons[0].click()
