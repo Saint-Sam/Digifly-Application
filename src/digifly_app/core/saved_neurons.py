@@ -165,10 +165,14 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
                                     continue
                                 family, label = _labels(path, root, body)
                                 found.setdefault((server, str(int(body))), []).append((family, label, path))
+                except InterruptedError:
+                    raise
                 except OSError as error:
                     issues.append(f'{folder}: {error}')
             if committed is not None and committed - observed:
                 issues.append(f'{root}: {len(committed - observed):,} listed SWC file(s) missing or skipped')
+        except InterruptedError:
+            raise
         except (OSError, ValueError, KeyError, TypeError) as error:
             issues.append(str(error))
     neurons = []

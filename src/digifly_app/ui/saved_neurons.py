@@ -145,6 +145,7 @@ class SavedNeuronBrowser(Card):
         self.open_folder.setEnabled(False)
         for family, button in self.family_buttons.items():
             button.setText(f'{family} · —')
+            button.setAccessibleName(f'{family}, saved-neuron count not ready')
             button.setEnabled(False)
 
     def load(self, sources, dataset):

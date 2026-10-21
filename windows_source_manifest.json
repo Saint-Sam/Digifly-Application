@@ -478,8 +478,8 @@
       "bytes": 10533
     },
     "src/digifly_app/core/saved_neurons.py": {
-      "sha256": "10576d1eb81afe35f25808a8cc59ba7854780a4c177cdcaae85af26a18d2a1f1",
-      "bytes": 8591
+      "sha256": "1a2ecc6c9412bc9dbd7cfe45d9c4ef6ba9f5fbf60d263f2afb984bb5801e6ce1",
+      "bytes": 8709
     },
     "src/digifly_app/core/swc_library.py": {
       "sha256": "9f42e64e046814943d269800feb920f5d1d902185f2c32b4fac382b9e2493725",
@@ -710,8 +710,8 @@
       "bytes": 47240
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "40a0f92e6dbb8593ca99c0abbace26b052f1147292611e88eff1549672886b54",
-      "bytes": 51801
+      "sha256": "aed4785a8475a0f2b27e35f40aed4e260774bd43985be911ee42cc5a8655ba7d",
+      "bytes": 52242
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -746,8 +746,8 @@
       "bytes": 19220
     },
     "src/digifly_app/ui/saved_neurons.py": {
-      "sha256": "f6c563cc7727eb34998aa275c9ea92a54b11330a75ecf06cb6c890bdaf342447",
-      "bytes": 12840
+      "sha256": "2e36404920bcb184d96803ac6bb1b56373d4f9abd07cfe5843d054dccf7820aa",
+      "bytes": 12920
     },
     "src/digifly_app/ui/snapshot.py": {
       "sha256": "ed7546fc4ac45fbc4f11648e766b79225c56ab9f746adbe9ad493f0b072441d2",
@@ -862,7 +862,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "4ee3ddb99cb36da4b76aa9802dcd640f07b124401dd9dc7404e6678afd3a4031",
+      "sha256": "b77c16b10af510e1ae83923f7a4bac179979efc30062e85fced31c44a2854c87",
       "bytes": 10113
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -894,8 +894,8 @@
       "bytes": 8576
     },
     "tests/test_saved_neurons.py": {
-      "sha256": "2074501681b5c36e1e8c1fcb35d23f422f068a2eca7c1dd6049b028ea4e7e51b",
-      "bytes": 9949
+      "sha256": "035445eb60a0976ef7d809d9c887bd33e30aa59cd5647e4927f92487f4649f8f",
+      "bytes": 10538
     },
     "tests/test_updates.py": {
       "sha256": "c059e8e1da9ce2e3c59811cf274811195816817430d7afc0a5fbdd2478269869",

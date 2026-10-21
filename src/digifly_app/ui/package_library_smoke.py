@@ -749,7 +749,11 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Legacy raw/healed acquisition must count as one saved PSI neuron')
         window.grab().save(str(destination / 'family-legacy-male-v1.png'))
         choose_release('male-cns:v0.9')
-        choose_release('manc:v1.2.3')
+        QTest.mouseClick(page.back_to_connectomes, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(picker.buttons['manc'], Qt.MouseButton.LeftButton)
+        page.release_buttons['manc:v1.2.3'].setChecked(True)
+        if browser.inventory is None and not all('not ready' in b.accessibleName() for b in browser.family_buttons.values()):
+            raise ValueError('A pending count still announces another release’s old value')
         counted('manc:v1.2.3')
         if browser.inventory.neurons or browser.stack.currentIndex() != 0 or browser.open_folder.isEnabled():
             raise ValueError('Late saved-neuron results or actions leaked across a release switch')
@@ -764,7 +768,7 @@ def run_library_smoke(destination: Path) -> int:
         record.update(family_browser_counts=True, family_browser_unique_neurons=True,
             family_browser_drilldown=True, family_browser_release_isolation=True,
             family_browser_readonly=True, family_browser_legacy_variants=True,
-            family_browser_default_folders=True, family_browser_widths=[1120, 1700],
+            family_browser_default_folders=True, family_browser_pending_labels_cleared=True, family_browser_widths=[1120, 1700],
             family_browser_fixture_counts=counts)
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,

@@ -148,6 +148,7 @@ def test_browser_real_clicks_counts_types_ids_paging_stale_and_cancel(tmp_path, 
         old = browser.inventory
         generation = browser.generation
         browser.load((), 'male-cns:v1.0')
+        assert all('not ready' in b.accessibleName() for b in browser.family_buttons.values())
         browser._received(generation, old)
         wait(lambda: browser.inventory is not None)
         assert not browser.inventory.neurons and browser.inventory.dataset == 'male-cns:v1.0'
@@ -212,3 +213,17 @@ def test_old_root_level_export_and_raw_healed_legacy_paths(tmp_path):
     result = scan_saved_neurons(saved_sources((), (resource,)), DATASET)
     assert not result.issues and len(result.neurons) == 1
     assert result.neurons[0].family == 'DN' and len(result.neurons[0].paths) == 2
+
+
+def test_cancellation_inside_scan_never_returns_a_partial_count(tmp_path, monkeypatch):
+    root = tmp_path / 'root'
+    swc(root, 'DN/DNp01/42/42.swc')
+    cancel = threading.Event()
+    original = os.scandir
+    def cancel_inside(path):
+        result = original(path)
+        cancel.set()
+        return result
+    monkeypatch.setattr(os, 'scandir', cancel_inside)
+    with pytest.raises(InterruptedError):
+        scan_saved_neurons((SavedSource(root, DATASET),), DATASET, cancel=cancel)
