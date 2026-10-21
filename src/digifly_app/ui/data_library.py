@@ -65,6 +65,8 @@ from digifly_app.core.resource_management import (
 )
 
 from .widgets import Card
+from .saved_neurons import SavedNeuronBrowser
+from digifly_app.core.saved_neurons import saved_sources
 from .connectome_picker import CONNECTOMES, ConnectomePicker
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
@@ -323,6 +325,21 @@ class DataLibraryPage(QWidget):
         action_layout.addWidget(self.action_status)
         root.addWidget(actions)
 
+        self.neuron_browser = SavedNeuronBrowser(self)
+        root.addWidget(self.neuron_browser)
+        self.storage_details_button = QPushButton('Show storage and download details')
+        self.storage_details_button.setCheckable(True)
+        root.addWidget(self.storage_details_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.storage_details = QWidget()
+        storage_layout = QVBoxLayout(self.storage_details)
+        storage_layout.setContentsMargins(0, 0, 0, 0)
+        storage_layout.setSpacing(12)
+        root.addWidget(self.storage_details)
+        self.storage_details.hide()
+        self.storage_details_button.toggled.connect(self.storage_details.setVisible)
+        self.storage_details_button.toggled.connect(lambda visible: self.storage_details_button.setText(
+            'Hide storage and download details' if visible else 'Show storage and download details'))
+
         linked_card = self.linked_card = Card()
         linked_layout = QVBoxLayout(linked_card)
         linked_layout.addWidget(QLabel('Linked SWC folders · read-only'))
@@ -353,7 +370,7 @@ class DataLibraryPage(QWidget):
         self.linked_detail.setWordWrap(True)
         self.linked_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         linked_layout.addWidget(self.linked_detail)
-        root.addWidget(linked_card)
+        storage_layout.addWidget(linked_card)
 
         library = self.managed_card = Card()
         library_layout = QVBoxLayout(library)
@@ -399,7 +416,7 @@ class DataLibraryPage(QWidget):
         self.reveal_selected_button = self._action('Open selected folder', self.reveal_selected)
         self.registration_button = self._action('Manage registration…', self.toggle_registration)
         self.trash_button = self._action('Move to Library Trash…', self.trash_selected)
-        root.addWidget(library)
+        storage_layout.addWidget(library)
         self.connectivity_card = Card()
         graph_layout = QVBoxLayout(self.connectivity_card)
         graph_layout.addWidget(QLabel('Connectivity'))
@@ -552,6 +569,9 @@ class DataLibraryPage(QWidget):
         self._resources = ()
         try:
             profile, _ = self._profile()
+            self._source_servers = {path_key(b.resolved_path): b.metadata['server'] for b in profile.resources
+                                    if b.metadata.get('server') and b.kind in
+                                    {ResourceKind.MORPHOLOGY_SOURCE, ResourceKind.CONNECTOME_SOURCE}}
             self._all_linked = list_linked_libraries(profile)
             resources = list_managed_resources(profile)
         except (OSError, ValueError) as exc:
@@ -636,7 +656,19 @@ class DataLibraryPage(QWidget):
             self._row_controls(resource, linked=False)
         self._fit_rows(self.table)
         self._resource_selection_changed()
+        try:
+            sources = saved_sources(self._linked, self._resources, getattr(self, '_source_servers', {}))
+        except (OSError, ValueError) as error:
+            self.neuron_browser.cancel(quiet=True)
+            self.neuron_browser._reset()
+            self.neuron_browser.status.setText(f'Saved folders could not be read: {error}')
+        else:
+            self.neuron_browser.load(sources, dataset)
         self.status_message.emit(f"{dataset or 'Choose a connectome'}: {len(self._linked)} linked local libraries; {len(self._resources)} managed downloads/libraries")
+
+    def closeEvent(self, event):
+        self.neuron_browser.shutdown()
+        super().closeEvent(event)
 
     @staticmethod
     def _resource_dataset(resource):

@@ -21,6 +21,7 @@ def click_menu(button, action):
 
 
 def linked_menu(page, action):
+    page.storage_details_button.setChecked(True)
     holder = page.linked_table.cellWidget(0, 6)
     click_menu(holder._library_button, action)
 
@@ -132,6 +133,7 @@ def test_shortcut_buttons_save_restart_and_open_on_other_profile(tmp_path, monke
     page.resize(840, 650)
     page.show()
     app.processEvents()
+    page.storage_details_button.setChecked(True)
     assert page.linked_table.cellWidget(0, 6)._library_button.isVisible()
     assert not page.managed_card.isVisible()
     assert source.read_text() == '1 1 0 0 0 1 -1\n'

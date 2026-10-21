@@ -39,7 +39,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             ".github/workflows/windows-current-release.yml", "scripts/publish_windows_release.py",
             ".github/workflows/windows-neuron-bundle.yml", "scripts/build_windows_neuron_payload.py",
             "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
-            "tests/test_generic_experiment.py", "tests/test_linked_libraries.py", "tests/test_linked_libraries_ui.py",
+            "tests/test_generic_experiment.py", "tests/test_linked_libraries.py", "tests/test_linked_libraries_ui.py", "tests/test_saved_neurons.py",
             "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_update_cleanup.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",
             "tests/test_app_settings.py", "tests/test_ui_wording.py",
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",

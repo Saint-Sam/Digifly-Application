@@ -187,6 +187,7 @@ def test_compact_menus_keep_routes_and_reject_stale_row_targets(tmp_path, monkey
     page.resize(840, 760)
     page.show()
     page.connectome_picker.choose('male_cns')
+    page.storage_details_button.setChecked(True)
     app.processEvents()
     try:
         assert page.neuprint_button.property('primary')
@@ -251,6 +252,7 @@ def test_exact_scope_filters_rows_empty_cards_and_stale_actions(tmp_path, monkey
     page.resize(1120, 900)
     page.show()
     before = path.read_bytes()
+    page.storage_details_button.setChecked(True)
     try:
         for family, dataset, roots in (('male_cns','male-cns:v0.9',{'male'}),
                 ('male_cns','male-cns:v1.0',set()), ('manc','manc:v1.2.1',{'manc'}),

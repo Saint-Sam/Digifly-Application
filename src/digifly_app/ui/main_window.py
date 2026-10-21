@@ -3666,6 +3666,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("arbor_python", self.overview_page.arbor_python_edit.text())
         self.settings.setValue("bmtk_python", self.overview_page.bmtk_python_edit.text())
         self.settings.setValue("netpyne_python", self.overview_page.netpyne_python_edit.text())
+        self.data_library_page.neuron_browser.shutdown()
         super().closeEvent(event)
 
 

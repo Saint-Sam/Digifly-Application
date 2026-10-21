@@ -98,6 +98,9 @@ def run_library_smoke(destination: Path) -> int:
         window.show()
         page = window.data_library_page
         def click_menu(button, action, filename=None):
+            # Older storage/registration controls remain under explicit details.
+            if page.storage_details.isAncestorOf(button) and not page.storage_details_button.isChecked():
+                QTest.mouseClick(page.storage_details_button, Qt.MouseButton.LeftButton)
             page.scroll.ensureWidgetVisible(button)
             QTest.qWait(50)
             menu = button._library_menu
@@ -447,6 +450,7 @@ def run_library_smoke(destination: Path) -> int:
         shortcuts = []
         for dataset in ('male-cns:v0.9', 'manc:v1.2.1'):
             choose_release(dataset)
+            page.storage_details_button.setChecked(True)
             if page.linked_table.rowCount() != 1:
                 raise ValueError('Exact release must show only its own linked library')
             page.linked_table.selectRow(0)
@@ -670,6 +674,98 @@ def run_library_smoke(destination: Path) -> int:
             library_shortcut_save_open=True, library_shortcut_explicit_review=True,
             library_shortcut_restores_without_workspace=True, library_layout_no_overlap=True,
             linked_fixture_counts={'male-cns:v0.9': 2, 'manc:v1.2.1': 1})
+        # The default page now browses saved families, not acquisition batches.
+        # Two variants of an already saved body must not add two neurons.
+        journal('family_browser')
+        duplicate_root = manc / 'DN/DNp01/42'
+        duplicate_root.mkdir(parents=True)
+        for name in ('42_raw.swc', '42_healed.swc'):
+            (duplicate_root / name).write_bytes(swc)
+        legacy = destination / 'legacy-family-fixture/PSI/802401'
+        legacy.mkdir(parents=True)
+        for name in ('802401_neuprint_raw.swc', '802401_neuprint_raw_radius_healed.swc'):
+            (legacy / name).write_bytes(swc)
+        import_local_source(ResourceProfile.load(profile_path), legacy.parents[1], provider='local',
+            resource_id='legacy-family-fixture', source_version='fixture', dataset='male-cns:v1.0', profile_path=profile_path)
+        before_browse = profile_path.read_bytes()
+        page.refresh()
+        page.storage_details_button.setChecked(False)
+        browser = page.neuron_browser
+        def counted(dataset):
+            wait_for(lambda: browser.inventory is not None and browser.inventory.dataset == dataset,
+                     'Saved family inventory did not finish for the chosen release')
+        choose_release('manc:v1.2.1')
+        counted('manc:v1.2.1')
+        counts = {f: len(browser.inventory.family(f)) for f in browser.family_buttons}
+        if counts != {'AN': 1, 'DN': 2, 'IN': 0, 'MN': 0, 'SN': 0, 'UNKNOWN': 3}:
+            raise ValueError('Saved family count double-counted variants, history or matching sources: ' + str(counts))
+        expected_dn = browser.inventory.family('DN')
+        if len(next(n for n in expected_dn if n.body_id == '42').paths) != 3:
+            raise ValueError('Saved browser lost duplicate-location information')
+        if page.managed_card.isVisible() or page.linked_card.isVisible():
+            raise ValueError('Download batches still replace the primary family browser')
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            page.scroll.ensureWidgetVisible(browser)
+            QTest.qWait(100)
+            rects = [b.geometry() for b in browser.family_buttons.values()]
+            if any(a.intersects(b) for i, a in enumerate(rects) for b in rects[i+1:]):
+                raise ValueError('Saved family folders overlap')
+            if browser.stack.height() > 150 or browser.height() > 330:
+                raise ValueError('Hidden type/ID pages stretched the compact family folder grid')
+            window.grab().save(str(destination / f'family-folders-{width}.png'))
+        QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
+        if browser.table.item(0, 0).text() != 'DNp01' or browser.table.item(0, 1).text() != '2  ›':
+            raise ValueError('Family click did not open the saved neuron types')
+        QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton,
+            pos=browser.table.visualItemRect(browser.table.item(0, 0)).center())
+        if {browser.table.item(row, 0).text() for row in range(browser.table.rowCount())} != {'42', '10000'}:
+            raise ValueError('Type click did not open its saved neurons')
+        row = next(i for i in range(browser.table.rowCount()) if browser.table.item(i, 0).text() == '42')
+        QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton,
+            pos=browser.table.visualItemRect(browser.table.item(row, 0)).center())
+        if not browser.open_folder.isEnabled() or '42' not in browser.location.text():
+            raise ValueError('Saved-neuron location is unavailable')
+        original_open_url = QDesktopServices.openUrl
+        opened = []
+        QDesktopServices.openUrl = lambda url: opened.append(str(Path(url.toLocalFile()))) or True
+        try:
+            QTest.mouseClick(browser.open_folder, Qt.MouseButton.LeftButton)
+        finally:
+            QDesktopServices.openUrl = original_open_url
+        if opened != [str(next(n for n in expected_dn if n.body_id == '42').paths[0].parent)]:
+            raise ValueError('Saved-neuron folder control targeted another neuron')
+        page.scroll.ensureWidgetVisible(browser.table)
+        QTest.qWait(80)
+        window.grab().save(str(destination / 'family-neurons.png'))
+        QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(browser.family_buttons['AN'], Qt.MouseButton.LeftButton)
+        if browser.table.rowCount() != 1 or browser.table.item(0, 0).text() != 'AN-example':
+            raise ValueError('Back/family navigation did not restore the right types')
+        choose_release('male-cns:v1.0')
+        counted('male-cns:v1.0')
+        if len(browser.inventory.neurons) != 1 or browser.inventory.neurons[0].neuron_type != 'PSI':
+            raise ValueError('Legacy raw/healed acquisition must count as one saved PSI neuron')
+        window.grab().save(str(destination / 'family-legacy-male-v1.png'))
+        choose_release('male-cns:v0.9')
+        choose_release('manc:v1.2.3')
+        counted('manc:v1.2.3')
+        if browser.inventory.neurons or browser.stack.currentIndex() != 0 or browser.open_folder.isEnabled():
+            raise ValueError('Late saved-neuron results or actions leaked across a release switch')
+        QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
+        if browser.table.rowCount() or 'No saved' not in browser.page_label.text():
+            raise ValueError('An empty family cannot be browsed honestly')
+        window.grab().save(str(destination / 'family-empty-release.png'))
+        choose_release('manc:v1.2.1')
+        counted('manc:v1.2.1')
+        if profile_path.read_bytes() != before_browse or any(p.read_bytes() != swc for p in duplicate_root.glob('*.swc')):
+            raise ValueError('Family browsing changed saved settings or SWCs')
+        record.update(family_browser_counts=True, family_browser_unique_neurons=True,
+            family_browser_drilldown=True, family_browser_release_isolation=True,
+            family_browser_readonly=True, family_browser_legacy_variants=True,
+            family_browser_default_folders=True, family_browser_widths=[1120, 1700],
+            family_browser_fixture_counts=counts)
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],
@@ -686,6 +782,7 @@ def run_library_smoke(destination: Path) -> int:
         QMessageBox.warning, QMessageBox.critical = saved_warning, saved_critical
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         if window is not None:
+            window.data_library_page.neuron_browser.shutdown()
             # An engineering test does not ask the human to save its fixture draft.
             window.deleteLater()
         if app is not None:
