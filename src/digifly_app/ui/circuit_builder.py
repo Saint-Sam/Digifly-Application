@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import json
 import re
 from typing import Any
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QInputDialog,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -40,6 +43,7 @@ from digifly_app.core.circuit import (
 )
 from digifly_app.core.data_library import ManagedResource
 from digifly_app.core.neuprint import NeuPrintSelection
+from digifly_app.core.neuprint import DEFAULT_NEUPRINT_SERVER
 from digifly_app.core.connectomes import (
     ConnectionClassSummary,
     ConnectomeCatalog,
@@ -57,6 +61,8 @@ from digifly_app.core.morphology import (
 )
 from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.providers import profile_connectome_sources
+from digifly_app.core.circuit_library import library_sources, source_folders
+from digifly_app.core.linked_libraries import canonical_dataset
 from digifly_app.core.pair_graph import attach_registered_pair_graph
 from digifly_app.core.resource_profile import ResourceKind, default_profile_path, load_default_profile
 from digifly_app.core.swc_quality import (
@@ -82,11 +88,13 @@ from .circuit_viewport import (
 from .neuprint_import import NeuPrintImportDialog
 from .pair_graph_import import PairGraphImportDialog
 from .widgets import Card, CollapsibleSection, make_label_copyable
+from .connectome_picker import CONNECTOMES
+from .saved_neurons import SavedNeuronBrowser
 
 
 CIRCUIT_BUILDER_WORKFLOW = "circuit_builder_v1"
 
-_NEUPRINT_DATASETS = ("manc:v1.2.1", "male-cns:v1.0", "male-cns:v0.9")
+_NEUPRINT_DATASETS = tuple(dataset for choice in CONNECTOMES for dataset in choice.releases)
 _NEUPRINT_DATASET_ALIASES = {
     "manc_v1.2.1": "manc:v1.2.1",
     "male-cns_v0.9": "male-cns:v0.9",
@@ -122,6 +130,8 @@ def _source_identity(source: ConnectomeRef) -> tuple[str, str, str]:
 
 
 def _neuprint_dataset(source: ConnectomeRef) -> str | None:
+    if source.server and source.server != DEFAULT_NEUPRINT_SERVER:
+        return None  # Never hand another server's body IDs to the official server.
     for candidate in (source.dataset, source.key):
         if candidate in _NEUPRINT_DATASETS:
             return candidate
@@ -220,16 +230,13 @@ def _primary_circuit_sources(
 def _header() -> QVBoxLayout:
     layout = QVBoxLayout()
     layout.setSpacing(5)
-    eyebrow = QLabel("MORPHOLOGY CELL-SET DESIGN · BACKEND-UNBOUND")
-    eyebrow.setObjectName("Eyebrow")
-    title = QLabel("Build a morphology-backed cell-set preview")
+    title = QLabel("Circuit Builder")
     title.setObjectName("PageTitle")
     detail = QLabel(
-        "Choose an SWC source, resolve neurons by ID/type/family, draft membrane physics, and inspect SWC segments before an execution adapter builds a model."
+        "Choose your connectome, select neurons, then build your circuit."
     )
     detail.setObjectName("Muted")
     detail.setWordWrap(True)
-    layout.addWidget(eyebrow)
     layout.addWidget(title)
     layout.addWidget(detail)
     return layout
@@ -253,6 +260,7 @@ class CircuitBuilderPage(QWidget):
     circuit_changed = Signal(object)
     managed_data_changed = Signal()
     experiment_globals_applied = Signal(float, float)
+    data_library_requested = Signal(str)
 
     def __init__(self, overview: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -286,32 +294,58 @@ class CircuitBuilderPage(QWidget):
         controls_layout.setSpacing(10)
         top = QHBoxLayout()
         top.setSpacing(10)
+        self.family_combo = QComboBox()
+        self.family_combo.setAccessibleName('Circuit connectome')
+        self.family_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
+        for choice in CONNECTOMES:
+            self.family_combo.addItem(choice.name, choice.key)
+        self.family_combo.addItem('Other local sources', 'other')
+        self.release_combo = QComboBox()
+        self.release_combo.setAccessibleName('Circuit release')
+        self.release_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
+        top.addWidget(QLabel('Connectome'))
+        top.addWidget(self.family_combo, 1)
+        top.addWidget(QLabel('Release'))
+        top.addWidget(self.release_combo, 1)
+        self.library_button = QPushButton('Data Library')
+        self.library_button.clicked.connect(lambda: self.data_library_requested.emit(
+            canonical_dataset(self._selected_source().dataset) if self._selected_source() else ''))
+        top.addWidget(self.library_button)
+        controls_layout.addLayout(top)
+        self.source_summary = QLabel()
+        self.source_summary.setObjectName('Muted')
+        self.source_summary.setWordWrap(True)
+        controls_layout.addWidget(self.source_summary)
+        self.connectome_combo = QComboBox(self)
+        self.connectome_combo.hide()  # Exact legacy project references, not another user-facing picker.
+        self.connectome_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
+        self.source_focus_shortcut = QShortcut(QKeySequence('Alt+S'), self)
+        self.source_focus_shortcut.activated.connect(self.family_combo.setFocus)
+
+        self.more_options = CollapsibleSection('More options', 'circuit_source_tools')
+        options = self.more_options.content_layout
+        tools = QHBoxLayout()
         self.engine_combo = QComboBox()
+        self.engine_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
         for key, name, _summary in ENGINE_PROFILES:
             self.engine_combo.addItem(name, key)
         self.engine_combo.setCurrentIndex(0)
         self.engine_combo.currentIndexChanged.connect(self._engine_changed)
-        top.addWidget(QLabel("Engine"))
-        top.addWidget(self.engine_combo)
-
-        self.connectome_combo = QComboBox()
-        self.connectome_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.connectome_combo.setToolTip("Select the exact local source. Alt+S focuses this selector.")
-        self.source_focus_shortcut = QShortcut(QKeySequence("Alt+S"), self)
-        self.source_focus_shortcut.activated.connect(self.connectome_combo.setFocus)
-        self.connectome_combo.setMinimumWidth(230)
-        top.addWidget(QLabel("SWC source"))
-        top.addWidget(self.connectome_combo, 1)
+        simulator_row = QHBoxLayout()
+        simulator_row.addWidget(QLabel('Simulator'))
+        simulator_row.addWidget(self.engine_combo)
+        simulator_row.addStretch()
         refresh = QPushButton("Refresh sources")
         refresh.clicked.connect(self.refresh_connectomes)
-        top.addWidget(refresh)
+        tools.addWidget(refresh)
         quality_check = QPushButton("Check recent imports")
         quality_check.setToolTip(
             "Audit manifest-declared recent SWCs using each neuron's own radius distribution"
         )
         quality_check.clicked.connect(self.review_recent_imports)
-        top.addWidget(quality_check)
-        controls_layout.addLayout(top)
+        tools.addWidget(quality_check)
+        tools.addStretch()
+        options.addLayout(tools)
 
         graph_row = QHBoxLayout()
         self.pair_graph_button = QPushButton("Use connectivity Parquet…")
@@ -322,7 +356,7 @@ class CircuitBuilderPage(QWidget):
         self.pair_graph_note.setObjectName("PairGraphSourceStatus")
         self.pair_graph_note.setWordWrap(True)
         graph_row.addWidget(self.pair_graph_note, 1)
-        controls_layout.addLayout(graph_row)
+        options.addLayout(graph_row)
 
         query_row = QHBoxLayout()
         query_row.setSpacing(10)
@@ -331,13 +365,16 @@ class CircuitBuilderPage(QWidget):
         self.query_edit.returnPressed.connect(self.assemble_circuit)
         query_row.addWidget(QLabel("Neurons"))
         query_row.addWidget(self.query_edit, 1)
+        self.browse_button = QPushButton('Browse')
+        self.browse_button.setCheckable(True)
+        query_row.addWidget(self.browse_button)
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 500)
         self.limit_spin.setValue(64)
         self.limit_spin.setToolTip("Safety cap for a single visualized morphology cell set")
         query_row.addWidget(QLabel("Limit"))
         query_row.addWidget(self.limit_spin)
-        self.assemble_button = QPushButton("Load cell set")
+        self.assemble_button = QPushButton("Load neurons")
         self.assemble_button.setProperty("primary", True)
         self.assemble_button.clicked.connect(self.assemble_circuit)
         query_row.addWidget(self.assemble_button)
@@ -349,11 +386,20 @@ class CircuitBuilderPage(QWidget):
         self.download_missing_button.clicked.connect(self.open_missing_neuprint_import)
         query_row.addWidget(self.download_missing_button)
         controls_layout.addLayout(query_row)
+        controls_layout.addLayout(simulator_row)
+        self.saved_browser = SavedNeuronBrowser(self)
+        self.saved_browser.choose_neuron.show()
+        self.saved_browser.hide()
+        self.browse_button.toggled.connect(self.saved_browser.setVisible)
+        self.saved_browser.neuron_chosen.connect(self._add_browsed_neuron)
+        self.saved_browser.inventory_changed.connect(self._inventory_ready)
+        controls_layout.addWidget(self.saved_browser)
 
         self.engine_note = QLabel()
         self.engine_note.setObjectName("Muted")
         self.engine_note.setWordWrap(True)
-        controls_layout.addWidget(self.engine_note)
+        options.addWidget(self.engine_note)
+        controls_layout.addWidget(self.more_options)
         root.addWidget(controls)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -863,7 +909,9 @@ class CircuitBuilderPage(QWidget):
         self.refresh_connectomes()
         self.query_edit.textEdited.connect(self._selection_controls_changed)
         self.limit_spin.valueChanged.connect(self._selection_controls_changed)
-        self.connectome_combo.currentIndexChanged.connect(self._selection_controls_changed)
+        self.connectome_combo.currentIndexChanged.connect(self._source_changed)
+        self.family_combo.currentIndexChanged.connect(self._family_changed)
+        self.release_combo.currentIndexChanged.connect(self._release_changed)
         for combo in self.findChildren(QComboBox):
             combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for label in self.findChildren(QLabel):
@@ -938,7 +986,13 @@ class CircuitBuilderPage(QWidget):
                 morphology_library_root=morphology_library_root(),
                 external_sources=profile_connectome_sources(profile),
             )
-        discovered = _primary_circuit_sources(all_sources)
+        self._library_discovery_error = ''
+        try:
+            virtual = library_sources(profile, _NEUPRINT_DATASETS, all_sources)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._library_discovery_error = str(error)
+            virtual = library_sources(None, _NEUPRINT_DATASETS)
+        discovered = (*virtual, *all_sources)
         if (
             previous_source is not None
             and _source_identity(previous_source) not in {_source_identity(source) for source in all_sources}
@@ -947,6 +1001,10 @@ class CircuitBuilderPage(QWidget):
         ):
             discovered = (*discovered, previous_source)
         self._sources = tuple(attach_registered_pair_graph(source, profile) for source in discovered)
+        if previous_source is not None and self.spec.neuron_ids:
+            # Refreshing the library does not rebind an already loaded project.
+            self._sources = tuple(previous_source if _source_identity(s) == _source_identity(previous_source)
+                                  else s for s in self._sources)
         prior_guard = self._restoring_controls
         self._restoring_controls = True
         try:
@@ -979,7 +1037,7 @@ class CircuitBuilderPage(QWidget):
                         index
                         for index, source in enumerate(self._sources)
                         if profile_matches_workspace
-                        and source.key == "manc:v1.2.1:full-local"
+                        and source.key == "library:manc:v1.2.1"
                     ),
                     -1,
                 )
@@ -988,7 +1046,7 @@ class CircuitBuilderPage(QWidget):
                         (
                             index
                             for index, source in enumerate(self._sources)
-                            if Path(source.root).expanduser().resolve().is_relative_to(
+                            if source.root and Path(source.root).expanduser().resolve().is_relative_to(
                                 workspace_root
                             )
                         ),
@@ -1013,12 +1071,119 @@ class CircuitBuilderPage(QWidget):
             self.status_message.emit("No local SWC morphology source was found under the configured workspace")
         current_source = self._selected_source()
         self._update_pair_graph_note()
+        self._sync_source_controls()
+        self._start_source_inventory()
         if (
             previous_source is not None
             and (current_source is None or _source_identity(current_source) != _source_identity(previous_source))
             and not prior_guard
         ):
             self._selection_controls_changed()
+
+    def _sync_source_controls(self):
+        source = self._selected_source()
+        dataset = canonical_dataset(source.dataset) if source else ''
+        choice = next((c for c in CONNECTOMES if dataset in c.releases), None)
+        for widget in (self.family_combo, self.release_combo):
+            widget.blockSignals(True)
+        self.family_combo.setCurrentIndex(self.family_combo.findData(choice.key if choice else 'other'))
+        self.release_combo.clear()
+        if choice:
+            for release in choice.releases:
+                for item in self._sources:
+                    if item.server and item.dataset == release:
+                        suffix = f' · {item.server}' if '@' in item.key else ''
+                        self.release_combo.addItem(release.split(':')[-1] + suffix, item.key)
+        else:
+            for item in self._sources:
+                if not item.server and not canonical_dataset(item.dataset):
+                    self.release_combo.addItem(item.label, item.key)
+        index = self.release_combo.findData(source.key if source else '')
+        if index < 0 and dataset:
+            index = self.release_combo.findData(f'library:{dataset}')
+        self.release_combo.setCurrentIndex(index)
+        for widget in (self.family_combo, self.release_combo):
+            widget.blockSignals(False)
+
+    def _family_changed(self):
+        key = self.family_combo.currentData()
+        choice = next((c for c in CONNECTOMES if c.key == key), None)
+        source = next((s for s in self._sources if s.key == f'library:{choice.releases[0]}'), None) if choice else next(
+            (s for s in self._sources if not s.server and not canonical_dataset(s.dataset)), None)
+        if source:
+            self.connectome_combo.setCurrentIndex(self.connectome_combo.findData(source.key))
+        else:
+            self._sync_source_controls()
+
+    def _release_changed(self):
+        key = self.release_combo.currentData()
+        if key:
+            self.connectome_combo.setCurrentIndex(self.connectome_combo.findData(key))
+
+    def select_library_release(self, dataset):
+        """Explicit Data Library handoff; never rebuild a circuit automatically."""
+        index = self.connectome_combo.findData(f'library:{canonical_dataset(dataset)}')
+        if index >= 0:
+            self.connectome_combo.setCurrentIndex(index)
+
+    def _source_changed(self):
+        self._selection_controls_changed()
+        self._sync_source_controls()
+        self._start_source_inventory()
+
+    def _start_source_inventory(self):
+        source = self._selected_source()
+        self.browse_button.setEnabled(bool(source and source.server))
+        self.pair_graph_button.setVisible(bool(source and canonical_dataset(source.dataset).startswith('manc:')))
+        if source and source.server:
+            if getattr(self, '_library_discovery_error', ''):
+                self.saved_browser.cancel(quiet=True)
+                self.saved_browser._reset()
+                self.source_summary.setText('Saved locations could not be read. Open Data Library: ' + self._library_discovery_error)
+                self.assemble_button.setEnabled(False)
+                return
+            folders = source_folders(source)
+            self.source_summary.setText(f'{source.dataset} · {len(folders)} saved location(s) · Counting saved neurons…')
+            self.assemble_button.setEnabled(False)
+            self.saved_browser.load(folders, source.dataset)
+        else:
+            self.saved_browser.cancel(quiet=True)
+            self.saved_browser._reset()
+            self.source_summary.setText(f'Saved source: {source.label} · {source.root}' if source else 'Choose a connectome')
+            self.assemble_button.setEnabled(source is not None)
+
+    def _inventory_ready(self):
+        source, inventory = self._selected_source(), self.saved_browser.inventory
+        if not source or not source.server or inventory is None or inventory.dataset != source.dataset:
+            return
+        catalog = ConnectomeCatalog.from_saved_inventory(source, inventory)
+        self._catalog_cache[self._catalog_key(source)] = catalog
+        count = len(catalog.records)
+        issues = f' · {len(inventory.issues)} folder issue(s); count may be incomplete' if inventory.issues else ''
+        self.source_summary.setText(f'{count:,} saved neurons · {source.dataset} · {len(source.swc_sources)} location(s){issues}')
+        self.source_summary.setToolTip('Search combines matching folders. Preferred SWC variants use the existing '
+            'synapse-bearing/healed/plain order. Different equally preferred copies require your choice. '
+            'Counts describe saved files, not complete biological coverage.')
+        self.assemble_button.setEnabled(bool(count))
+        if not count:
+            self._missing_neuprint_request = None
+            self.source_summary.setText(self.source_summary.text() + ' · Use Data Library to add or download SWCs.')
+
+    def _add_browsed_neuron(self, body):
+        tokens = [s.strip() for s in re.split(r'[,;\n]+', self.query_edit.text()) if s.strip()]
+        if body not in tokens:
+            self.query_edit.setText(', '.join((*tokens, body)))
+
+    @staticmethod
+    def _catalog_key(source):
+        return source.key, json.dumps(source.to_dict(), sort_keys=True)
+
+    def shutdown(self):
+        self.saved_browser.shutdown()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 
     def review_recent_imports(self) -> None:
         """Offer explicit copy/overwrite choices for recent imported SWC findings."""
@@ -1190,7 +1355,7 @@ class CircuitBuilderPage(QWidget):
         self.status_message.emit("Using the selected MANC Parquet for aggregate pair lookup; no experiment was started")
 
     def _catalog_for(self, source: ConnectomeRef) -> ConnectomeCatalog:
-        cache_key = (source.key, source.root)
+        cache_key = self._catalog_key(source)
         catalog = self._catalog_cache.get(cache_key)
         if catalog is None:
             catalog = ConnectomeCatalog.scan(source)
@@ -1275,6 +1440,30 @@ class CircuitBuilderPage(QWidget):
         try:
             catalog = self._catalog_for(source)
             result = catalog.query(expression, limit=self.limit_spin.value())
+            try:
+                catalog.verify_selection(result.records)
+            except ValueError:
+                pins = dict(source.swc_paths)
+                for record in result.records:
+                    paths = catalog.alternatives.get(record.neuron_id, ())
+                    if len(paths) < 2:
+                        continue
+                    labels = [str(path) for path in paths]
+                    chosen, ok = QInputDialog.getItem(self, 'Choose saved SWC copy',
+                        f'Choose the SWC file for neuron {record.neuron_id}. No file will be replaced.', labels, 0, False)
+                    if not ok:
+                        self.status_message.emit('Loading cancelled; saved SWCs unchanged')
+                        return
+                    pins[record.neuron_id] = chosen
+                source = replace(source, swc_paths=pins)
+                catalog = ConnectomeCatalog.from_saved_inventory(source, self.saved_browser.inventory)
+                result = catalog.query(expression, limit=self.limit_spin.value())
+            if source.server:
+                # Freeze selected physical files into the project. Later library
+                # additions cannot silently select a different body copy.
+                source = replace(source, swc_paths={r.neuron_id: r.swc_path for r in result.records})
+                self._sources = tuple(source if i == self.connectome_combo.currentIndex() else s
+                                      for i, s in enumerate(self._sources))
             if result.records and result.unmatched:
                 dataset = _neuprint_dataset(source)
                 selection = _neuprint_selection(expression, self.limit_spin.value())
@@ -2264,6 +2453,8 @@ class CircuitBuilderPage(QWidget):
         self._update_override_summary()
         self._update_mechanism_capability()
         self._update_pair_graph_note()
+        self._sync_source_controls()
+        self._start_source_inventory()
 
     def load_saved_assets(self) -> None:
         """Reload the exact saved neuron IDs without re-evaluating the original query."""

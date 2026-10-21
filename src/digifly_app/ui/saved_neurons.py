@@ -45,6 +45,7 @@ class _InlineStack(QStackedWidget):
 class SavedNeuronBrowser(Card):
     PAGE_SIZE = 200
     inventory_changed = Signal()
+    neuron_chosen = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -138,6 +139,11 @@ class SavedNeuronBrowser(Card):
         self.open_folder = QPushButton('Open neuron folder')
         self.open_folder.clicked.connect(self._open_folder)
         footer.addWidget(self.open_folder)
+        self.choose_neuron = QPushButton('Add to selection')
+        self.choose_neuron.clicked.connect(self._choose_neuron)
+        self.choose_neuron.hide()
+        self.choose_neuron.setEnabled(False)
+        footer.addWidget(self.choose_neuron)
         detail.addLayout(footer)
         self.stack.addWidget(details)
         self._reset()
@@ -149,6 +155,7 @@ class SavedNeuronBrowser(Card):
         self._clear_rows()
         self.location.clear()
         self.open_folder.setEnabled(False)
+        self.choose_neuron.setEnabled(False)
         for family, button in self.family_buttons.items():
             button.setText(f'{family} · —')
             button.setAccessibleName(f'{family}, saved-neuron count not ready')
@@ -239,6 +246,7 @@ class SavedNeuronBrowser(Card):
         self._render()
 
     def _clear_rows(self):
+        self.choose_neuron.setEnabled(False)
         self._row_generation += 1
         self._rows, self.row_values = (), ()
         self._selected_row = -1
@@ -313,6 +321,11 @@ class SavedNeuronBrowser(Card):
             self._selected_row = row
             self.location.setText(neuron.server + '\n' + '\n'.join(map(str, neuron.paths)))
             self.open_folder.setEnabled(True)
+            self.choose_neuron.setEnabled(True)
+
+    def _choose_neuron(self):
+        if self.inventory is not None and self._selected_type and 0 <= self._selected_row < len(self._rows):
+            self.neuron_chosen.emit(self._rows[self._selected_row].body_id)
 
     def _open_folder(self):
         row = self._selected_row

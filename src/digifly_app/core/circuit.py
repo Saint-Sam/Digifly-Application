@@ -148,9 +148,13 @@ class ConnectomeRef:
     pair_graph_path: str = ""
     pair_graph_index: str = ""
     pair_graph_sha256: str = ""
+    # Optional virtual library. Old projects keep their single exact root.
+    swc_sources: tuple[dict[str, str], ...] = ()
+    swc_paths: dict[str, str] = field(default_factory=dict)
+    server: str = ""
 
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, Any]:
+        return {**asdict(self), 'swc_sources': [dict(row) for row in self.swc_sources]}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any] | None) -> "ConnectomeRef":
@@ -163,6 +167,9 @@ class ConnectomeRef:
             pair_graph_path=str(raw.get("pair_graph_path") or ""),
             pair_graph_index=str(raw.get("pair_graph_index") or ""),
             pair_graph_sha256=str(raw.get("pair_graph_sha256") or ""),
+            swc_sources=tuple(dict(value) for value in raw.get("swc_sources", ())),
+            swc_paths={str(key): str(value) for key, value in dict(raw.get("swc_paths", {})).items()},
+            server=str(raw.get("server") or ""),
         )
 
 

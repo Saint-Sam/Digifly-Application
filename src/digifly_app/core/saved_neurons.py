@@ -84,6 +84,17 @@ def saved_sources(linked, resources, server_by_root=None):
     return tuple(sources)
 
 
+def profile_saved_sources(profile):
+    """The same declared folders/downloads for both library and circuit views."""
+    from .linked_libraries import list_linked_libraries
+    from .data_library import list_managed_resources
+    from .resource_profile import ResourceKind
+    servers = {path_key(b.resolved_path): b.metadata['server'] for b in profile.resources
+               if b.metadata.get('server') and b.kind in
+               {ResourceKind.MORPHOLOGY_SOURCE, ResourceKind.CONNECTOME_SOURCE}}
+    return saved_sources(list_linked_libraries(profile), list_managed_resources(profile), servers)
+
+
 def _labels(path, root, body):
     parts = path.relative_to(root).parts
     index = next((i for i, part in enumerate(parts[:-1]) if part == body), -1)

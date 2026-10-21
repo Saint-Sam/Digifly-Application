@@ -215,7 +215,8 @@ def _is_male_cns_v09(source: ConnectomeRef) -> bool:
 
 def _is_legacy_full_manc_root(source: ConnectomeRef, root: Path) -> bool:
     return (
-        source.key.casefold() == "manc:v1.2.1:full-local"
+        (source.key.casefold() == "manc:v1.2.1:full-local"
+         or (source.dataset == _MANC_KEY and source.server == 'https://neuprint.janelia.org'))
         and (root / ".phase2_export_index.json").is_file()
         and (root / "edges" / "master_edges_cache.sqlite").is_file()
         and (
@@ -835,9 +836,51 @@ class ConnectomeCatalog:
         self.source = source
         self.records = tuple(sorted(records, key=lambda item: (item.family, item.neuron_type, item.neuron_id)))
         self.by_id = {record.neuron_id: record for record in self.records}
+        self.alternatives: dict[str, tuple[Path, ...]] = {}
+        self.issues: tuple[str, ...] = ()
+
+    @classmethod
+    def from_saved_inventory(cls, source, inventory):
+        """Use the exact same inventory/labels as Data Library, once per body."""
+        records, alternatives = [], {}
+        for neuron in inventory.neurons:
+            if neuron.server != source.server:
+                continue
+            paths = sorted(neuron.paths, key=lambda p: _candidate_rank(p, neuron.body_id))
+            pinned = source.swc_paths.get(neuron.body_id)
+            if pinned:
+                chosen = next((p for p in paths if str(p) == pinned), None)
+                if chosen is None:
+                    raise ValueError(f'Saved SWC path is unavailable for neuron {neuron.body_id}: {pinned}')
+            else:
+                chosen = paths[0]
+            records.append(NeuronRecord(neuron.body_id, neuron.family, neuron.neuron_type,
+                                        str(chosen), source.key))
+            alternatives[neuron.body_id] = tuple(paths)
+        catalog = cls(source, records)
+        catalog.alternatives, catalog.issues = alternatives, inventory.issues
+        return catalog
+
+    def verify_selection(self, records):
+        """Bound duplicate-content checks to requested neurons, not a whole corpus."""
+        for record in records:
+            if record.neuron_id in self.source.swc_paths:
+                continue
+            paths = self.alternatives.get(record.neuron_id, ())
+            if len(paths) < 2:
+                continue
+            rank = _candidate_rank(paths[0], record.neuron_id)[0]
+            peers = [p for p in paths if _candidate_rank(p, record.neuron_id)[0] == rank]
+            if len(peers) > 1 and len({_sha256(p) for p in peers}) > 1:
+                raise ValueError(f'Neuron {record.neuron_id} has different SWC copies at the same preference. '
+                                 'Choose its saved SWC copy before loading.')
 
     @classmethod
     def scan(cls, source: ConnectomeRef) -> "ConnectomeCatalog":
+        if source.server:
+            from .circuit_library import source_folders
+            from .saved_neurons import scan_saved_neurons
+            return cls.from_saved_inventory(source, scan_saved_neurons(source_folders(source), source.dataset))
         root = Path(source.root).expanduser().resolve()
         if not root.is_dir():
             raise FileNotFoundError(f"Connectome SWC root does not exist: {root}")

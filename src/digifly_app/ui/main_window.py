@@ -3112,6 +3112,8 @@ class MainWindow(QMainWindow):
         self.data_library_page.sources_changed.connect(
             self.circuit_builder_page.refresh_connectomes
         )
+        self.data_library_page.circuit_requested.connect(self._open_library_circuit)
+        self.circuit_builder_page.data_library_requested.connect(self._open_circuit_library)
         self.circuit_builder_page.managed_data_changed.connect(
             self.data_library_page.refresh
         )
@@ -3137,6 +3139,16 @@ class MainWindow(QMainWindow):
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
         self.show_page(0)
+
+    def _open_library_circuit(self, dataset):
+        self.circuit_builder_page.refresh_connectomes()
+        self.circuit_builder_page.select_library_release(dataset)
+        self.show_page(self.pages.indexOf(self.circuit_builder_page))
+
+    def _open_circuit_library(self, dataset):
+        if dataset:
+            self.data_library_page.open_connectome(dataset)
+        self.show_page(self.pages.indexOf(self.data_library_page))
 
     def _theme_toggled(self, use_light_theme: bool) -> None:
         self._apply_theme(LIGHT_THEME if use_light_theme else DARK_THEME)
@@ -3667,6 +3679,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("bmtk_python", self.overview_page.bmtk_python_edit.text())
         self.settings.setValue("netpyne_python", self.overview_page.netpyne_python_edit.text())
         self.data_library_page.neuron_browser.shutdown()
+        self.circuit_builder_page.shutdown()
         super().closeEvent(event)
 
 

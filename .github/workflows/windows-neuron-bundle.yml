@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261021.4
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261021.5
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           ./scripts/setup_dev.ps1
           if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
           if (Test-Path bundled_data/manc/unique_pairs_by_id.parquet) { $env:DIGIFLY_TEST_MANC_PARQUET = (Resolve-Path bundled_data/manc/unique_pairs_by_id.parquet).Path }
-          ./.venv/Scripts/python.exe -m pytest tests/test_saved_neurons.py tests/test_linked_libraries.py tests/test_linked_libraries_ui.py tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_ui_wording.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py tests/test_connectome_picker.py tests/test_updates.py tests/test_update_installer.py tests/test_update_cleanup.py tests/test_updater_gate.py tests/test_updater_ui.py tests/test_project.py --junitxml=neuron-source-tests.xml
+          ./.venv/Scripts/python.exe -m pytest tests/test_circuit_library.py tests/test_circuit_builder_ui.py tests/test_saved_neurons.py tests/test_linked_libraries.py tests/test_linked_libraries_ui.py tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_ui_wording.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py tests/test_connectome_picker.py tests/test_updates.py tests/test_update_installer.py tests/test_update_cleanup.py tests/test_updater_gate.py tests/test_updater_ui.py tests/test_project.py --junitxml=neuron-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }
           # Offscreen is only for inert unit tests. The real MainWindow has
           # QOpenGLWidgets and must use the native Windows platform plugin,

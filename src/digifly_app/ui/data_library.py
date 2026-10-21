@@ -182,6 +182,7 @@ class _LinkedCountWorker(QThread):
 class DataLibraryPage(QWidget):
     status_message = Signal(str)
     sources_changed = Signal()
+    circuit_requested = Signal(str)
     quality_review_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
@@ -303,6 +304,9 @@ class DataLibraryPage(QWidget):
         self.add_data_button = self._menu_button('Add data ▾', self.add_data_menu)
         row.addWidget(self.add_data_button)
         row.addStretch()
+        self.circuit_button = QPushButton('Use in Circuit Builder')
+        self.circuit_button.clicked.connect(lambda: self.circuit_requested.emit(self._display_dataset))
+        row.addWidget(self.circuit_button)
         action_layout.addLayout(row)
         hint = QLabel('Link keeps SWCs in their folder. Import asks you to confirm the destination dataset library.')
         hint.setObjectName('Muted')

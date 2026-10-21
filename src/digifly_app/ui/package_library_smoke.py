@@ -787,6 +787,69 @@ def run_library_smoke(destination: Path) -> int:
             family_browser_button_rows=True, family_browser_accessible_back=True,
             family_browser_plain_neuron_buttons=True, family_browser_widths=[1120, 1700],
             family_browser_fixture_counts=counts)
+        journal('circuit_library_bridge')
+        # Use actual page navigation and actual Load controls. No simulator or
+        # live downloader is involved in this tiny engineering-only fixture.
+        page.scroll.ensureWidgetVisible(page.circuit_button)
+        QTest.qWait(50)
+        QTest.mouseClick(page.circuit_button, Qt.MouseButton.LeftButton)
+        builder = window.circuit_builder_page
+        if window.pages.currentWidget() is not builder or builder._selected_source().dataset != 'manc:v1.2.1':
+            raise ValueError('Data Library did not hand its exact release to Circuit Builder')
+        wait_for(lambda: builder.saved_browser.inventory is not None,
+                 'Circuit saved SWC union did not finish indexing')
+        if {(n.server, n.body_id) for n in builder.saved_browser.inventory.neurons} != {
+                (n.server, n.body_id) for n in browser.inventory.neurons}:
+            raise ValueError('Circuit Builder and Data Library disagree on saved neurons')
+        if builder.more_options.is_expanded or not builder.connectome_combo.isHidden():
+            raise ValueError('Old source folder picker or dense options are still primary')
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            QTest.qWait(100)
+            widgets = (builder.family_combo, builder.release_combo, builder.library_button,
+                       builder.query_edit, builder.browse_button, builder.assemble_button)
+            boxes = [(w, w.mapTo(window, QPoint(0, 0)), w.size()) for w in widgets]
+            for w, point, size in boxes:
+                if point.x() < 0 or point.x() + size.width() > window.width():
+                    raise ValueError('Compact circuit control overflows the window: ' + str(w.objectName()))
+            window.grab().save(str(destination / f'circuit-library-compact-{width}.png'))
+        QTest.mouseClick(builder.browse_button, Qt.MouseButton.LeftButton)
+        cb = builder.saved_browser
+        QTest.mouseClick(cb.family_buttons['DN'], Qt.MouseButton.LeftButton)
+        QTest.mouseClick(cb.row_buttons[0], Qt.MouseButton.LeftButton)
+        QTest.mouseClick(cb.row_buttons[0], Qt.MouseButton.LeftButton)
+        builder.query_edit.clear()
+        QTest.mouseClick(cb.choose_neuron, Qt.MouseButton.LeftButton)
+        if not builder.query_edit.text() or builder.loaded_records:
+            raise ValueError('Saved-neuron selection must add a query without automatically loading')
+        QTest.mouseClick(builder.browse_button, Qt.MouseButton.LeftButton)
+        builder.query_edit.setText('DNp01, TTMn, PSI')
+        QTest.mouseClick(builder.assemble_button, Qt.MouseButton.LeftButton)
+        if set(builder.loaded_records) != {'42', '43', '45', '10000'}:
+            raise ValueError('Connectome union Load lost a linked or downloaded neuron: ' + builder.viewport_summary.text())
+        frozen = builder.circuit_spec().to_dict()
+        if set(frozen['connectome']['swc_paths']) != set(builder.loaded_records):
+            raise ValueError('The new circuit did not pin its selected physical SWCs')
+        from digifly_app.core.circuit import CircuitSpec
+        builder.set_circuit_spec(CircuitSpec.from_dict(frozen))
+        builder.load_saved_assets()
+        if set(builder.loaded_records) != {'42', '43', '45', '10000'}:
+            raise ValueError('Saved virtual-library circuit could not reopen its exact assets')
+        QTest.mouseClick(builder.library_button, Qt.MouseButton.LeftButton)
+        if window.pages.currentWidget() is not page or page._display_dataset != 'manc:v1.2.1':
+            raise ValueError('Circuit Builder did not return to its matching Data Library release')
+        builder.select_library_release('manc:v1.2.3')
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 builder.saved_browser.inventory.dataset == 'manc:v1.2.3', 'Empty circuit release did not finish')
+        if builder.saved_browser.inventory.neurons or builder.assemble_button.isEnabled() or builder.loaded_records:
+            raise ValueError('Circuit release switch retained stale neurons or enabled an empty load')
+        if profile_path.read_bytes() != before_browse:
+            raise ValueError('Circuit selection wrote the machine profile')
+        record.update(circuit_library_shared_choices=True, circuit_library_shared_inventory=True,
+            circuit_library_union_load=True, circuit_library_saved_paths=True,
+            circuit_library_inline_browse=True, circuit_library_exact_handoff=True,
+            circuit_library_release_isolation=True, circuit_library_compact_layout=True,
+            circuit_library_readonly=True, circuit_library_widths=[1120, 1700])
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],
@@ -804,6 +867,7 @@ def run_library_smoke(destination: Path) -> int:
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         if window is not None:
             window.data_library_page.neuron_browser.shutdown()
+            window.circuit_builder_page.shutdown()
             # An engineering test does not ask the human to save its fixture draft.
             window.deleteLater()
         if app is not None:
