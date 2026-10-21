@@ -65,6 +65,18 @@ class _OverviewStub:
         self.workspace_edit = QLineEdit(str(root))
 
 
+def _await_saved_inventory(page):
+    # New connectome-wide indexing is deliberately asynchronous; a disabled
+    # Load button cannot be bypassed by calling its slot in a unit fixture.
+    if page._selected_source().server:
+        for _ in range(300):
+            QApplication.processEvents()
+            if page.saved_browser.inventory is not None:
+                return
+            QTest.qWait(10)
+        raise AssertionError('Tiny saved-neuron fixture did not finish indexing')
+
+
 def test_chemical_kinetics_choice_roundtrips_explicit_source_precedence(tmp_path):
     application = QApplication.instance() or QApplication([])
     page = CircuitBuilderPage(_OverviewStub(tmp_path))
@@ -117,6 +129,7 @@ def test_official_disconnected_skeleton_preview_is_explicit_and_unchanged(tmp_pa
     page = CircuitBuilderPage(_OverviewStub(tmp_path))
     try:
         page.query_edit.setText("164190")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.viewport.neuron_count == 1 and page.viewport.segment_count == 2
         assert "disconnected skeleton(s): preview only; not simulation-ready" in page.viewport_summary.text()
@@ -141,6 +154,7 @@ def test_point_only_release_preview_is_explicit_on_load_and_restore(tmp_path):
     page = CircuitBuilderPage(_OverviewStub(tmp_path))
     try:
         page.query_edit.setText("179143")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.viewport.neuron_count == 1 and page.viewport.segment_count == 0
         assert "point-only skeleton(s): no released branches; not simulation-ready" in page.viewport_summary.text()
@@ -233,6 +247,7 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         assert page.soma_points_button.isChecked() is True
         assert page.full_skeletons_button.isChecked() is False
         page.query_edit.setText("10000")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.viewport.neuron_count == 1
         assert page.viewport.segment_count == 1
@@ -378,6 +393,7 @@ def test_missing_manc_type_uses_prefilled_neuprint_import_and_loads_result(
     page = CircuitBuilderPage(_OverviewStub(public))
     try:
         page.query_edit.setText("AN08B098")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.viewport.neuron_count == 0
         assert not page.download_missing_button.isHidden()
@@ -388,46 +404,18 @@ def test_missing_manc_type_uses_prefilled_neuprint_import_and_loads_result(
         assert selection.value == "AN08B098"
         assert expression == "AN08B098"
 
-        bundle = tmp_path / "workspace" / "data" / "neuprint-bundle"
-        swc_root = bundle / "source" / "export_swc"
-        swc = swc_root / "AN" / "AN08B098" / "16900" / "16900_neuprint_raw.swc"
+        incoming = tmp_path / 'completed-download'
+        swc = incoming / 'export_swc/AN/AN08B098/16900/16900_neuprint_raw.swc'
         swc.parent.mkdir(parents=True)
         swc.write_text(
             "1 1 0 0 0 1 -1\n2 2 1 0 0 0.5 1\n",
             encoding="utf-8",
         )
-        binding = ResourceBinding(
-            "an08b098",
-            ResourceKind.MORPHOLOGY_SOURCE,
-            str(swc_root),
-            AccessMode.READ_ONLY,
-            "AN08B098",
-            False,
-            {
-                "dataset": "manc:v1.2.1",
-                "connectome_key": "neuprint:manc:v1.2.1:an08b098",
-            },
-        )
-        ResourceProfile(
-            profile_id=profile.profile_id,
-            resources=(*profile.resources, binding),
-            label=profile.label,
-        ).save(profile_path, replace=True)
-        resource = ManagedResource(
-            "neuprint",
-            "an08b098",
-            "fixture",
-            bundle,
-            bundle / "digifly-resource.json",
-            1,
-            swc.stat().st_size,
-            1,
-            "2026-08-31T00:00:00Z",
-            "an08b098",
-        )
-        # A completed acquisition always has its provenance manifest. Keep
-        # this legacy per-search fixture complete before exercising reopen.
-        resource.manifest.write_text('{"provider": "neuprint"}\n', encoding="utf-8")
+        from digifly_app.core.data_library import import_local_source
+        resource = import_local_source(profile, incoming, provider='neuprint',
+            resource_id='an08b098', source_version='fixture', dataset='manc:v1.2.1',
+            profile_path=profile_path)
+        swc_root = resource.root / 'source/export_swc'
         dialog_args: dict[str, object] = {}
 
         class _ImportedDialog(QDialog):
@@ -450,12 +438,14 @@ def test_missing_manc_type_uses_prefilled_neuprint_import_and_loads_result(
         monkeypatch.setattr(page, "review_recent_imports", lambda: reviews.append(True))
         page.managed_data_changed.connect(lambda: changes.append(True))
         page.open_missing_neuprint_import()
+        _await_saved_inventory(page)
 
         assert dialog_args["preferred_dataset"] == "manc:v1.2.1"
         assert dialog_args["initial_selection"] == selection
         assert page.viewport.neuron_count == 1
         assert page.circuit_spec().neuron_ids == ("16900",)
-        assert Path(page._selected_source().root).resolve() == swc_root.resolve()
+        assert Path(page.loaded_records['16900'].swc_path).is_relative_to(swc_root.resolve())
+        assert page._selected_source().key == 'library:manc:v1.2.1'
         assert page.download_missing_button.isHidden()
         assert reviews == [True]
         assert changes == [True]
@@ -499,6 +489,7 @@ def test_matching_machine_profile_prefers_legacy_full_manc_source(tmp_path, monk
         page.connectome_combo.setCurrentIndex(page.connectome_combo.findData('male-cns:v0.9'))
         assert Path(page._selected_source().root) == legacy.resolve()
         page.query_edit.setText("DNp01")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.circuit_spec().neuron_ids == ("10001",)
         assert page.viewport.neuron_count == 1
@@ -598,6 +589,7 @@ def test_two_neuron_pair_panel_tracks_recency_overrides_and_edge_evidence(tmp_pa
     page = CircuitBuilderPage(_OverviewStub(public))
     try:
         page.query_edit.setText("100, 200, 300, 400")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         assert page.viewport.neuron_count == 4
         assert page.pair_panel.isHidden()
@@ -721,6 +713,7 @@ def test_mixed_segment_design_requires_a_deliberate_edit_before_replacement(tmp_
     page = CircuitBuilderPage(_OverviewStub(tmp_path))
     try:
         page.query_edit.setText("10000")
+        _await_saved_inventory(page)
         page.assemble_circuit()
         page.viewport.focus_neuron("10000")
         page.spec.apply_compartment_override(

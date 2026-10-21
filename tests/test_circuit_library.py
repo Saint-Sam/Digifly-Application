@@ -106,9 +106,30 @@ def test_compact_controls_use_shared_inventory_and_browse_without_loading(tmp_pa
         assert set(page.loaded_records) == {'1', '2'}, page.viewport_summary.text()
         saved = CircuitSpec.from_dict(page.circuit_spec().to_dict())
         assert saved.connectome.swc_paths == {k: r.swc_path for k, r in page.loaded_records.items()}
+        # A subsequent query must reuse the worker's inventory, not recursively
+        # scan a whole connectome on the UI thread after paths are pinned.
+        monkeypatch.setattr(ConnectomeCatalog, 'scan', lambda *a, **k: pytest.fail('UI performed a recursive scan'))
+        page.query_edit.setText('TTMn')
+        page.assemble_circuit()
+        assert set(page.loaded_records) == {'2'}
         page.set_circuit_spec(saved)
         page.load_saved_assets()
         assert set(page.loaded_records) == {'1', '2'}
+        # A refresh invalidates pending choices; a delayed old action must not
+        # select another connectome after the list has been rebuilt.
+        page._open_inline_choices(page.family_combo, 'connectome')
+        stale = page.choice_buttons[1]
+        source_key = page._selected_source().key
+        page.refresh_connectomes()
+        stale.clicked.emit()
+        assert page._selected_source().key == source_key
+        # An explicit same-release choice leaves a legacy single-root view
+        # and selects the combined library, rather than doing nothing.
+        page.connectome_combo.setCurrentIndex(page.connectome_combo.findData('male-cns:v0.9'))
+        assert not page._selected_source().server
+        page._open_inline_choices(page.release_combo, 'release')
+        page.choice_buttons[page.release_combo.currentIndex()].click()
+        assert page._selected_source().server
         # A new release never reloads the previous cell set by accident.
         page.select_library_release('male-cns:v1.0')
         assert not page.loaded_records and not page.assemble_button.isEnabled()

@@ -282,6 +282,7 @@ class CircuitBuilderPage(QWidget):
         self._missing_neuprint_request: tuple[
             str, NeuPrintSelection, str
         ] | None = None
+        self._assemble_after_inventory = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 22, 28, 24)
@@ -1000,6 +1001,8 @@ class CircuitBuilderPage(QWidget):
         self.status_message.emit(f"Selected {profile_name} as the design target")
 
     def refresh_connectomes(self) -> None:
+        self.choice_panel.hide()
+        self._choice_generation += 1
         self._catalog_cache.clear()
         previous_source = self._selected_source()
         try:
@@ -1160,7 +1163,14 @@ class CircuitBuilderPage(QWidget):
             return
         self.choice_panel.hide()
         self._choice_generation += 1
+        unchanged = combo.currentIndex() == index
         combo.setCurrentIndex(index)
+        # A restored legacy project can display this release while retaining
+        # its exact old root. Explicitly choosing it opts into the shared view.
+        if unchanged and combo is self.release_combo:
+            self._release_changed()
+        elif unchanged and combo is self.family_combo:
+            self._family_changed()
 
     def _family_changed(self):
         key = self.family_combo.currentData()
@@ -1184,6 +1194,7 @@ class CircuitBuilderPage(QWidget):
             self.connectome_combo.setCurrentIndex(index)
 
     def _source_changed(self):
+        self._assemble_after_inventory = None
         self.choice_panel.hide()
         self._choice_generation += 1
         self._selection_controls_changed()
@@ -1227,6 +1238,10 @@ class CircuitBuilderPage(QWidget):
         if not count:
             self._missing_neuprint_request = None
             self.source_summary.setText(self.source_summary.text() + ' · Use Data Library to add or download SWCs.')
+        pending = self._assemble_after_inventory
+        if pending == (source.key, self.query_edit.text(), self.saved_browser.generation):
+            self._assemble_after_inventory = None
+            self.assemble_circuit()
 
     def _add_browsed_neuron(self, body):
         tokens = [s.strip() for s in re.split(r'[,;\n]+', self.query_edit.text()) if s.strip()]
@@ -1345,7 +1360,7 @@ class CircuitBuilderPage(QWidget):
         self._clear_missing_neuprint_request()
         self._update_pair_graph_note()
         if self.spec.neuron_ids or self.loaded_morphologies:
-            self._clear_loaded_assets("Cell-set controls changed · click Load cell set")
+            self._clear_loaded_assets("Selection changed · click Load neurons")
             self.status_message.emit("Cell-set controls changed; reload morphologies before saving")
 
     def _clear_loaded_assets(self, summary: str = "No morphology loaded") -> None:
@@ -1417,7 +1432,28 @@ class CircuitBuilderPage(QWidget):
         cache_key = self._catalog_key(source)
         catalog = self._catalog_cache.get(cache_key)
         if catalog is None:
-            catalog = ConnectomeCatalog.scan(source)
+            if source.server:
+                inventory = self.saved_browser.inventory
+                if inventory is not None and inventory.dataset == source.dataset:
+                    catalog = ConnectomeCatalog.from_saved_inventory(source, inventory)
+                elif source.swc_paths:
+                    # Reopen only the bounded, exact saved files while the
+                    # full read-only inventory continues in its worker.
+                    from digifly_app.core.saved_neurons import _labels
+                    folders = source_folders(source)
+                    records = []
+                    for body, raw_path in source.swc_paths.items():
+                        path = Path(raw_path).expanduser()
+                        root = next((f.root.resolve() for f in folders if path.is_relative_to(f.root.resolve())), None)
+                        if root is None or not path.is_file() or any(p.is_symlink() for p in (path, *path.parents)):
+                            raise ValueError(f'Saved SWC file is unavailable or outside its saved location: {path}')
+                        family, label = _labels(path, root, body)
+                        records.append(NeuronRecord(body, family, label, str(path), source.key))
+                    catalog = ConnectomeCatalog(source, records)
+                else:
+                    raise ValueError('Saved neurons are still being indexed. Wait for the saved-neuron count, or refresh after a cancelled scan.')
+            else:
+                catalog = ConnectomeCatalog.scan(source)
             self._catalog_cache[cache_key] = catalog
         return catalog
 
@@ -1464,7 +1500,7 @@ class CircuitBuilderPage(QWidget):
             (
                 index
                 for index, source in enumerate(self._sources)
-                if Path(source.root).expanduser().resolve() == target_root
+                if source.key == f'library:{dataset}'
             ),
             -1,
         )
@@ -1482,14 +1518,21 @@ class CircuitBuilderPage(QWidget):
         finally:
             self._restoring_controls = False
         self._clear_missing_neuprint_request()
-        self.assemble_circuit()
         self.managed_data_changed.emit()
         self.review_recent_imports()
+        # This is the existing explicit Get missing SWCs workflow, not an
+        # automatic load on release changes. Wait for its combined inventory.
+        self._assemble_after_inventory = (self._selected_source().key, expression, self.saved_browser.generation)
+        if self.saved_browser.inventory is not None:
+            self._inventory_ready()
 
     def assemble_circuit(self) -> None:
         source = self._selected_source()
         if source is None:
             self.status_message.emit("Choose an available SWC morphology source first")
+            return
+        if source.server and self.saved_browser.inventory is None:
+            self.status_message.emit('Saved neurons are still being indexed. Wait for the count or refresh a cancelled scan.')
             return
         expression = self.query_edit.text().strip()
         self._clear_missing_neuprint_request()
@@ -1704,7 +1747,11 @@ class CircuitBuilderPage(QWidget):
             self._clear_loaded_assets(f"Cell-set load failed: {exc}")
             self.status_message.emit(self.viewport_summary.text())
         finally:
-            self.assemble_button.setEnabled(bool(self._sources))
+            selected = self._selected_source()
+            inventory = self.saved_browser.inventory
+            self.assemble_button.setEnabled(bool(selected and (not selected.server or
+                (inventory is not None and inventory.dataset == selected.dataset and
+                 any(n.server == selected.server for n in inventory.neurons)))))
 
     def _populate_table(self, morphologies: list[Morphology]) -> None:
         # Keep existing cell objects alive on a same-size refresh. Replacing
@@ -2052,7 +2099,7 @@ class CircuitBuilderPage(QWidget):
             )
         elif self.viewport.display_mode == DISPLAY_MODE_SOMA_POINTS:
             if self.viewport.neuron_count == 0:
-                selection_state = "Soma points (default): load a cell set to begin."
+                selection_state = "Soma points: load neurons to begin."
             elif self.viewport.isolated and neuron_id is not None:
                 location = self.viewport.soma_location(neuron_id)
                 marker = "pseudosoma" if location and location.is_pseudosoma else "soma"
@@ -2077,7 +2124,7 @@ class CircuitBuilderPage(QWidget):
                     "switch to Full skeletons for compartment editing."
                 )
         elif self.viewport.neuron_count == 0:
-            selection_state = "Selection: load a cell set to begin."
+            selection_state = "Selection: load neurons to begin."
         elif self.viewport.isolated and neuron_id is not None:
             selection_state = (
                 f"Selection: neuron {neuron_id} isolated · {selected_count} compartment(s) "
