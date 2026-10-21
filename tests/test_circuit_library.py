@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication, QLineEdit, QInputDialog
 from PySide6.QtTest import QTest
+from PySide6.QtCore import QPoint
 from digifly_app.core.circuit import ConnectomeRef, CircuitSpec
 from digifly_app.core.circuit_library import library_sources, source_folders
 from digifly_app.core.connectomes import ConnectomeCatalog
@@ -124,6 +125,25 @@ def test_compact_controls_use_shared_inventory_and_browse_without_loading(tmp_pa
         boxes = [b.geometry() for b in browser.family_buttons.values()]
         assert all(browser.stack.currentWidget().rect().contains(r) for r in boxes)
         assert all(not a.intersects(b) for i, a in enumerate(boxes) for b in boxes[i+1:])
+        # Each inline chooser belongs immediately below its own control row.
+        # In particular Simulator must not reuse the Connectome position.
+        for width in (1120, 1700):
+            page.resize(width, 900)
+            for button, combo, kind, following in (
+                    (page.engine_button, page.engine_combo, 'simulator', browser),
+                    (page.family_button, page.family_combo, 'connectome', page.source_summary),
+                    (page.engine_button, page.engine_combo, 'simulator', browser),
+                    (page.release_button, page.release_combo, 'release', page.source_summary)):
+                button.click()
+                app.processEvents()
+                panel = page.choice_panel
+                top = panel.mapTo(page, QPoint(0, 0)).y()
+                assert panel.isVisible()
+                assert top >= button.mapTo(page, QPoint(0, button.height())).y()
+                assert top + panel.height() <= following.mapTo(page, QPoint(0, 0)).y()
+                assert all(panel.rect().contains(b.geometry()) for b in page.choice_buttons)
+            page.choice_buttons[-1].click()
+            assert page.choice_panel.isHidden()
         browser.family_buttons['DN'].click()
         browser.row_buttons[0].click()
         browser.row_buttons[0].click()

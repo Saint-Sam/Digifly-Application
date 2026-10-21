@@ -335,13 +335,17 @@ class CircuitBuilderPage(QWidget):
             canonical_dataset(self._selected_source().dataset) if self._selected_source() else ''))
         top.addWidget(self.library_button)
         controls_layout.addLayout(top)
+        self._source_choice_slot = QVBoxLayout()
+        self._source_choice_slot.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addLayout(self._source_choice_slot)
         self.choice_panel = QWidget()
         self.choice_grid = QGridLayout(self.choice_panel)
         self.choice_grid.setContentsMargins(0, 4, 0, 4)
         self.choice_buttons = []
         self._choice_generation = 0
         self.choice_panel.hide()
-        controls_layout.addWidget(self.choice_panel)
+        self._source_choice_slot.addWidget(self.choice_panel)
+        self._active_choice_slot = self._source_choice_slot
         self.source_summary = QLabel()
         self.source_summary.setObjectName('Muted')
         self.source_summary.setWordWrap(True)
@@ -424,6 +428,9 @@ class CircuitBuilderPage(QWidget):
         query_row.addWidget(self.download_missing_button)
         controls_layout.addLayout(query_row)
         controls_layout.addLayout(simulator_row)
+        self._simulator_choice_slot = QVBoxLayout()
+        self._simulator_choice_slot.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addLayout(self._simulator_choice_slot)
         self.saved_browser = SavedNeuronBrowser(self)
         self.saved_browser.choose_neuron.show()
         self.saved_browser.hide()
@@ -1152,6 +1159,13 @@ class CircuitBuilderPage(QWidget):
         self.release_button.setAccessibleName('Release: ' + self.release_combo.currentText())
 
     def _open_inline_choices(self, combo, kind):
+        # Keep one set of ordinary accessible choice buttons, but anchor it
+        # beneath the control that opened it rather than always at the top.
+        slot = self._simulator_choice_slot if combo is self.engine_combo else self._source_choice_slot
+        if slot is not self._active_choice_slot:
+            self._active_choice_slot.removeWidget(self.choice_panel)
+            slot.addWidget(self.choice_panel)
+            self._active_choice_slot = slot
         self._choice_generation += 1
         generation = self._choice_generation
         for button in self.choice_buttons:

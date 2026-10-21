@@ -888,6 +888,34 @@ def run_library_smoke(destination: Path) -> int:
         if profile_path.read_bytes() != before_browse:
             raise ValueError('Circuit selection wrote the machine profile')
         window.pages.setCurrentWidget(builder)
+        chooser_positions = []
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            builder.page_scroll.verticalScrollBar().setValue(0)
+            for kind, control, following in (
+                    ('simulator', builder.engine_button, builder.more_options),
+                    ('connectome', builder.family_button, builder.source_summary),
+                    ('simulator', builder.engine_button, builder.more_options),
+                    ('release', builder.release_button, builder.source_summary)):
+                builder.page_scroll.ensureWidgetVisible(control)
+                QTest.mouseClick(control, Qt.MouseButton.LeftButton)
+                QTest.qWait(50)
+                panel = builder.choice_panel
+                top = panel.mapTo(window, QPoint(0, 0)).y()
+                control_bottom = control.mapTo(window, QPoint(0, control.height())).y()
+                following_top = following.mapTo(window, QPoint(0, 0)).y()
+                if (not panel.isVisible() or top < control_bottom or
+                        top + panel.height() > following_top or
+                        any(not panel.rect().contains(b.geometry()) for b in builder.choice_buttons)):
+                    raise ValueError(f'{kind} choices are not contained below their own control at width{width}')
+                chooser_positions.append(dict(width=width, kind=kind,
+                    control_bottom=control_bottom, panel_top=top,
+                    panel_bottom=top + panel.height(), following_top=following_top))
+                window.grab().save(str(destination / f'circuit-library-{kind}-choices-{width}.png'))
+            QTest.mouseClick(builder.choice_buttons[-1], Qt.MouseButton.LeftButton)
+            if builder.choice_panel.isVisible():
+                raise ValueError('Close choices did not hide the moved panel')
+        record.update(circuit_library_chooser_anchors=True, circuit_library_chooser_positions=chooser_positions)
         QTest.mouseClick(builder.family_button, Qt.MouseButton.LeftButton)
         if not builder.choice_panel.isVisible() or len(builder.choice_buttons) != 7:
             raise ValueError('Compact connectome control does not open inline ordinary choices')
