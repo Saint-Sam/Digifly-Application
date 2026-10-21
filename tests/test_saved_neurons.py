@@ -134,7 +134,7 @@ def test_browser_real_clicks_counts_types_ids_paging_stale_and_cancel(tmp_path, 
         QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
         assert browser.row_values[0][0] == 'DNp01'
         stale = browser.row_buttons[0]
-        from PySide6.QtGui import QAccessible
+        from PySide6.QtGui import QAccessible, QAccessibleActionInterface
         from PySide6.QtWidgets import QTableWidget
         assert not browser.findChildren(QTableWidget)
         assert QAccessible.queryAccessibleInterface(stale).text(QAccessible.Text.Name).startswith('Open type DNp01')
@@ -143,6 +143,10 @@ def test_browser_real_clicks_counts_types_ids_paging_stale_and_cancel(tmp_path, 
         stale.click()
         assert browser._selected_row == before  # retired row cannot target a new neuron
         assert len(browser.row_buttons) == 200 and browser.next.isEnabled()
+        assert all(not b.isCheckable() for b in browser.row_buttons)
+        QAccessible.queryAccessibleInterface(browser.row_buttons[0]).actionInterface().doAction(QAccessibleActionInterface.pressAction())
+        wait(lambda: browser.open_folder.isEnabled())
+        assert browser._selected_row == 0
         browser.next.click()
         assert len(browser.row_buttons) == 4 and browser.row_values[0][0] == '201'
         browser.search.setText('204')

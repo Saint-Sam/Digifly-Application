@@ -279,13 +279,16 @@ class SavedNeuronBrowser(Card):
         self.row_values = tuple((row[0], row[1]) for row in rows[start:start + self.PAGE_SIZE])
         generation = self._row_generation
         for i, row in enumerate(rows[start:start + self.PAGE_SIZE]):
-            suffix = f'{row[1]} SWC copies' if self._selected_type else f'{row[1].replace("  ›", "")} neurons  ›'
+            suffix = (f'{row[1]} saved SWC' + ('' if row[1] == '1' else 's') if self._selected_type else
+                      f'{row[1].replace("  ›", "")} saved ' + ('neuron' if row[1] == '1  ›' else 'neurons') + '  ›')
             button = QPushButton(f'{row[0]}   ·   {suffix}')
             button.setAccessibleName(f'Neuron {row[0]}, {row[1]} saved SWC copies' if self._selected_type else
                                      f'Open type {row[0]}, {row[1].replace("  ›", "")} saved neurons')
             button.setStyleSheet('text-align: left;')
             button.setMinimumHeight(36)
-            button.setCheckable(bool(self._selected_type))
+            # Ordinary push buttons emit the same activation for a mouse,
+            # keyboard and native accessibility; checkboxes may only toggle.
+            button.setCheckable(False)
             if self._selected_type:
                 button.setToolTip(row[2].server + '\n' + '\n'.join(map(str, row[2].paths)))
             button.clicked.connect(lambda checked=False, index=i, expected=generation: self._activate(index, expected))
@@ -308,8 +311,6 @@ class SavedNeuronBrowser(Card):
         else:
             neuron = self._rows[row]
             self._selected_row = row
-            for index, button in enumerate(self.row_buttons):
-                button.setChecked(index == row)
             self.location.setText(neuron.server + '\n' + '\n'.join(map(str, neuron.paths)))
             self.open_folder.setEnabled(True)
 

@@ -721,6 +721,8 @@ def run_library_smoke(destination: Path) -> int:
         if {row[0] for row in browser.row_values} != {'42', '10000'}:
             raise ValueError('Type click did not open its saved neurons')
         row = next(i for i, value in enumerate(browser.row_values) if value[0] == '42')
+        if any(button.isCheckable() for button in browser.row_buttons):
+            raise ValueError('Saved neuron rows must activate, not merely toggle a checkbox')
         QTest.mouseClick(browser.row_buttons[row], Qt.MouseButton.LeftButton)
         if not browser.open_folder.isEnabled() or '42' not in browser.location.text():
             raise ValueError('Saved-neuron location is unavailable')
@@ -782,7 +784,8 @@ def run_library_smoke(destination: Path) -> int:
             family_browser_drilldown=True, family_browser_release_isolation=True,
             family_browser_readonly=True, family_browser_legacy_variants=True,
             family_browser_default_folders=True, family_browser_pending_labels_cleared=True,
-            family_browser_button_rows=True, family_browser_accessible_back=True, family_browser_widths=[1120, 1700],
+            family_browser_button_rows=True, family_browser_accessible_back=True,
+            family_browser_plain_neuron_buttons=True, family_browser_widths=[1120, 1700],
             family_browser_fixture_counts=counts)
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
