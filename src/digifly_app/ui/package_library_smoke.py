@@ -99,6 +99,7 @@ def run_library_smoke(destination: Path) -> int:
         page = window.data_library_page
         # Test direct entry before the chooser is initialized, then with a
         # remembered different family. Card-first checks missed this failure.
+        window.circuit_builder_page.select_library_release('manc:v1.2.1')
         window.pages.setCurrentWidget(window.circuit_builder_page)
         QTest.qWait(100)
         QTest.mouseClick(window.circuit_builder_page.library_button, Qt.MouseButton.LeftButton)
