@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from collections import Counter
 import threading
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                              QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView, QSizePolicy)
+                              QStackedWidget, QScrollArea, QVBoxLayout, QWidget, QSizePolicy)
 
 from digifly_app.core.saved_neurons import SavedInventory, scan_saved_neurons
 from digifly_app.core.swc_library import FAMILIES
@@ -56,6 +55,10 @@ class SavedNeuronBrowser(Card):
         self._selected_family = self._selected_type = ''
         self._page = 0
         self._rows = ()
+        self.row_buttons = []
+        self.row_values = ()
+        self._row_generation = 0
+        self._selected_row = -1
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         heading = QHBoxLayout()
@@ -103,18 +106,21 @@ class SavedNeuronBrowser(Card):
         self.search.setPlaceholderText('Filter types…')
         self.search.textChanged.connect(self._filter_changed)
         detail.addWidget(self.search)
-        self.table = QTableWidget(0, 2)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.setColumnWidth(1, 140)
-        self.table.setMinimumHeight(180)
-        self.table.setMaximumHeight(320)
-        self.table.cellClicked.connect(self._activate)
-        self.table.cellActivated.connect(self._activate)
-        detail.addWidget(self.table)
+        self.rows_heading = QLabel('Neuron types')
+        detail.addWidget(self.rows_heading)
+        # Ordinary buttons avoid Cocoa's mutable table-cell accessibility
+        # cache (actual21.2 crash retained in the local repair evidence).
+        # Paginate so even a full connectome creates at most200 row widgets.
+        self.row_list = QScrollArea()
+        self.row_list.setWidgetResizable(True)
+        self.row_list.setMinimumHeight(180)
+        self.row_list.setMaximumHeight(320)
+        self.row_host = QWidget()
+        self.row_layout = QVBoxLayout(self.row_host)
+        self.row_layout.setContentsMargins(4, 4, 4, 4)
+        self.row_layout.setSpacing(4)
+        self.row_list.setWidget(self.row_host)
+        detail.addWidget(self.row_list)
         self.location = QLabel()
         self.location.setWordWrap(True)
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -140,7 +146,7 @@ class SavedNeuronBrowser(Card):
         self.inventory = None
         self._selected_family = self._selected_type = ''
         self.stack.setCurrentIndex(0)
-        self.table.setRowCount(0)
+        self._clear_rows()
         self.location.clear()
         self.open_folder.setEnabled(False)
         for family, button in self.family_buttons.items():
@@ -232,6 +238,19 @@ class SavedNeuronBrowser(Card):
         self._page = max(0, self._page + delta)
         self._render()
 
+    def _clear_rows(self):
+        self._row_generation += 1
+        self._rows, self.row_values = (), ()
+        self._selected_row = -1
+        self.row_buttons = []
+        while self.row_layout.count():
+            item = self.row_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+
     def _render(self):
         if self.inventory is None:
             return
@@ -244,31 +263,42 @@ class SavedNeuronBrowser(Card):
             values = tuple(n for n in values if n.neuron_type == self._selected_type and
                            (not query or query in n.body_id or query in n.server.casefold()))
             rows = [(n.body_id, str(len(n.paths)), n) for n in values]
-            self.table.setHorizontalHeaderLabels(('Neuron ID', 'Saved SWC copies'))
+            self.rows_heading.setText('Neuron IDs · saved SWC copies')
             self.back.setText('← Types')
         else:
             counts = Counter(n.neuron_type for n in values)
             rows = [(label, f'{count:,}  ›', label) for label, count in sorted(counts.items(), key=lambda v: v[0].casefold())
                     if not query or query in label.casefold()]
-            self.table.setHorizontalHeaderLabels(('Neuron type · click to open', 'Saved neurons'))
+            self.rows_heading.setText('Neuron types · saved neurons')
             self.back.setText('← Families')
         self.breadcrumb.setText(self._selected_family + (f' / {self._selected_type}' if self._selected_type else ''))
         self._page = min(self._page, max(0, (len(rows) - 1) // self.PAGE_SIZE))
         start = self._page * self.PAGE_SIZE
+        self._clear_rows()
         self._rows = tuple(row[2] for row in rows[start:start + self.PAGE_SIZE])
-        self.table.setRowCount(len(self._rows))
+        self.row_values = tuple((row[0], row[1]) for row in rows[start:start + self.PAGE_SIZE])
+        generation = self._row_generation
         for i, row in enumerate(rows[start:start + self.PAGE_SIZE]):
-            for column in (0, 1):
-                item = QTableWidgetItem(row[column])
-                if self._selected_type:
-                    item.setToolTip(row[2].server + '\n' + '\n'.join(map(str, row[2].paths)))
-                self.table.setItem(i, column, item)
+            suffix = f'{row[1]} SWC copies' if self._selected_type else f'{row[1].replace("  ›", "")} neurons  ›'
+            button = QPushButton(f'{row[0]}   ·   {suffix}')
+            button.setAccessibleName(f'Neuron {row[0]}, {row[1]} saved SWC copies' if self._selected_type else
+                                     f'Open type {row[0]}, {row[1].replace("  ›", "")} saved neurons')
+            button.setStyleSheet('text-align: left;')
+            button.setMinimumHeight(36)
+            button.setCheckable(bool(self._selected_type))
+            if self._selected_type:
+                button.setToolTip(row[2].server + '\n' + '\n'.join(map(str, row[2].paths)))
+            button.clicked.connect(lambda checked=False, index=i, expected=generation: self._activate(index, expected))
+            self.row_buttons.append(button)
+            self.row_layout.addWidget(button)
+        self.row_layout.addStretch()
+        self.row_list.verticalScrollBar().setValue(0)
         self.page_label.setText(f'{start + 1 if rows else 0}–{min(start + self.PAGE_SIZE, len(rows))} of {len(rows):,}' if rows else 'No saved neurons here yet')
         self.previous.setEnabled(self._page > 0)
         self.next.setEnabled(start + self.PAGE_SIZE < len(rows))
 
-    def _activate(self, row, column):
-        if self.inventory is None or not 0 <= row < len(self._rows):
+    def _activate(self, row, generation):
+        if generation != self._row_generation or self.inventory is None or not 0 <= row < len(self._rows):
             return
         if not self._selected_type:
             self._selected_type = self._rows[row]
@@ -277,11 +307,14 @@ class SavedNeuronBrowser(Card):
             self._filter_changed()
         else:
             neuron = self._rows[row]
+            self._selected_row = row
+            for index, button in enumerate(self.row_buttons):
+                button.setChecked(index == row)
             self.location.setText(neuron.server + '\n' + '\n'.join(map(str, neuron.paths)))
             self.open_folder.setEnabled(True)
 
     def _open_folder(self):
-        row = self.table.currentRow()
+        row = self._selected_row
         if not self._selected_type or self.inventory is None or not 0 <= row < len(self._rows):
             return
         # Recheck existence: no fallback to another release or managed root.

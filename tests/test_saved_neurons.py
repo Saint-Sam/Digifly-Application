@@ -132,19 +132,26 @@ def test_browser_real_clicks_counts_types_ids_paging_stale_and_cancel(tmp_path, 
         assert '204' in browser.family_buttons['DN'].text()
         assert all(not button.isCheckable() for button in browser.family_buttons.values())
         QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
-        assert browser.table.item(0, 0).text() == 'DNp01'
-        QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton,
-                         pos=browser.table.visualItemRect(browser.table.item(0, 0)).center())
-        assert browser.table.rowCount() == 200 and browser.next.isEnabled()
+        assert browser.row_values[0][0] == 'DNp01'
+        stale = browser.row_buttons[0]
+        from PySide6.QtGui import QAccessible
+        from PySide6.QtWidgets import QTableWidget
+        assert not browser.findChildren(QTableWidget)
+        assert QAccessible.queryAccessibleInterface(stale).text(QAccessible.Text.Name).startswith('Open type DNp01')
+        QTest.mouseClick(browser.row_buttons[0], Qt.MouseButton.LeftButton)
+        before = browser._selected_row
+        stale.click()
+        assert browser._selected_row == before  # retired row cannot target a new neuron
+        assert len(browser.row_buttons) == 200 and browser.next.isEnabled()
         browser.next.click()
-        assert browser.table.rowCount() == 4 and browser.table.item(0, 0).text() == '201'
+        assert len(browser.row_buttons) == 4 and browser.row_values[0][0] == '201'
         browser.search.setText('204')
-        assert browser.table.rowCount() == 1 and not browser.next.isEnabled()
+        assert len(browser.row_buttons) == 1 and not browser.next.isEnabled()
         browser.back.click()
         browser.back.click()
         assert browser.stack.currentIndex() == 0
         QTest.mouseClick(browser.family_buttons['AN'], Qt.MouseButton.LeftButton)
-        assert browser.table.rowCount() == 0
+        assert len(browser.row_buttons) == 0
         old = browser.inventory
         generation = browser.generation
         browser.load((), 'male-cns:v1.0')

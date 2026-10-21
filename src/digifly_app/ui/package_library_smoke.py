@@ -715,15 +715,13 @@ def run_library_smoke(destination: Path) -> int:
                 raise ValueError('Hidden type/ID pages stretched the compact family folder grid')
             window.grab().save(str(destination / f'family-folders-{width}.png'))
         QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
-        if browser.table.item(0, 0).text() != 'DNp01' or browser.table.item(0, 1).text() != '2  ›':
+        if browser.row_values[0] != ('DNp01', '2  ›'):
             raise ValueError('Family click did not open the saved neuron types')
-        QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton,
-            pos=browser.table.visualItemRect(browser.table.item(0, 0)).center())
-        if {browser.table.item(row, 0).text() for row in range(browser.table.rowCount())} != {'42', '10000'}:
+        QTest.mouseClick(browser.row_buttons[0], Qt.MouseButton.LeftButton)
+        if {row[0] for row in browser.row_values} != {'42', '10000'}:
             raise ValueError('Type click did not open its saved neurons')
-        row = next(i for i in range(browser.table.rowCount()) if browser.table.item(i, 0).text() == '42')
-        QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton,
-            pos=browser.table.visualItemRect(browser.table.item(row, 0)).center())
+        row = next(i for i, value in enumerate(browser.row_values) if value[0] == '42')
+        QTest.mouseClick(browser.row_buttons[row], Qt.MouseButton.LeftButton)
         if not browser.open_folder.isEnabled() or '42' not in browser.location.text():
             raise ValueError('Saved-neuron location is unavailable')
         original_open_url = QDesktopServices.openUrl
@@ -735,13 +733,28 @@ def run_library_smoke(destination: Path) -> int:
             QDesktopServices.openUrl = original_open_url
         if opened != [str(next(n for n in expected_dn if n.body_id == '42').paths[0].parent)]:
             raise ValueError('Saved-neuron folder control targeted another neuron')
-        page.scroll.ensureWidgetVisible(browser.table)
+        page.scroll.ensureWidgetVisible(browser.row_list)
         QTest.qWait(80)
         window.grab().save(str(destination / 'family-neurons.png'))
         QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
         QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
+        from PySide6.QtGui import QAccessible
+        from PySide6.QtWidgets import QTableWidget
+        if browser.findChildren(QTableWidget):
+            raise ValueError('Saved browser retained the mutable accessibility table')
+        for repeat in range(3):
+            QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
+            accessible = QAccessible.queryAccessibleInterface(browser.row_buttons[0])
+            if not accessible.text(QAccessible.Text.Name).startswith('Open type DNp01'):
+                raise ValueError('Saved type row has no usable accessible button identity')
+            QTest.mouseClick(browser.row_buttons[0], Qt.MouseButton.LeftButton)
+            accessible = QAccessible.queryAccessibleInterface(browser.row_buttons[0])
+            if not accessible.text(QAccessible.Text.Name).startswith('Neuron '):
+                raise ValueError('Saved neuron row has no accessible button identity')
+            QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
+            QTest.mouseClick(browser.back, Qt.MouseButton.LeftButton)
         QTest.mouseClick(browser.family_buttons['AN'], Qt.MouseButton.LeftButton)
-        if browser.table.rowCount() != 1 or browser.table.item(0, 0).text() != 'AN-example':
+        if len(browser.row_buttons) != 1 or browser.row_values[0][0] != 'AN-example':
             raise ValueError('Back/family navigation did not restore the right types')
         choose_release('male-cns:v1.0')
         counted('male-cns:v1.0')
@@ -758,7 +771,7 @@ def run_library_smoke(destination: Path) -> int:
         if browser.inventory.neurons or browser.stack.currentIndex() != 0 or browser.open_folder.isEnabled():
             raise ValueError('Late saved-neuron results or actions leaked across a release switch')
         QTest.mouseClick(browser.family_buttons['DN'], Qt.MouseButton.LeftButton)
-        if browser.table.rowCount() or 'No saved' not in browser.page_label.text():
+        if browser.row_buttons or 'No saved' not in browser.page_label.text():
             raise ValueError('An empty family cannot be browsed honestly')
         window.grab().save(str(destination / 'family-empty-release.png'))
         choose_release('manc:v1.2.1')
@@ -768,7 +781,8 @@ def run_library_smoke(destination: Path) -> int:
         record.update(family_browser_counts=True, family_browser_unique_neurons=True,
             family_browser_drilldown=True, family_browser_release_isolation=True,
             family_browser_readonly=True, family_browser_legacy_variants=True,
-            family_browser_default_folders=True, family_browser_pending_labels_cleared=True, family_browser_widths=[1120, 1700],
+            family_browser_default_folders=True, family_browser_pending_labels_cleared=True,
+            family_browser_button_rows=True, family_browser_accessible_back=True, family_browser_widths=[1120, 1700],
             family_browser_fixture_counts=counts)
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
