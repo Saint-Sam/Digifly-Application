@@ -97,6 +97,25 @@ def run_library_smoke(destination: Path) -> int:
         journal("main_window_created")
         window.show()
         page = window.data_library_page
+        # Test direct entry before the chooser is initialized, then with a
+        # remembered different family. Card-first checks missed this failure.
+        window.pages.setCurrentWidget(window.circuit_builder_page)
+        QTest.qWait(100)
+        QTest.mouseClick(window.circuit_builder_page.library_button, Qt.MouseButton.LeftButton)
+        if window.pages.currentWidget() is not page or not page.connectome_picker.selected_key:
+            raise ValueError('Cold Circuit Builder to Data Library handoff failed')
+        page.open_connectome('male-cns:v1.0')
+        window.circuit_builder_page.select_library_release('manc:v1.2.1')
+        window.pages.setCurrentWidget(window.circuit_builder_page)
+        QTest.mouseClick(window.circuit_builder_page.library_button, Qt.MouseButton.LeftButton)
+        if window.pages.currentWidget() is not page or page._display_dataset != 'manc:v1.2.1':
+            raise ValueError('Cross-family Circuit Builder to Data Library handoff failed')
+        page.show_connectomes()
+        page.connectome_picker.selected_dataset = ''
+        page.connectome_picker.selected_key = ''
+        page.connectome_picker._selected_releases.clear()
+        record['circuit_library_cold_handoff'] = True
+        record['circuit_library_cross_family_handoff'] = True
         def click_menu(button, action, filename=None):
             # Older storage/registration controls remain under explicit details.
             if page.storage_details.isAncestorOf(button) and not page.storage_details_button.isChecked():

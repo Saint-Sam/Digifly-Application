@@ -521,6 +521,9 @@ class DataLibraryPage(QWidget):
 
     def open_connectome(self, dataset: str) -> None:
         choice = next(choice for choice in CONNECTOMES if dataset in choice.releases)
+        # Direct entry can precede any card choice, or come from another
+        # family. Do not emit a second navigation or choose a default release.
+        self.connectome_picker.selected_key = choice.key
         self.connectome_title.setText(choice.name)
         for release, button in self.release_buttons.items():
             button.setVisible(release in choice.releases)

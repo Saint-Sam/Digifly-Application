@@ -32,6 +32,28 @@ def fixture(tmp_path):
     return profile, roots
 
 
+def test_direct_library_handoff_initializes_exact_family(tmp_path, monkeypatch):
+    from digifly_app.ui.data_library import DataLibraryPage
+    profile, _ = fixture(tmp_path)
+    path = profile.save(tmp_path / 'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(path))
+    app = QApplication.instance() or QApplication([])
+    page = DataLibraryPage()
+    try:
+        assert not page.connectome_picker.selected_key
+        for choice in CONNECTOMES:
+            for dataset in choice.releases:
+                page.open_connectome(dataset)
+                assert page.connectome_picker.selected_key == choice.key
+                assert page.connectome_picker.selected_dataset == dataset
+                assert page._display_dataset == dataset
+                assert page.view_stack.currentWidget() is page.scroll
+    finally:
+        page.neuron_browser.shutdown()
+        page.close()
+        app.processEvents()
+
+
 def test_union_exact_releases_pinned_roundtrip_and_conflicting_bytes(tmp_path):
     profile, roots = fixture(tmp_path)
     choices = library_sources(profile, RELEASES)
