@@ -806,7 +806,7 @@ def run_library_smoke(destination: Path) -> int:
         for width in (1120, 1700):
             window.resize(width, 900)
             QTest.qWait(100)
-            widgets = (builder.family_combo, builder.release_combo, builder.library_button,
+            widgets = (builder.family_button, builder.release_button, builder.library_button,
                        builder.query_edit, builder.browse_button, builder.assemble_button)
             boxes = [(w, w.mapTo(window, QPoint(0, 0)), w.size()) for w in widgets]
             for w, point, size in boxes:
@@ -845,11 +845,27 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Circuit release switch retained stale neurons or enabled an empty load')
         if profile_path.read_bytes() != before_browse:
             raise ValueError('Circuit selection wrote the machine profile')
+        window.pages.setCurrentWidget(builder)
+        QTest.mouseClick(builder.family_button, Qt.MouseButton.LeftButton)
+        if not builder.choice_panel.isVisible() or len(builder.choice_buttons) != 7:
+            raise ValueError('Compact connectome control does not open inline ordinary choices')
+        QTest.mouseClick(builder.choice_buttons[0], Qt.MouseButton.LeftButton)
+        if builder.family_combo.currentData() != 'male_cns' or builder.choice_panel.isVisible():
+            raise ValueError('Inline connectome choice did not select and close')
+        QTest.mouseClick(builder.release_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(builder.choice_buttons[1], Qt.MouseButton.LeftButton)
+        if builder._selected_source().dataset != 'male-cns:v0.9':
+            raise ValueError('Inline release choice did not change the exact release')
+        QTest.mouseClick(builder.engine_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(builder.choice_buttons[1], Qt.MouseButton.LeftButton)
+        if builder.selected_engine_key() != 'neuron':
+            raise ValueError('Inline simulator choice did not apply')
         record.update(circuit_library_shared_choices=True, circuit_library_shared_inventory=True,
             circuit_library_union_load=True, circuit_library_saved_paths=True,
             circuit_library_inline_browse=True, circuit_library_exact_handoff=True,
             circuit_library_release_isolation=True, circuit_library_compact_layout=True,
-            circuit_library_readonly=True, circuit_library_widths=[1120, 1700])
+            circuit_library_readonly=True, circuit_library_inline_choices=True,
+            circuit_library_widths=[1120, 1700])
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],

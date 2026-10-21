@@ -303,15 +303,30 @@ class CircuitBuilderPage(QWidget):
         self.release_combo = QComboBox()
         self.release_combo.setAccessibleName('Circuit release')
         self.release_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
+        self.family_combo.setParent(self)
+        self.family_combo.hide()
+        self.release_combo.setParent(self)
+        self.release_combo.hide()
+        self.family_button = QPushButton()
+        self.release_button = QPushButton()
+        self.family_button.clicked.connect(lambda: self._open_inline_choices(self.family_combo, 'connectome'))
+        self.release_button.clicked.connect(lambda: self._open_inline_choices(self.release_combo, 'release'))
         top.addWidget(QLabel('Connectome'))
-        top.addWidget(self.family_combo, 1)
+        top.addWidget(self.family_button, 1)
         top.addWidget(QLabel('Release'))
-        top.addWidget(self.release_combo, 1)
+        top.addWidget(self.release_button, 1)
         self.library_button = QPushButton('Data Library')
         self.library_button.clicked.connect(lambda: self.data_library_requested.emit(
             canonical_dataset(self._selected_source().dataset) if self._selected_source() else ''))
         top.addWidget(self.library_button)
         controls_layout.addLayout(top)
+        self.choice_panel = QWidget()
+        self.choice_grid = QGridLayout(self.choice_panel)
+        self.choice_grid.setContentsMargins(0, 4, 0, 4)
+        self.choice_buttons = []
+        self._choice_generation = 0
+        self.choice_panel.hide()
+        controls_layout.addWidget(self.choice_panel)
         self.source_summary = QLabel()
         self.source_summary.setObjectName('Muted')
         self.source_summary.setWordWrap(True)
@@ -320,7 +335,7 @@ class CircuitBuilderPage(QWidget):
         self.connectome_combo.hide()  # Exact legacy project references, not another user-facing picker.
         self.connectome_combo.setProperty('digiflyAccessibleChoiceInstalled', True)
         self.source_focus_shortcut = QShortcut(QKeySequence('Alt+S'), self)
-        self.source_focus_shortcut.activated.connect(self.family_combo.setFocus)
+        self.source_focus_shortcut.activated.connect(self.family_button.setFocus)
 
         self.more_options = CollapsibleSection('More options', 'circuit_source_tools')
         options = self.more_options.content_layout
@@ -331,9 +346,16 @@ class CircuitBuilderPage(QWidget):
             self.engine_combo.addItem(name, key)
         self.engine_combo.setCurrentIndex(0)
         self.engine_combo.currentIndexChanged.connect(self._engine_changed)
+        self.engine_combo.setParent(self)
+        self.engine_combo.hide()
+        self.engine_button = QPushButton(self.engine_combo.currentText() + ' ▾')
+        self.engine_button.setAccessibleName('Simulator: ' + self.engine_combo.currentText())
+        self.engine_combo.currentTextChanged.connect(lambda text: (
+            self.engine_button.setText(text + ' ▾'), self.engine_button.setAccessibleName('Simulator: ' + text)))
+        self.engine_button.clicked.connect(lambda: self._open_inline_choices(self.engine_combo, 'simulator'))
         simulator_row = QHBoxLayout()
         simulator_row.addWidget(QLabel('Simulator'))
-        simulator_row.addWidget(self.engine_combo)
+        simulator_row.addWidget(self.engine_button)
         simulator_row.addStretch()
         refresh = QPushButton("Refresh sources")
         refresh.clicked.connect(self.refresh_connectomes)
@@ -439,8 +461,6 @@ class CircuitBuilderPage(QWidget):
         self.view_mode_group.setExclusive(True)
         self.view_mode_group.addButton(self.soma_points_button)
         self.view_mode_group.addButton(self.full_skeletons_button)
-        mode_row.addWidget(self.soma_points_button)
-        mode_row.addWidget(self.full_skeletons_button)
         mode_row.addStretch(1)
         self.save_visualization_button = QPushButton("Save snapshot…")
         self.save_visualization_button.setObjectName("SaveCircuitVisualizationButton")
@@ -454,6 +474,11 @@ class CircuitBuilderPage(QWidget):
         )
         mode_row.addWidget(self.save_visualization_button)
         viewport_top.addLayout(mode_row)
+        view_modes = QHBoxLayout()
+        view_modes.addWidget(self.soma_points_button)
+        view_modes.addWidget(self.full_skeletons_button)
+        view_modes.addStretch()
+        viewport_top.addLayout(view_modes)
         self.viewport_summary = QLabel("No morphology loaded")
         self.viewport_summary.setObjectName("Strong")
         self.viewport_summary.setWordWrap(True)
@@ -1104,6 +1129,38 @@ class CircuitBuilderPage(QWidget):
         self.release_combo.setCurrentIndex(index)
         for widget in (self.family_combo, self.release_combo):
             widget.blockSignals(False)
+        self.family_button.setText(self.family_combo.currentText() + ' ▾')
+        self.family_button.setAccessibleName('Connectome: ' + self.family_combo.currentText())
+        self.release_button.setText(self.release_combo.currentText() + ' ▾')
+        self.release_button.setAccessibleName('Release: ' + self.release_combo.currentText())
+
+    def _open_inline_choices(self, combo, kind):
+        self._choice_generation += 1
+        generation = self._choice_generation
+        for button in self.choice_buttons:
+            self.choice_grid.removeWidget(button)
+            button.hide()
+            button.setParent(None)
+            button.deleteLater()
+        self.choice_buttons = []
+        for index in range(combo.count()):
+            button = QPushButton(combo.itemText(index))
+            button.setAccessibleName(f'Select {kind}: {combo.itemText(index)}')
+            button.clicked.connect(lambda checked=False, i=index: self._choose_inline(combo, i, generation))
+            self.choice_grid.addWidget(button, index // 3, index % 3)
+            self.choice_buttons.append(button)
+        cancel = QPushButton('Close choices')
+        cancel.clicked.connect(self.choice_panel.hide)
+        self.choice_grid.addWidget(cancel, (combo.count() + 2) // 3, 2)
+        self.choice_buttons.append(cancel)
+        self.choice_panel.show()
+
+    def _choose_inline(self, combo, index, generation):
+        if generation != self._choice_generation:
+            return
+        self.choice_panel.hide()
+        self._choice_generation += 1
+        combo.setCurrentIndex(index)
 
     def _family_changed(self):
         key = self.family_combo.currentData()
@@ -1127,6 +1184,8 @@ class CircuitBuilderPage(QWidget):
             self.connectome_combo.setCurrentIndex(index)
 
     def _source_changed(self):
+        self.choice_panel.hide()
+        self._choice_generation += 1
         self._selection_controls_changed()
         self._sync_source_controls()
         self._start_source_inventory()
