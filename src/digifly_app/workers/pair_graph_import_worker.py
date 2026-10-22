@@ -7,6 +7,7 @@ Runs in the explicitly selected data-reader Python, not the embedded GUI runtime
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -62,7 +63,9 @@ def build_index(source: Path, destination: Path, *, temp_directory: Path | None 
         neurons = data.execute("SELECT COUNT(*) FROM (SELECT preId AS id FROM read_parquet(?) UNION SELECT postId AS id FROM read_parquet(?))", [str(source), str(source)]).fetchone()[0]
         destination.mkdir(parents=False, exist_ok=False)
         index = destination / "pairs.sqlite"
-        with sqlite3.connect(index) as db:
+        # The SQLite transaction context commits but does not close its handle.
+        # Close explicitly so Windows can remove an uncommitted cancelled index.
+        with closing(sqlite3.connect(index)) as db, db:
             db.execute("CREATE TABLE pairs (preId INTEGER NOT NULL, preType TEXT, preInstance TEXT, preNt TEXT, postId INTEGER NOT NULL, postType TEXT, postInstance TEXT, postNt TEXT, total_weight INTEGER NOT NULL)")
             cursor = data.execute("SELECT " + ",".join(COLUMNS) + " FROM read_parquet(?)", [str(source)])
             while batch := cursor.fetchmany(4096):

@@ -404,6 +404,21 @@ def test_cancel_completion_race_removes_unselected_ready_output(tmp_path, monkey
     assert not folder.exists() and profile_path.read_bytes() == before and source.is_file()
 
 
+def test_conversion_explicitly_closes_the_index_handle(tmp_path, monkeypatch):
+    import sqlite3
+    from digifly_app.workers import pair_graph_import_worker as worker
+    factory = sqlite3.connect
+    closed = []
+    class Connection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            return super().close()
+    monkeypatch.setattr(worker.sqlite3, 'connect', lambda *a, **k: factory(*a, **k, factory=Connection))
+    source = tmp_path/'input.feather'; feather.write_feather(table(), source)
+    convert_connectivity(source, tmp_path/'ready', dataset='male-cns:v1.0', server=SERVER)
+    assert closed == [True], 'An ended SQLite transaction must also close the file handle'
+
+
 def test_cancel_cannot_delete_files_until_worker_stopped(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')
