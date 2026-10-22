@@ -91,19 +91,19 @@ def test_open_folder_button_creates_and_opens_exact_release_without_download(tmp
     root = connectivity_root(profile.managed_data_root, dataset)
     assert not root.exists()
     opened = []
-    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toLocalFile()) or True)
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(Path(url.toLocalFile())) or True)
     dialog = ConnectivityDownloadDialog(dataset)
     dialog.show()
     try:
         QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
         assert root.is_dir(), 'An enabled folder button must work before the first download'
-        assert opened == [str(root)]
+        assert opened == [root]
         assert 'Opening connectivity folder' in dialog.status.text()
         assert not tuple(root.iterdir())
         assert dialog.process.state() == QProcess.ProcessState.NotRunning
         assert profile_path.read_bytes() == before
         QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
-        assert opened == [str(root), str(root)]
+        assert opened == [root, root]
         assert not tuple(root.iterdir())
     finally:
         dialog.reject()

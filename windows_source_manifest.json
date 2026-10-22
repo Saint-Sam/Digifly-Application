@@ -922,8 +922,8 @@
       "bytes": 42116
     },
     "tests/test_connectivity_download.py": {
-      "sha256": "9e632e4d06539a9f83e67c93284ea5f82edc5e15818584db97fd8bdd63f408a2",
-      "bytes": 17402
+      "sha256": "07c3057f90096ee495bd8242f5022a94a20e41318380d2024833b35674ec6b43",
+      "bytes": 17393
     },
     "tests/test_updates.py": {
       "sha256": "c059e8e1da9ce2e3c59811cf274811195816817430d7afc0a5fbdd2478269869",
