@@ -965,6 +965,56 @@ def run_library_smoke(destination: Path) -> int:
             try:
                 if not isinstance(dialog, ConnectivityDownloadDialog):
                     raise ValueError('Connectivity card did not open the built-in reader')
+                from PySide6.QtGui import QDesktopServices
+                from PySide6.QtCore import QUrl
+                from digifly_app.core.connectivity_download import connectivity_root
+                native_open_url = QDesktopServices.openUrl
+                opened = []
+                def observe_open(url):
+                    opened.append(url.toString())
+                    return True
+                before_folder = profile_path.read_bytes()
+                folder = connectivity_root(ResourceProfile.load(profile_path).managed_data_root, dialog.dataset)
+                if folder.exists():
+                    raise ValueError('Folder regression must start before the first download')
+                try:
+                    QDesktopServices.openUrl = observe_open
+                    QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
+                    if not folder.is_dir() or tuple(folder.iterdir()) or 'Opening connectivity folder' not in dialog.status.text():
+                        raise ValueError('Open folder did not create and open the empty exact-release directory')
+                    if opened != [QUrl.fromLocalFile(str(folder)).toString()] or profile_path.read_bytes() != before_folder:
+                        raise ValueError('Folder opening changed bindings or requested the wrong path')
+                    QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
+                    if len(opened) != 2 or tuple(folder.iterdir()):
+                        raise ValueError('Opening an existing directory changed its files')
+                    QDesktopServices.openUrl = lambda url: False
+                    QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
+                    if 'Could not open connectivity folder' not in dialog.status.text() or str(folder) not in dialog.status.text():
+                        raise ValueError('Desktop folder-launch refusal was silently ignored')
+                    QDesktopServices.openUrl = observe_open
+                    QTest.mouseClick(dialog.info, Qt.MouseButton.LeftButton)
+                    if opened[-1] != dialog.export.info:
+                        raise ValueError('Official source button requested the wrong URL')
+                    # File/browser handlers above are recorded, not independent
+                    # evidence of an external file-manager/browser window.
+                    record.update(connectivity_folder_controls=True,
+                        connectivity_all_dialog_buttons=True,
+                        connectivity_folder_observation={'missing_created': True, 'existing_opened': True,
+                            'launch_failure_visible': True, 'profile_unchanged': True,
+                            'official_source_requested': True, 'external_launch_intercepted': True})
+                    dialog.grab().save(str(destination / 'connectivity-folder-controls.png'))
+                finally:
+                    QDesktopServices.openUrl = native_open_url
+                unregistered = folder / 'retained-unregistered.csv'
+                unregistered.write_text('bodyId_pre,bodyId_post,weight\n1,2,3\n')
+                kept_bytes = unregistered.read_bytes()
+                QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.No
+                QTest.mouseClick(dialog.download, Qt.MouseButton.LeftButton)
+                if (dialog._request_file is not None or dialog.process.state() != QProcess.ProcessState.NotRunning
+                        or 'Kept existing' not in dialog.status.text() or unregistered.read_bytes() != kept_bytes):
+                    raise ValueError('An unregistered existing file did not prevent transfer before approval')
+                record.update(connectivity_existing_disk_files_prompt=True)
+                QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.Yes
                 QFileDialog.getOpenFileName = lambda *a, **k: (str(graph_fixture), 'Connectivity')
                 QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
                 wait_for(lambda: dialog.process.state() == QProcess.ProcessState.NotRunning,
@@ -986,6 +1036,9 @@ def run_library_smoke(destination: Path) -> int:
                     raise ValueError('Connectivity conversion lost exact 64-bit IDs or weak edges')
                 dialog.grab().save(str(destination / 'connectivity-ready.png'))
                 QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.No
+                QTest.mouseClick(dialog.download, Qt.MouseButton.LeftButton)
+                if 'Kept existing' not in dialog.status.text() or dialog.process.state() != QProcess.ProcessState.NotRunning:
+                    raise ValueError('Download button did not honor existing-connectivity refusal')
                 QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
                 if 'Kept existing' not in dialog.status.text() or dialog.process.state() != QProcess.ProcessState.NotRunning:
                     raise ValueError('Default Keep did not prevent connectivity replacement')
@@ -998,8 +1051,8 @@ def run_library_smoke(destination: Path) -> int:
                     raise ValueError('Connectivity replacement overwrote its retained prior file')
                 before_cancel = profile_path.read_bytes()
                 QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
-                dialog.reject()
-                if profile_path.read_bytes() != before_cancel:
+                QTest.mouseClick(dialog.close_button, Qt.MouseButton.LeftButton)
+                if profile_path.read_bytes() != before_cancel or dialog.isVisible():
                     raise ValueError('Cancelled connectivity operation changed registration')
                 graph_checked.append(True)
             except Exception:

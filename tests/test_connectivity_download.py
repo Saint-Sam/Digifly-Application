@@ -13,10 +13,11 @@ import pytest
 import pyarrow as pa
 import pyarrow.feather as feather
 import pyarrow.parquet as pq
-from PySide6.QtCore import QProcess
+from PySide6.QtCore import QProcess, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtTest import QTest
-from digifly_app.core.connectivity_download import EXPORTS, SERVER, export_for, checked_download, connectivity_root
+from digifly_app.core.connectivity_download import EXPORTS, SERVER, export_for, checked_download, connectivity_root, run_download
 from digifly_app.core.connectivity_conversion import convert_connectivity
 from digifly_app.core.circuit import ConnectomeRef
 from digifly_app.core.circuit_library import library_sources
@@ -80,6 +81,123 @@ def test_catalog_has_every_release_and_never_aliases_old_versions(tmp_path):
     assert export_for('optic-lobe:v1.0.1').object_name.startswith('v1.0/optic-lobe-v1.0.1-')
 
 
+@pytest.mark.parametrize('dataset', tuple(EXPORTS))
+def test_open_folder_button_creates_and_opens_exact_release_without_download(tmp_path, monkeypatch, dataset):
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path/'workspace')
+    profile_path = profile.save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    before = profile_path.read_bytes()
+    root = connectivity_root(profile.managed_data_root, dataset)
+    assert not root.exists()
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toLocalFile()) or True)
+    dialog = ConnectivityDownloadDialog(dataset)
+    dialog.show()
+    try:
+        QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
+        assert root.is_dir(), 'An enabled folder button must work before the first download'
+        assert opened == [str(root)]
+        assert 'Opening connectivity folder' in dialog.status.text()
+        assert not tuple(root.iterdir())
+        assert dialog.process.state() == QProcess.ProcessState.NotRunning
+        assert profile_path.read_bytes() == before
+        QTest.mouseClick(dialog.open_folder, Qt.MouseButton.LeftButton)
+        assert opened == [str(root), str(root)]
+        assert not tuple(root.iterdir())
+    finally:
+        dialog.reject()
+
+
+def test_open_folder_reports_desktop_rejection_and_preserves_saved_files(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path/'workspace')
+    profile_path = profile.save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    root = connectivity_root(profile.managed_data_root, 'male-cns:v1.0')
+    root.mkdir(parents=True)
+    saved = root/'keep.txt'; saved.write_bytes(b'existing user file')
+    before = profile_path.read_bytes()
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: False)
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0')
+    try:
+        dialog.open_folder.click()
+        assert 'Could not open connectivity folder' in dialog.status.text()
+        assert str(root) in dialog.status.text()
+        assert saved.read_bytes() == b'existing user file'
+        assert profile_path.read_bytes() == before
+    finally:
+        dialog.reject()
+
+
+def test_open_folder_reports_creation_error_without_launching(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path/'workspace')
+    profile_path = profile.save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    root = connectivity_root(profile.managed_data_root, 'male-cns:v1.0')
+    root.parent.mkdir(parents=True)
+    root.write_bytes(b'not a directory')
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url) or True)
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0')
+    try:
+        dialog.open_folder.click()
+        assert 'Could not open connectivity folder' in dialog.status.text()
+        assert not opened and root.read_bytes() == b'not a directory'
+    finally:
+        dialog.reject()
+
+
+def test_open_folder_refuses_symlink_destination(tmp_path, monkeypatch):
+    if os.name == 'nt':
+        pytest.skip('Unprivileged Windows runner cannot create a directory symlink')
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path/'workspace')
+    profile_path = profile.save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    root = connectivity_root(profile.managed_data_root, 'male-cns:v1.0')
+    root.parent.mkdir(parents=True)
+    outside = tmp_path/'external'; outside.mkdir()
+    root.symlink_to(outside, target_is_directory=True)
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url) or True)
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0')
+    try:
+        dialog.open_folder.click()
+        assert 'Could not open connectivity folder' in dialog.status.text()
+        assert not opened and not tuple(outside.iterdir())
+    finally:
+        dialog.reject()
+
+
+@pytest.mark.parametrize('name', ['connectivity.parquet', 'download-old/raw.feather', 'old.csv', 'import-old/raw.arrow'])
+def test_unregistered_saved_file_requires_default_no_before_transfer(tmp_path, monkeypatch, name):
+    app = QApplication.instance() or QApplication([])
+    profile = make_standalone_profile(workstation_root=tmp_path/'workspace')
+    profile_path = profile.save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    root = connectivity_root(profile.managed_data_root, 'male-cns:v1.0')
+    old = root/name; old.parent.mkdir(parents=True); old.write_bytes(b'existing unregistered graph or partial')
+    before = profile_path.read_bytes()
+    questions, starts = [], []
+    def answer(*args):
+        questions.append(args)
+        return QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, 'question', answer)
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0')
+    monkeypatch.setattr(dialog.process, 'start', lambda: starts.append(True))
+    try:
+        dialog.download.click()
+        assert len(questions) == 1 and str(old) in questions[0][2]
+        assert questions[0][-1] == QMessageBox.StandardButton.No
+        assert not starts and dialog._request_file is None
+        assert 'Kept existing' in dialog.status.text()
+        assert profile_path.read_bytes() == before and old.read_bytes() == b'existing unregistered graph or partial'
+    finally:
+        dialog.reject()
+
+
 class Response(io.BytesIO):
     def __init__(self, data, export):
         super().__init__(data)
@@ -101,6 +219,28 @@ def test_download_checksum_size_generation_cancel_and_destination_guards(tmp_pat
     with pytest.raises(InterruptedError):
         checked_download(export, tmp_path/'cancel.csv', cancel=lambda: True, opener=lambda *a, **k: Response(data, export))
     assert (tmp_path/'good.csv').read_bytes() == data
+
+
+def test_midway_cancel_keeps_partial_and_restart_uses_a_new_generation(tmp_path, monkeypatch):
+    import digifly_app.core.connectivity_download as download
+    data = b'x' * (2 * 1024 * 1024)
+    export = replace(export_for('manc:v1.0'), size=len(data), md5=base64.b64encode(hashlib.md5(data).digest()).decode())
+    monkeypatch.setattr(download, 'export_for', lambda dataset: export)
+    request = {'dataset': export.dataset, 'managed_root': str(tmp_path/'managed')}
+    for _ in range(2):
+        cancelled = []
+        with pytest.raises(InterruptedError):
+            run_download(request, progress=lambda *args: cancelled.append(True),
+                cancel=lambda: bool(cancelled), opener=lambda *a, **k: Response(data, export))
+    root = connectivity_root(request['managed_root'], export.dataset)
+    generations = sorted(root.glob('download-*'))
+    assert len(generations) == 2 and generations[0] != generations[1]
+    for generation in generations:
+        raw = generation / Path(export.object_name).name
+        assert raw.read_bytes() == data[:1024 * 1024]
+        assert json.loads((generation/'incomplete.json').read_text())['ready'] is False
+        assert not (generation/'ready').exists()
+        assert not (generation/'download-details.json').exists()
 
 
 def wait_finished(dialog):

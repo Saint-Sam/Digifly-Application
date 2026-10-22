@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import uuid
 
-from PySide6.QtCore import QProcess, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QMessageBox, QFileDialog
 
@@ -34,6 +34,28 @@ def graph_snapshot(bindings):
     return tuple(output)
 
 
+def saved_connectivity_files(profile, dataset):
+    """Include on-disk raw/converted files even without a saved binding."""
+    root = connectivity_root(profile.managed_data_root, dataset)
+    if root.is_symlink() or any(p.is_symlink() for p in root.parents):
+        raise ValueError('The connectivity folder must not traverse a folder link')
+    if not root.exists():
+        return ()
+    if not root.is_dir():
+        raise ValueError('The connectivity destination is not a folder')
+    paths = []
+    for path in root.rglob('*'):
+        if path.is_symlink():
+            raise ValueError('A connectivity file or folder is linked; review its location before downloading')
+        if path.is_file() and path.suffix.lower() in {'.parquet', '.feather', '.arrow', '.csv'}:
+            paths.append(path)
+    return tuple(sorted(paths))
+
+
+def saved_file_snapshot(paths):
+    return tuple((str(path), sha(path)) for path in paths)
+
+
 class ConnectivityDownloadDialog(QDialog):
     registered = Signal()
 
@@ -54,6 +76,7 @@ class ConnectivityDownloadDialog(QDialog):
         self._abandoned = False
         self._buffer = ''
         self._approved = None
+        self._approved_files = ()
         self._request_file = None
         self._source = ''
         profile, _ = load_or_create_default_profile()
@@ -75,9 +98,12 @@ class ConnectivityDownloadDialog(QDialog):
         self.status = QLabel('Ready. Existing connectivity is kept until a new file is checked and you approve replacement.')
         self.status.setObjectName('ConnectivityDownloadStatus')
         self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self.status)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         root.addWidget(self.progress)
         actions = QHBoxLayout()
         self.download = QPushButton('Download connectivity')
@@ -115,10 +141,12 @@ class ConnectivityDownloadDialog(QDialog):
             profile, _ = load_or_create_default_profile()
             bindings = graph_bindings(profile, self.dataset)
             approved = graph_snapshot(bindings)
-            if bindings:
+            saved_files = saved_connectivity_files(profile, self.dataset)
+            if bindings or saved_files:
+                existing_paths = sorted({b.path for b in bindings} | {str(p) for p in saved_files})
                 answer = QMessageBox.question(self, 'Replace selected connectivity?',
                     'Connectivity is already saved for ' + self.dataset + '.\n\n' +
-                    '\n'.join(b.path for b in bindings) +
+                    '\n'.join(existing_paths) +
                     '\n\nDownload/import a new copy and use it instead? Existing files and indexes will remain recoverable. Nothing is replaced if the new copy fails or is cancelled.',
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No)
@@ -126,6 +154,7 @@ class ConnectivityDownloadDialog(QDialog):
                     self.status.setText('Kept existing connectivity. No download started.')
                     return
             self._approved = approved
+            self._approved_files = saved_file_snapshot(saved_files)
             self._abandoned = False
             self.ready_result = None
             self._buffer = ''
@@ -195,6 +224,8 @@ class ConnectivityDownloadDialog(QDialog):
             existing = graph_bindings(profile, self.dataset)
             if graph_snapshot(existing) != self._approved:
                 raise ValueError('Existing connectivity changed after review; select again. New copy retained separately.')
+            if saved_file_snapshot(tuple(Path(p) for p, _ in self._approved_files)) != self._approved_files:
+                raise ValueError('Saved connectivity files changed after review; select again. New copy retained separately.')
             result = self.ready_result
             if result['dataset'] != self.dataset or result['server'] != SERVER:
                 raise ValueError('Connectivity release/server differs; registration refused')
@@ -241,10 +272,21 @@ class ConnectivityDownloadDialog(QDialog):
         self.status.setText('Stopped at the one-hour safety limit; previous connectivity unchanged. Partial download retained separately.')
 
     def reveal(self):
-        profile, _ = load_or_create_default_profile()
-        root = connectivity_root(profile.managed_data_root, self.dataset)
-        if root.is_dir():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+        root = None
+        try:
+            profile, _ = load_or_create_default_profile()
+            root = connectivity_root(profile.managed_data_root, self.dataset)
+            if root.is_symlink() or any(p.is_symlink() for p in root.parents):
+                raise ValueError('The connectivity folder must not traverse a folder link')
+            # Opening an empty library must work before the first acquisition.
+            # This creates only its directory, not a download or graph binding.
+            root.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(root))):
+                raise OSError('Your system did not accept the folder-opening request. Copy the path below into your file manager.')
+            self.status.setText('Opening connectivity folder:\n' + str(root))
+        except (OSError, ValueError) as exc:
+            self.status.setText('Could not open connectivity folder: ' + str(exc) +
+                ('\n' + str(root) if root is not None else ''))
 
     def reject(self):
         self._abandoned = True
