@@ -165,6 +165,19 @@ def test_low_disk_refuses_before_conversion_files(tmp_path, monkeypatch):
     assert not (tmp_path/'out').exists()
 
 
+def test_lookup_scratch_is_inside_the_new_generation(tmp_path, monkeypatch):
+    import digifly_app.core.connectivity_conversion as conversion
+    original = conversion.build_index
+    observed = []
+    def build(source, destination, **kwargs):
+        observed.append(kwargs['temp_directory'])
+        return original(source, destination, **kwargs)
+    monkeypatch.setattr(conversion, 'build_index', build)
+    source = tmp_path/'small.feather'; feather.write_feather(table(), source)
+    convert_connectivity(source, tmp_path/'new-generation', dataset='manc:v1.0')
+    assert observed == [tmp_path/'new-generation/index-scratch']
+
+
 def test_existing_bytes_changed_after_approval_refuses_registration(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')

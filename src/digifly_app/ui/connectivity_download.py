@@ -135,8 +135,10 @@ class ConnectivityDownloadDialog(QDialog):
             request = {'kind': kind, 'dataset': self.dataset, 'server': SERVER,
                 'managed_root': str(profile.managed_data_root), 'source': self._source}
             self._request_file.write_text(json.dumps(request) + '\n')
-            self.process.setProgram(sys.executable)
-            args = [] if '__compiled__' in globals() or getattr(sys, 'frozen', False) else ['-m', 'digifly_app']
+            compiled = '__compiled__' in globals() or getattr(sys, 'frozen', False)
+            from digifly_app.core.update_installer import running_executable
+            self.process.setProgram(str(running_executable()) if compiled else sys.executable)
+            args = [] if compiled else ['-m', 'digifly_app']
             # Source entrypoint is digifly_app.app (package has no __main__).
             if args:
                 args = ['-c', 'from digifly_app.app import main; raise SystemExit(main())']

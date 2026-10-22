@@ -92,7 +92,7 @@ def convert_connectivity(source, destination, *, dataset='', server='', scope=''
                     raise InterruptedError('Conversion cancelled')
                 writer.write_batch(batch)
         db.close()
-        result = build_index(output, destination / 'index')
+        result = build_index(output, destination / 'index', temp_directory=destination / 'index-scratch')
         if sha(source) != before:
             raise ValueError('Input changed during conversion; no registration')
         result.update(dataset=dataset or 'user-supplied; release not declared', server=server,

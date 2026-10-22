@@ -25,7 +25,7 @@ def sha(path):
     return digest.hexdigest()
 
 
-def build_index(source: Path, destination: Path) -> dict:
+def build_index(source: Path, destination: Path, *, temp_directory: Path | None = None) -> dict:
     try:
         import duckdb
     except ImportError as exc:
@@ -43,6 +43,10 @@ def build_index(source: Path, destination: Path) -> dict:
     try:
         data.execute("SET threads=1")
         data.execute("SET memory_limit='512MB'")
+        if temp_directory is not None:
+            # Large official graphs spill only inside their new generation,
+            # never into the launch folder or the installed application.
+            data.execute('SET temp_directory=?', [str(temp_directory)])
         schema = data.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(source)]).fetchall()
         types = {row[0]: row[1] for row in schema}
         if not set(COLUMNS).issubset(types):
