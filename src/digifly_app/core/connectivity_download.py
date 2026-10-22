@@ -157,7 +157,32 @@ def remove_cancelled_attempt(request, protected=()):
             mode = item.lstat().st_mode
             if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError('Unexpected connectivity attempt file; cleanup refused')
-    shutil.rmtree(path)
+    # Keep the ownership record until all data/scratch removal succeeds. A
+    # Windows lock must not strand a half-cleaned folder that cannot be retried.
+    marker = path / 'attempt.json'
+    identity = (path.stat().st_dev, path.stat().st_ino)
+    for child in sorted(path.iterdir()):
+        if child == marker:
+            continue
+        _no_links(child)
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    marker.unlink()
+    try:
+        path.rmdir()
+    except OSError:
+        # If the final directory removal was blocked, preserve retry ownership
+        # only for this same directory; never claim a substituted destination.
+        try:
+            _no_links(path)
+            if (path.stat().st_dev, path.stat().st_ino) == identity:
+                with marker.open('x', encoding='utf-8') as stream:
+                    json.dump(_attempt_owner(request), stream)
+        except (OSError, ValueError):
+            pass
+        raise
 
 
 def checked_download(export, destination, progress=lambda *_: None, cancel=lambda: False, opener=None):

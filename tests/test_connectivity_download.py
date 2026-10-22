@@ -319,6 +319,43 @@ def test_cleanup_removes_only_its_owned_attempt_and_all_conversion_scratch(tmp_p
     assert (sibling/'kept.feather').read_bytes() == b'earlier download'
 
 
+def test_cleanup_keeps_owner_record_when_a_later_file_is_locked(tmp_path, monkeypatch):
+    request = prepare_attempt(request_for(tmp_path))
+    folder = checked_attempt(request)
+    (folder/'first.bin').write_bytes(b'partial')
+    (folder/'locked.bin').write_bytes(b'blocked partial')
+    original = os.unlink
+    def blocked(name, *args, **kwargs):
+        if Path(name).name == 'locked.bin':
+            raise PermissionError('file temporarily locked')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(os, 'unlink', blocked)
+    with pytest.raises(PermissionError):
+        remove_cancelled_attempt(request)
+    assert (folder/'attempt.json').is_file(), 'A retry still needs the original ownership record'
+    assert checked_attempt(request) == folder and (folder/'locked.bin').is_file()
+    monkeypatch.setattr(os, 'unlink', original)
+    remove_cancelled_attempt(request)
+    assert not folder.exists()
+
+
+def test_cleanup_restores_retry_record_if_empty_directory_removal_is_blocked(tmp_path, monkeypatch):
+    request = prepare_attempt(request_for(tmp_path))
+    folder = checked_attempt(request)
+    original = Path.rmdir
+    def blocked(path):
+        if path == folder:
+            raise PermissionError('directory temporarily locked')
+        return original(path)
+    monkeypatch.setattr(Path, 'rmdir', blocked)
+    with pytest.raises(PermissionError):
+        remove_cancelled_attempt(request)
+    assert checked_attempt(request) == folder
+    monkeypatch.setattr(Path, 'rmdir', original)
+    remove_cancelled_attempt(request)
+    assert not folder.exists()
+
+
 @pytest.mark.parametrize('protection', ['owner', 'registered', 'selected', 'input', 'escape'])
 def test_cleanup_refuses_unowned_completed_or_protected_targets(tmp_path, protection):
     request = prepare_attempt(request_for(tmp_path))

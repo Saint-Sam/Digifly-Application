@@ -354,8 +354,8 @@
       "bytes": 8401
     },
     "src/digifly_app/core/connectivity_download.py": {
-      "sha256": "8b60bf2f560bbd69788719fd07a0df16feb5e855ff1c5bb70626ee6f308e40a2",
-      "bytes": 11727
+      "sha256": "e79acdb5f5282f17f9edc0a5138f67fb820c04ae35a3ce8df140ae02188ed566",
+      "bytes": 12703
     },
     "src/digifly_app/core/connectomes.py": {
       "sha256": "fd79e8c283b5bc7615a05d3a691ddb9afbd54df3bec01a09bc56807361b31e02",
@@ -878,7 +878,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "bd2f1f0bfa243ec5e4e88ff8fb091e3968bce7e6169a396e22556f0d4da5225c",
+      "sha256": "408079fc0085828662da57ea6e40dd0b08fcaebde8ca49ea9db7d9a09fbca62e",
       "bytes": 10212
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -922,8 +922,8 @@
       "bytes": 42116
     },
     "tests/test_connectivity_download.py": {
-      "sha256": "50b9f38e3c5f06d2326a790fa2526b130945bcbd0a71d4433ef36514fafd3152",
-      "bytes": 26107
+      "sha256": "aa0523e786cc2ccf4075a9f9dc8bffe89cc94e9e5f45ec6aa2b9732152d44997",
+      "bytes": 27700
     },
     "tests/test_updates.py": {
       "sha256": "c059e8e1da9ce2e3c59811cf274811195816817430d7afc0a5fbdd2478269869",
