@@ -30,6 +30,20 @@ def _qt_smoke_test() -> tuple[bool, str]:
 
 
 def main() -> int:
+    sys.dont_write_bytecode = True
+    if len(sys.argv) == 3 and sys.argv[1] == '--connectivity-task':
+        import json
+        try:
+            from digifly_app.core.connectivity_conversion import run_task
+            return run_task(json.loads(Path(sys.argv[2]).read_text(encoding='utf-8')),
+                            Path(sys.argv[2]).with_suffix('.result.json'))
+        except Exception as exc:
+            response = Path(sys.argv[2]).with_suffix('.result.json')
+            if not response.exists():
+                with response.open('x', encoding='utf-8') as stream:
+                    json.dump({'error': str(exc)}, stream)
+            print(str(exc), file=sys.stderr)
+            return 1
     # An installed Mac bundle is immutable. This also reaches external runtime
     # probes, so a lazy import cannot change the tree while an update is staged.
     if sys.platform == 'darwin':

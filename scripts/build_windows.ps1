@@ -27,7 +27,7 @@ try {
         "-m", "nuitka", "main.py", "--standalone", "--enable-plugin=pyside6", "--msvc=latest",
         "--output-dir=deployment", "--assume-yes-for-downloads", "--lto=no", "--jobs=4",
         "--windows-console-mode=disable", "--windows-icon-from-ico=$iconTarget",
-        "--noinclude-qt-translations", "--nofollow-import-to=neuron,arbor,bmtk,numpy,h5py,netpyne,duckdb,pytest",
+        "--noinclude-qt-translations", "--nofollow-import-to=neuron,arbor,bmtk,numpy,h5py,netpyne,pytest",
         "--include-data-dir=src/digifly_app/assets=digifly_app/assets",
         "--include-data-dir=mechanisms=mechanisms", "--include-data-dir=presets=presets",
         "--include-data-dir=schemas=schemas", "--include-data-dir=docs=docs",

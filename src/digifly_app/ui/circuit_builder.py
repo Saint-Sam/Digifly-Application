@@ -1425,7 +1425,8 @@ class CircuitBuilderPage(QWidget):
             return
         try:
             manifest = json.loads((Path(source.pair_graph_index).parent / "manifest.json").read_text(encoding="utf-8"))
-            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; release unconfirmed")
+            release_note = manifest.get('source_scope', 'release unconfirmed')
+            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; {release_note}")
         except (OSError, ValueError, KeyError):
             self.pair_graph_note.setText("Selected pair graph is unavailable; reselect its exact Parquet. No fallback source is used.")
 

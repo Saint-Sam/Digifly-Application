@@ -312,7 +312,7 @@ class ConnectomeEdgeCatalog:
                 forward = [row for row in rows if str(row["preId"]) == neuron_a]
                 reverse = [row for row in rows if str(row["preId"]) == neuron_b]
                 return ConnectionClassSummary(True, len(forward), len(reverse),
-                    source_path=self.source.pair_graph_path, source_label="Selected MANC aggregate pair Parquet",
+                    source_path=self.source.pair_graph_path, source_label="Selected aggregate pair Parquet",
                     scope_note="All supplied pair rows; weight is total_weight, not µS or located contacts. Missing pairs are only absent in this file; release/weak-edge completeness unverified.",
                     connection_kind="weighted pair", a_to_b_weight=sum(row["total_weight"] for row in forward),
                     b_to_a_weight=sum(row["total_weight"] for row in reverse))

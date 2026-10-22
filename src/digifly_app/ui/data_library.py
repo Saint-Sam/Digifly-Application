@@ -71,6 +71,8 @@ from .connectome_picker import CONNECTOMES, ConnectomePicker
 from .neuprint_import import NeuPrintImportDialog
 from .modeldb_import import ModelDBImportDialog
 from .pair_graph_import import PairGraphImportDialog
+from .connectivity_download import ConnectivityDownloadDialog
+from digifly_app.core.connectivity_download import export_for
 from .resource_management import ManifestDialog, TrashDialog
 
 
@@ -428,6 +430,20 @@ class DataLibraryPage(QWidget):
         self.pair_graph_label.setObjectName('LibraryPairGraphStatus')
         self.pair_graph_label.setWordWrap(True)
         graph_layout.addWidget(self.pair_graph_label)
+        self.connectivity_scope = QLabel()
+        self.connectivity_scope.setWordWrap(True)
+        graph_layout.addWidget(self.connectivity_scope)
+        graph_actions = QHBoxLayout()
+        self.connectivity_download_button = QPushButton('Download connectivity…')
+        self.connectivity_download_button.setObjectName('DownloadReleaseConnectivity')
+        self.connectivity_download_button.clicked.connect(self.open_connectivity_download)
+        self.connectivity_manage_button = QPushButton('Import / manage connectivity…')
+        self.connectivity_manage_button.clicked.connect(self.open_connectivity_download)
+        graph_actions.addWidget(self.connectivity_download_button)
+        graph_actions.addWidget(self.connectivity_manage_button)
+        graph_actions.addStretch()
+        graph_layout.addLayout(graph_actions)
+        self._connectivity_dialog = None
         root.addWidget(self.connectivity_card)
         self.library_tools_menu = QMenu(self)
         self.open_managed_action = self._action('Open managed library', self.reveal_library)
@@ -570,6 +586,17 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Cannot register connectivity file", str(exc))
 
+    def open_connectivity_download(self):
+        dataset = self.connectome_picker.selected_dataset
+        if not dataset:
+            return
+        dialog = ConnectivityDownloadDialog(dataset, self)
+        self._connectivity_dialog = dialog
+        dialog.registered.connect(self.refresh)
+        dialog.registered.connect(self.sources_changed)
+        dialog.exec()
+        self._connectivity_dialog = None
+
     @Slot()
     def refresh(self) -> None:
         self.table.setRowCount(0)
@@ -642,7 +669,11 @@ class DataLibraryPage(QWidget):
             except (OSError, ValueError) as exc:
                 self.pair_graph_label.setText(str(exc))
         self.pair_graph_label.setVisible(bool(self.pair_graph_label.text()))
-        self.connectivity_card.setVisible(bool(self.pair_graph_label.text()))
+        export = export_for(dataset)
+        self.connectivity_scope.setText(export.scope if export.available else export.unavailable)
+        self.connectivity_download_button.setEnabled(export.available)
+        self.connectivity_download_button.setText('Download new copy…' if matching_graphs else 'Download connectivity…')
+        self.connectivity_card.setVisible(bool(dataset))
         for resource in self._resources:
             row = self.table.rowCount()
             self.table.insertRow(row)

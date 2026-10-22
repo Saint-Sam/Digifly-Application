@@ -27,13 +27,17 @@ FAMILIES = ("AN", "DN", "IN", "MN", "SN", "UNKNOWN")
 
 
 def library_root(profile: ResourceProfile, server: str, dataset: str) -> Path:
+    return dataset_library_root(profile.managed_data_root, server, dataset)
+
+
+def dataset_library_root(managed_data_root: Path, server: str, dataset: str) -> Path:
     origin = str(server).rstrip("/")
     if not origin or not dataset.strip():
         raise ValueError("An exact source server and dataset/version are required")
     host = safe_component(urlsplit(origin).netloc or origin, field="source server")
     # Slugging alone merges e.g. a:b with a-b; bind the exact origin and release.
     key = hashlib.sha256(f"{origin}\n{dataset}".encode()).hexdigest()[:12]
-    return profile.managed_data_root / "swc-libraries" / host / f"{safe_component(dataset)}-{key}"
+    return Path(managed_data_root) / "swc-libraries" / host / f"{safe_component(dataset)}-{key}"
 
 
 def _hash(path: Path) -> str:

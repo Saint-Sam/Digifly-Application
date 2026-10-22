@@ -936,6 +936,83 @@ def run_library_smoke(destination: Path) -> int:
             circuit_library_release_isolation=True, circuit_library_compact_layout=True,
             circuit_library_readonly=True, circuit_library_inline_choices=True,
             circuit_library_widths=[1120, 1700])
+        journal('built_in_connectivity_reader')
+        from digifly_app.core.connectivity_download import export_for, SERVER
+        from digifly_app.ui.connectivity_download import ConnectivityDownloadDialog, graph_bindings
+        from digifly_app.core.circuit_library import library_sources
+        from PySide6.QtCore import QProcess
+        import pyarrow as pa
+        import pyarrow.feather as feather
+        graph_fixture = destination / 'tiny-connectivity.feather'
+        feather.write_feather(pa.table({'body_pre': pa.array([42, 2**53+7], type=pa.int64()),
+            'body_post': pa.array([2**53+7, 42], type=pa.int64()), 'weight': [1, 9]}), graph_fixture)
+        window.pages.setCurrentWidget(page)
+        for family in CONNECTOMES:
+            for release in family.releases:
+                page.open_connectome(release)
+                if not page.connectivity_card.isVisible() or page.connectivity_download_button.isEnabled() != export_for(release).available:
+                    raise ValueError('Connectivity download availability leaked across releases: ' + release)
+        page.open_connectome('male-cns:v1.0')
+        window.pages.setCurrentWidget(page)
+        for width in (1120, 1700):
+            window.resize(width, 900)
+            page.scroll.ensureWidgetVisible(page.connectivity_download_button)
+            QTest.qWait(50)
+            window.grab().save(str(destination / f'connectivity-card-{width}.png'))
+        graph_checked = []
+        def exercise_graph_dialog():
+            dialog = page._connectivity_dialog
+            try:
+                if not isinstance(dialog, ConnectivityDownloadDialog):
+                    raise ValueError('Connectivity card did not open the built-in reader')
+                QFileDialog.getOpenFileName = lambda *a, **k: (str(graph_fixture), 'Connectivity')
+                QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
+                wait_for(lambda: dialog.process.state() == QProcess.ProcessState.NotRunning,
+                         'Built-in connectivity child process did not finish')
+                if 'Ready' not in dialog.status.text():
+                    raise ValueError('Built-in reader did not register: ' + dialog.status.text())
+                measured = ResourceProfile.load(profile_path)
+                old, = graph_bindings(measured, 'male-cns:v1.0')
+                old_bytes = Path(old.path).read_bytes()
+                library = library_sources(measured, ('male-cns:v1.0', 'male-cns:v0.9'))
+                if library[0].pair_graph_path != old.path or library[1].pair_graph_path:
+                    raise ValueError('Connectivity did not attach to only its exact Circuit release')
+                from digifly_app.core.pair_graph import pair_rows
+                from digifly_app.core.circuit import ConnectomeRef
+                source_ref = ConnectomeRef('unit', 'unit', '', 'male-cns:v1.0',
+                    old.path, str(old.metadata['index']), old.metadata['source_sha256'])
+                rows = pair_rows(source_ref, '42', str(2**53+7))
+                if {r['total_weight'] for r in rows} != {1, 9}:
+                    raise ValueError('Connectivity conversion lost exact 64-bit IDs or weak edges')
+                dialog.grab().save(str(destination / 'connectivity-ready.png'))
+                QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.No
+                QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
+                if 'Kept existing' not in dialog.status.text() or dialog.process.state() != QProcess.ProcessState.NotRunning:
+                    raise ValueError('Default Keep did not prevent connectivity replacement')
+                QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.Yes
+                QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
+                wait_for(lambda: dialog.process.state() == QProcess.ProcessState.NotRunning,
+                         'Reviewed connectivity replacement did not finish')
+                current, = graph_bindings(ResourceProfile.load(profile_path), 'male-cns:v1.0')
+                if current.path == old.path or Path(old.path).read_bytes() != old_bytes:
+                    raise ValueError('Connectivity replacement overwrote its retained prior file')
+                before_cancel = profile_path.read_bytes()
+                QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
+                dialog.reject()
+                if profile_path.read_bytes() != before_cancel:
+                    raise ValueError('Cancelled connectivity operation changed registration')
+                graph_checked.append(True)
+            except Exception:
+                graph_checked.append(traceback.format_exc())
+                dialog.reject()
+        QTimer.singleShot(0, exercise_graph_dialog)
+        QTest.mouseClick(page.connectivity_manage_button, Qt.MouseButton.LeftButton)
+        if graph_checked != [True]:
+            raise ValueError('Actual connectivity controls failed: ' + str(graph_checked))
+        QFileDialog.getOpenFileName = saved_open
+        record.update(connectivity_exact_release_catalog=True, connectivity_built_in_reader=True,
+            connectivity_ready_handoff=True, connectivity_preserves_previous=True,
+            connectivity_cancel_safe=True, connectivity_64bit_and_weak_edges=True)
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],

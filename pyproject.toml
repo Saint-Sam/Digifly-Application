@@ -27,6 +27,8 @@ dependencies = [
   "PySide6>=6.10.3,<6.11",
   "keyring>=25.7,<26",
   "psutil>=6,<8",
+  "pyarrow==22.0.0",
+  "duckdb==1.5.2",
 ]
 
 [project.optional-dependencies]

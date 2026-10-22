@@ -40,6 +40,7 @@ def library_sources(profile, releases, legacy=()):
             if profile and server == DEFAULT_NEUPRINT_SERVER:
                 pairs = [b for b in profile.bindings(ResourceKind.DATA_SOURCE)
                          if b.metadata.get('format') == 'digifly-weighted-pair-graph-v1'
+                         and b.metadata.get('server', DEFAULT_NEUPRINT_SERVER) == server
                          and pair_binding_dataset(b.metadata) == dataset]
                 if len(pairs) == 1:
                     pair = pairs[0]
