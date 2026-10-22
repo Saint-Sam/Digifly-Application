@@ -9,7 +9,8 @@ from PySide6.QtCore import QProcess, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QMessageBox, QFileDialog
 
-from digifly_app.core.connectivity_download import export_for, SERVER, connectivity_root, free_space_required
+from digifly_app.core.connectivity_download import (export_for, SERVER, connectivity_root,
+    free_space_required, prepare_attempt, checked_attempt, remove_cancelled_attempt)
 from digifly_app.core.linked_libraries import canonical_dataset, pair_binding_dataset
 from digifly_app.core.pair_graph import validated_manifest, sha
 from digifly_app.core.circuit import ConnectomeRef
@@ -78,6 +79,9 @@ class ConnectivityDownloadDialog(QDialog):
         self._approved = None
         self._approved_files = ()
         self._request_file = None
+        self._attempt = None
+        self._close_after_cancel = False
+        self._cancel_reason = 'Cancelled'
         self._source = ''
         profile, _ = load_or_create_default_profile()
         root = QVBoxLayout(self)
@@ -133,7 +137,7 @@ class ConnectivityDownloadDialog(QDialog):
             self.start('import')
 
     def start(self, kind):
-        if self.process.state() != QProcess.ProcessState.NotRunning:
+        if self.process.state() != QProcess.ProcessState.NotRunning or self._attempt is not None:
             return
         try:
             if kind == 'download' and not self.export.available:
@@ -160,10 +164,13 @@ class ConnectivityDownloadDialog(QDialog):
             self._buffer = ''
             root = connectivity_root(profile.managed_data_root, self.dataset)
             root.mkdir(parents=True, exist_ok=True)
-            self._request_file = root / ('request-' + uuid.uuid4().hex + '.json')
-            request = {'kind': kind, 'dataset': self.dataset, 'server': SERVER,
-                'managed_root': str(profile.managed_data_root), 'source': self._source}
-            self._request_file.write_text(json.dumps(request) + '\n')
+            request = prepare_attempt({'kind': kind, 'dataset': self.dataset, 'server': SERVER,
+                'managed_root': str(profile.managed_data_root), 'source': self._source if kind == 'import' else ''})
+            self._attempt = request
+            self._close_after_cancel = False
+            self._request_file = checked_attempt(request) / 'request.json'
+            with self._request_file.open('x', encoding='utf-8') as stream:
+                json.dump(request, stream)
             compiled = '__compiled__' in globals() or getattr(sys, 'frozen', False)
             from digifly_app.core.update_installer import running_executable
             self.process.setProgram(str(running_executable()) if compiled else sys.executable)
@@ -205,6 +212,7 @@ class ConnectivityDownloadDialog(QDialog):
         self.download.setEnabled(self.export.available)
         self.import_file.setEnabled(True)
         if self._abandoned:
+            self._finish_cancel()
             return
         response_error = ''
         if self._request_file is not None:
@@ -217,6 +225,7 @@ class ConnectivityDownloadDialog(QDialog):
         if code or status != QProcess.ExitStatus.NormalExit or not self.ready_result:
             detail = bytes(self.process.readAllStandardError()).decode('utf-8', errors='replace')[-2000:]
             self.status.setText('Connectivity not changed: ' + (response_error or detail or 'data reader failed'))
+            self._attempt = None  # Preserve non-cancellation failure evidence.
             return
         try:
             profile, path = load_or_create_default_profile()
@@ -227,6 +236,10 @@ class ConnectivityDownloadDialog(QDialog):
             if saved_file_snapshot(tuple(Path(p) for p, _ in self._approved_files)) != self._approved_files:
                 raise ValueError('Saved connectivity files changed after review; select again. New copy retained separately.')
             result = self.ready_result
+            attempt_root = checked_attempt(self._attempt)
+            if (Path(result['path']) != attempt_root / 'ready/connectivity.parquet'
+                    or Path(result['index']) != attempt_root / 'ready/index/pairs.sqlite'):
+                raise ValueError('Data reader returned files outside its reviewed attempt')
             if result['dataset'] != self.dataset or result['server'] != SERVER:
                 raise ValueError('Connectivity release/server differs; registration refused')
             source = ConnectomeRef(self.dataset, self.dataset, '', self.dataset,
@@ -251,11 +264,19 @@ class ConnectivityDownloadDialog(QDialog):
                 with history.open('x') as stream:
                     json.dump({'dataset': self.dataset, 'bindings': [b.to_dict() for b in existing]}, stream, indent=2)
             replace(profile, resources=(*remaining, binding)).save(path, replace=True)
+            attempt, self._attempt = self._attempt, None
+            # Persist completion too; closing a ready dialog must keep its data.
+            if attempt is not None:
+                try:
+                    (checked_attempt(attempt) / 'registered.json').write_text(json.dumps({'dataset': self.dataset, 'path': result['path']}) + '\n')
+                except (OSError, ValueError):
+                    pass  # The selected binding itself still protects this graph.
             self.progress.setRange(0, 100)
             self.progress.setValue(100)
             self.status.setText(f'Ready · {manifest["rows"]:,} directed pairs / {manifest["represented_neurons"]:,} represented IDs. Available in Circuit Builder. SWCs unchanged.\n' + result['scope'])
             self.registered.emit()
         except (OSError, ValueError, KeyError) as exc:
+            self._attempt = None  # Retain a completed but unselected copy for review.
             self.status.setText('Connectivity not changed: ' + str(exc))
 
     def _error(self, error):
@@ -265,11 +286,53 @@ class ConnectivityDownloadDialog(QDialog):
             self.download.setEnabled(self.export.available)
             self.import_file.setEnabled(True)
             self.close_button.setText('Close')
+            self._abandoned = True
+            self._cancel_reason = 'Data reader could not start'
+            self._finish_cancel()
 
     def _timeout(self):
+        self._cancel(False, 'Stopped at the one-hour safety limit')
+
+    def _finish_cancel(self):
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            return
+        self.timer.stop()
+        try:
+            if self._attempt is not None:
+                profile, _ = load_or_create_default_profile()
+                protected = [value for b in profile.resources for value in
+                    (b.path, b.metadata.get('index', ''), b.metadata.get('download_details', '')) if value]
+                remove_cancelled_attempt(self._attempt, protected)
+                self._attempt = None
+            self.ready_result = None
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.status.setText(self._cancel_reason + '. Unfinished files removed; previous connectivity unchanged.')
+            self.download.setEnabled(self.export.available)
+            self.import_file.setEnabled(True)
+            self.close_button.setText('Close')
+            if self._close_after_cancel:
+                super().reject()
+        except (OSError, ValueError) as exc:
+            self.download.setEnabled(False)
+            self.import_file.setEnabled(False)
+            self.close_button.setText('Retry cleanup')
+            self.status.setText('Could not remove unfinished files: ' + str(exc) + '. Close again to retry. Existing connectivity is unchanged.')
+
+    def _cancel(self, close, reason='Cancelled'):
         self._abandoned = True
-        self.process.kill()
-        self.status.setText('Stopped at the one-hour safety limit; previous connectivity unchanged. Partial download retained separately.')
+        self._close_after_cancel = close
+        self._cancel_reason = reason
+        self.timer.stop()
+        self.download.setEnabled(False)
+        self.import_file.setEnabled(False)
+        self.status.setText('Stopping data reader before removing unfinished files…')
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
+            self.process.waitForFinished(3000)
+        # A stopped process may have emitted finished while waiting. Cleanup is
+        # idempotent; if stopping failed, finished will do it later, not early.
+        self._finish_cancel()
 
     def reveal(self):
         root = None
@@ -289,9 +352,7 @@ class ConnectivityDownloadDialog(QDialog):
                 ('\n' + str(root) if root is not None else ''))
 
     def reject(self):
-        self._abandoned = True
-        self.timer.stop()
-        if self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.kill()
-            self.process.waitForFinished(3000)
-        super().reject()
+        if self._attempt is not None:
+            self._cancel(True)
+        else:
+            super().reject()

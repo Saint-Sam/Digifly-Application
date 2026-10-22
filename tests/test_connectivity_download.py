@@ -17,7 +17,8 @@ from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtTest import QTest
-from digifly_app.core.connectivity_download import EXPORTS, SERVER, export_for, checked_download, connectivity_root, run_download
+from digifly_app.core.connectivity_download import (EXPORTS, SERVER, export_for, checked_download,
+    connectivity_root, run_download, prepare_attempt, checked_attempt, attempt_path, remove_cancelled_attempt)
 from digifly_app.core.connectivity_conversion import convert_connectivity
 from digifly_app.core.circuit import ConnectomeRef
 from digifly_app.core.circuit_library import library_sources
@@ -221,26 +222,27 @@ def test_download_checksum_size_generation_cancel_and_destination_guards(tmp_pat
     assert (tmp_path/'good.csv').read_bytes() == data
 
 
-def test_midway_cancel_keeps_partial_and_restart_uses_a_new_generation(tmp_path, monkeypatch):
+def test_midway_cancel_removes_partial_and_restart_starts_clean(tmp_path, monkeypatch):
     import digifly_app.core.connectivity_download as download
     data = b'x' * (2 * 1024 * 1024)
     export = replace(export_for('manc:v1.0'), size=len(data), md5=base64.b64encode(hashlib.md5(data).digest()).decode())
     monkeypatch.setattr(download, 'export_for', lambda dataset: export)
     request = {'dataset': export.dataset, 'managed_root': str(tmp_path/'managed')}
+    seen = []
     for _ in range(2):
         cancelled = []
+        def after_block(*args):
+            root = connectivity_root(request['managed_root'], export.dataset)
+            generation, = root.glob('download-*')
+            assert (generation / Path(export.object_name).name).stat().st_size > 0
+            seen.append(generation)
+            cancelled.append(True)
         with pytest.raises(InterruptedError):
-            run_download(request, progress=lambda *args: cancelled.append(True),
+            run_download(request, progress=after_block,
                 cancel=lambda: bool(cancelled), opener=lambda *a, **k: Response(data, export))
+        assert not tuple(connectivity_root(request['managed_root'], export.dataset).iterdir())
     root = connectivity_root(request['managed_root'], export.dataset)
-    generations = sorted(root.glob('download-*'))
-    assert len(generations) == 2 and generations[0] != generations[1]
-    for generation in generations:
-        raw = generation / Path(export.object_name).name
-        assert raw.read_bytes() == data[:1024 * 1024]
-        assert json.loads((generation/'incomplete.json').read_text())['ready'] is False
-        assert not (generation/'ready').exists()
-        assert not (generation/'download-details.json').exists()
+    assert len(set(seen)) == 2 and not tuple(root.iterdir())
 
 
 def wait_finished(dialog):
@@ -282,6 +284,7 @@ def test_actual_child_reader_registration_replacement_and_release_handoff(tmp_pa
         assert before != profile_path.read_bytes()
     finally:
         dialog.reject()
+    assert Path(old.path).read_bytes() == raw and Path(new.path).is_file()
 
 def test_cancel_never_registers_even_if_child_completed(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
@@ -293,6 +296,148 @@ def test_cancel_never_registers_even_if_child_completed(tmp_path, monkeypatch):
     dialog._source = str(source)
     dialog.start('import'); dialog.reject()
     assert profile_path.read_bytes() == before
+    assert dialog._attempt is None
+    assert not tuple(connectivity_root(ResourceProfile.load(profile_path).managed_data_root, dialog.dataset).iterdir())
+    assert source.is_file()
+
+
+def request_for(tmp_path, kind='import'):
+    return {'kind': kind, 'dataset': 'male-cns:v1.0', 'server': SERVER, 'managed_root': str(tmp_path/'managed')}
+
+
+def test_cleanup_removes_only_its_owned_attempt_and_all_conversion_scratch(tmp_path):
+    first, other = (prepare_attempt(request_for(tmp_path, 'download')) for _ in range(2))
+    path, sibling = checked_attempt(first), checked_attempt(other)
+    imported = tmp_path/'original.csv'; imported.write_bytes(b'original user file')
+    first['source'] = str(imported)
+    (sibling/'kept.feather').write_bytes(b'earlier download')
+    for name in ('raw.feather', 'ready/connectivity.parquet', 'ready/index/pairs.sqlite', 'ready/scratch/part.bin'):
+        target = path/name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(b'partial')
+    remove_cancelled_attempt(first)
+    remove_cancelled_attempt(first)  # Safe second finished/Cancel signal.
+    assert not path.exists() and imported.read_bytes() == b'original user file'
+    assert (sibling/'kept.feather').read_bytes() == b'earlier download'
+
+
+@pytest.mark.parametrize('protection', ['owner', 'registered', 'selected', 'input', 'escape'])
+def test_cleanup_refuses_unowned_completed_or_protected_targets(tmp_path, protection):
+    request = prepare_attempt(request_for(tmp_path))
+    path = checked_attempt(request)
+    partial = path/'partial.parquet'; partial.write_bytes(b'keep until safe')
+    protected = ()
+    if protection == 'owner':
+        (path/'attempt.json').write_text('{}')
+    elif protection == 'registered':
+        (path/'registered.json').write_text('{}')
+    elif protection == 'selected':
+        protected = (str(partial),)
+    elif protection == 'input':
+        request['source'] = str(partial)
+    else:
+        request['attempt_id'] = '../../external'
+    with pytest.raises(ValueError):
+        remove_cancelled_attempt(request, protected)
+    assert partial.read_bytes() == b'keep until safe'
+
+
+def test_cleanup_refuses_nested_links_before_deleting_anything(tmp_path):
+    if os.name == 'nt':
+        pytest.skip('Unprivileged Windows runner cannot create a directory symlink')
+    request = prepare_attempt(request_for(tmp_path))
+    path = checked_attempt(request)
+    outside = tmp_path/'external'; outside.mkdir(); (outside/'keep').write_bytes(b'keep')
+    (path/'partial').write_bytes(b'partial')
+    (path/'linked').symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match='link'):
+        remove_cancelled_attempt(request)
+    assert (outside/'keep').read_bytes() == b'keep' and (path/'partial').exists()
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_cancel_stops_writer_before_cleanup_and_keeps_source_and_prior_graph(tmp_path, monkeypatch, timeout):
+    import sys
+    app = QApplication.instance() or QApplication([])
+    profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    source = tmp_path/'original.feather'; feather.write_feather(table(), source)
+    original = source.read_bytes(); before = profile_path.read_bytes()
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0'); dialog._source = str(source); dialog.show()
+    original_start = dialog.process.start
+    def start_writer():
+        folder = checked_attempt(dialog._attempt)
+        code = ('from pathlib import Path; import time; p=Path(' + repr(str(folder)) + '); '
+                '(p/"raw.feather").write_bytes(b"partial"*1024); '
+                '(p/"scratch").mkdir(); (p/"scratch/part.bin").write_bytes(b"scratch"); time.sleep(45)')
+        dialog.process.setProgram(sys.executable); dialog.process.setArguments(['-c', code]); original_start()
+    monkeypatch.setattr(dialog.process, 'start', start_writer)
+    dialog.start('import')
+    folder = checked_attempt(dialog._attempt)
+    deadline = time.monotonic() + 5
+    while not (folder/'scratch/part.bin').exists() and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert (folder/'raw.feather').stat().st_size > 0
+    if timeout:
+        dialog._timeout()
+        assert dialog.isVisible() and 'safety limit' in dialog.status.text()
+    else:
+        dialog.close_button.click()
+        assert not dialog.isVisible()
+    assert dialog.process.state() == QProcess.ProcessState.NotRunning and not folder.exists()
+    assert 'Unfinished files removed' in dialog.status.text()
+    assert source.read_bytes() == original and profile_path.read_bytes() == before
+    dialog.reject()
+
+
+def test_cancel_completion_race_removes_unselected_ready_output(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    before = profile_path.read_bytes()
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0')
+    request = prepare_attempt(request_for(tmp_path))
+    folder = checked_attempt(request)
+    source = tmp_path/'input.feather'; feather.write_feather(table(), source)
+    dialog._attempt = request
+    dialog.ready_result = convert_connectivity(source, folder/'ready', dataset=dialog.dataset, server=SERVER)
+    dialog.reject()
+    dialog._finished(0, QProcess.ExitStatus.NormalExit)
+    assert not folder.exists() and profile_path.read_bytes() == before and source.is_file()
+
+
+def test_cancel_cannot_delete_files_until_worker_stopped(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0'); dialog.show()
+    dialog._attempt = prepare_attempt(request_for(tmp_path)); folder = checked_attempt(dialog._attempt)
+    (folder/'raw').write_bytes(b'active')
+    monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.Running)
+    monkeypatch.setattr(dialog.process, 'kill', lambda: None)
+    monkeypatch.setattr(dialog.process, 'waitForFinished', lambda ms: False)
+    dialog.reject()
+    assert folder.exists() and dialog.isVisible() and 'Stopping' in dialog.status.text()
+    monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.NotRunning)
+    dialog._finished(1, QProcess.ExitStatus.CrashExit)
+    assert not folder.exists() and not dialog.isVisible()
+
+
+def test_cleanup_failure_is_visible_and_retry_preserves_original_input(tmp_path, monkeypatch):
+    import digifly_app.ui.connectivity_download as ui
+    app = QApplication.instance() or QApplication([])
+    profile_path = make_standalone_profile(workstation_root=tmp_path/'workspace').save(tmp_path/'resources.json')
+    monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE', str(profile_path))
+    dialog = ConnectivityDownloadDialog('male-cns:v1.0'); dialog.show()
+    dialog._attempt = prepare_attempt(request_for(tmp_path)); folder = checked_attempt(dialog._attempt)
+    real_remove = ui.remove_cancelled_attempt
+    def refused(*args):
+        raise PermissionError('file in use')
+    monkeypatch.setattr(ui, 'remove_cancelled_attempt', refused)
+    dialog.reject()
+    assert folder.exists() and dialog.isVisible() and 'Could not remove unfinished' in dialog.status.text()
+    assert dialog.close_button.text() == 'Retry cleanup' and not dialog.download.isEnabled()
+    monkeypatch.setattr(ui, 'remove_cancelled_attempt', real_remove)
+    dialog.close_button.click()
+    assert not folder.exists() and not dialog.isVisible()
 
 
 def test_low_disk_refuses_before_conversion_files(tmp_path, monkeypatch):

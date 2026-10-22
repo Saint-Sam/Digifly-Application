@@ -123,11 +123,9 @@ def run_task(request, response_file=None):
         from .connectivity_download import run_download
         result = run_download(request, emit)
     elif request['kind'] == 'import':
-        from .connectivity_download import connectivity_root
-        import uuid
-        root = connectivity_root(request['managed_root'], request['dataset'])
-        root.mkdir(parents=True, exist_ok=True)
-        result = convert_connectivity(request['source'], root / ('import-' + uuid.uuid4().hex),
+        from .connectivity_download import prepare_attempt, checked_attempt
+        request = prepare_attempt(request)
+        result = convert_connectivity(request['source'], checked_attempt(request) / 'ready',
             dataset=request['dataset'], server=request['server'])
     else:
         raise ValueError('Unknown connectivity action')

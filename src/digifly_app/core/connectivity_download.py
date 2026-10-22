@@ -3,8 +3,11 @@ from dataclasses import dataclass, asdict, replace
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import time
 import urllib.parse
 import urllib.request
@@ -87,6 +90,76 @@ def free_space_required(export):
     return max(512 * 1024**2, export.size * 12 + 256 * 1024**2)
 
 
+def _no_links(path):
+    for item in (path, *path.parents):
+        if item.is_symlink() or (item.exists() and
+                getattr(item.lstat(), 'st_file_attributes', 0) & 0x400):
+            raise ValueError('Connectivity attempt must not traverse a file or folder link')
+
+
+def attempt_path(request):
+    """Only a direct, UUID-named child of the exact release's managed root."""
+    kind, token = request.get('kind'), request.get('attempt_id', '')
+    if kind not in {'download', 'import'} or not re.fullmatch('[0-9a-f]{32}', token):
+        raise ValueError('Invalid connectivity attempt identity')
+    if request.get('server', SERVER) != SERVER:
+        raise ValueError('Connectivity attempt server differs')
+    path = connectivity_root(request['managed_root'], request['dataset']) / (kind + '-' + token)
+    _no_links(path)
+    return path
+
+
+def _attempt_owner(request):
+    return {key: request[key] for key in ('kind', 'dataset', 'attempt_id')} | {
+        'schema': 'digifly-connectivity-attempt-v1', 'server': SERVER}
+
+
+def checked_attempt(request):
+    path = attempt_path(request)
+    marker = path / 'attempt.json'
+    _no_links(marker)
+    if not path.is_dir() or json.loads(marker.read_text(encoding='utf-8')) != _attempt_owner(request):
+        raise ValueError('Connectivity attempt ownership differs; cleanup refused')
+    return path
+
+
+def prepare_attempt(request):
+    request = dict(request)
+    if 'attempt_id' in request:
+        checked_attempt(request)
+        return request
+    request['attempt_id'] = uuid.uuid4().hex
+    path = attempt_path(request)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()  # Exclusive: an existing generation can never become this attempt.
+    with (path / 'attempt.json').open('x', encoding='utf-8') as stream:
+        json.dump(_attempt_owner(request), stream)
+    return request
+
+
+def remove_cancelled_attempt(request, protected=()):
+    """Call only after the owning worker stopped (or unwound cooperatively)."""
+    path = attempt_path(request)
+    if not path.exists():
+        return
+    checked_attempt(request)
+    if (path / 'registered.json').exists():
+        raise ValueError('Completed connectivity must not be removed')
+    for name in (*protected, request.get('source', '')):
+        if name and Path(name).resolve().is_relative_to(path.resolve()):
+            raise ValueError('An original input or selected graph is inside this attempt; cleanup refused')
+    # Refuse symlinks/reparse points and unusual files before deleting anything.
+    # rmtree unlinks rather than following a subsequently substituted symlink.
+    for parent, directories, files in os.walk(path, followlinks=False):
+        for name in (*directories, *files):
+            item = Path(parent) / name
+            _no_links(item)
+            mode = item.lstat().st_mode
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise ValueError('Unexpected connectivity attempt file; cleanup refused')
+    shutil.rmtree(path)
+
+
 def checked_download(export, destination, progress=lambda *_: None, cancel=lambda: False, opener=None):
     if not export.available:
         raise ValueError(export.unavailable)
@@ -136,8 +209,8 @@ def run_download(request, progress=lambda *_: None, cancel=lambda: False, opener
     root.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root).free < free_space_required(export):
         raise ValueError(f'Not enough free disk: allow {free_space_required(export)/1024**3:.1f} GiB for this export, conversion and index; existing data unchanged')
-    destination = root / ('download-' + uuid.uuid4().hex)
-    destination.mkdir()
+    request = prepare_attempt(dict(request, kind='download'))
+    destination = checked_attempt(request)
     raw = destination / Path(export.object_name).name
     try:
         downloaded = checked_download(export, raw, progress, cancel, opener)
@@ -153,6 +226,9 @@ def run_download(request, progress=lambda *_: None, cancel=lambda: False, opener
             'ready': result, 'completed_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
         (destination / 'download-details.json').write_text(json.dumps(details, indent=2) + '\n')
         return {**result, 'details': str(destination / 'download-details.json')}
+    except InterruptedError:
+        remove_cancelled_attempt(request)
+        raise
     except Exception:
         # Preserve partial bytes and diagnostic state, never label them ready.
         (destination / 'incomplete.json').write_text(json.dumps({'dataset': dataset, 'ready': False}) + '\n')

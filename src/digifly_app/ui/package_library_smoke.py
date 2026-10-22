@@ -1050,10 +1050,38 @@ def run_library_smoke(destination: Path) -> int:
                 if current.path == old.path or Path(old.path).read_bytes() != old_bytes:
                     raise ValueError('Connectivity replacement overwrote its retained prior file')
                 before_cancel = profile_path.read_bytes()
+                current_bytes = Path(current.path).read_bytes()
+                # A real compiled child writes a bounded file before Cancel.
+                # This is conversion cancellation, not a live network transfer.
+                from digifly_app.core.connectivity_download import checked_attempt
+                cancel_fixture = destination / 'cancel-during-conversion.feather'
+                feather.write_feather(pa.table({'body_pre': pa.array(range(1, 262145), type=pa.int64()),
+                    'body_post': pa.array([262145] * 262144, type=pa.int64()),
+                    'weight': pa.array([1] * 262144, type=pa.int64())}), cancel_fixture, chunksize=4096)
+                from digifly_app.core.pair_graph import sha
+                input_hash = sha(cancel_fixture)
+                QFileDialog.getOpenFileName = lambda *a, **k: (str(cancel_fixture), 'Connectivity')
                 QTest.mouseClick(dialog.import_file, Qt.MouseButton.LeftButton)
+                cancelled_folder = checked_attempt(dialog._attempt)
+                partial = cancelled_folder / 'ready/source-columns.parquet'
+                wait_for(lambda: partial.is_file() and partial.stat().st_size > 0,
+                    'Cancellation check did not observe actual worker output before stopping')
+                if dialog.process.state() == QProcess.ProcessState.NotRunning:
+                    raise ValueError('Cancellation must occur during work, not after registration')
+                observed_partial_bytes = partial.stat().st_size
                 QTest.mouseClick(dialog.close_button, Qt.MouseButton.LeftButton)
-                if profile_path.read_bytes() != before_cancel or dialog.isVisible():
-                    raise ValueError('Cancelled connectivity operation changed registration')
+                if (profile_path.read_bytes() != before_cancel or dialog.isVisible() or cancelled_folder.exists()
+                        or dialog.process.state() != QProcess.ProcessState.NotRunning):
+                    raise ValueError('Cancel did not stop its child and remove only the unfinished attempt')
+                if (sha(cancel_fixture) != input_hash or Path(old.path).read_bytes() != old_bytes
+                        or Path(current.path).read_bytes() != current_bytes or unregistered.read_bytes() != kept_bytes):
+                    raise ValueError('Cancellation modified an original input or an earlier saved graph')
+                record.update(connectivity_cancel_removes_partials=True,
+                    connectivity_cancel_stops_worker=True, connectivity_cancel_preserves_inputs=True,
+                    connectivity_cancel_observation={'phase': 'actual_compiled_import_conversion',
+                        'partial_bytes_observed': observed_partial_bytes, 'attempt_removed': True,
+                        'worker_stopped': True, 'original_import_hash_preserved': True,
+                        'previous_graphs_and_unregistered_file_preserved': True, 'profile_unchanged': True})
                 graph_checked.append(True)
             except Exception:
                 graph_checked.append(traceback.format_exc())
