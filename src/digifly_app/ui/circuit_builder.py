@@ -1428,7 +1428,7 @@ class CircuitBuilderPage(QWidget):
             release_note = manifest.get('source_scope', 'release unconfirmed')
             self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; {release_note}")
         except (OSError, ValueError, KeyError):
-            self.pair_graph_note.setText("Selected pair graph is unavailable; reselect its exact Parquet. No fallback source is used.")
+            self.pair_graph_note.setText("Selected connectivity file is unavailable. Open Data Library to review it; no fallback source is used.")
 
     def open_pair_graph_import(self) -> None:
         source = self._selected_source()
@@ -1563,6 +1563,36 @@ class CircuitBuilderPage(QWidget):
         if source.server and self.saved_browser.inventory is None:
             self.status_message.emit('Saved neurons are still being indexed. Wait for the count or refresh a cancelled scan.')
             return
+        if source.key.startswith('library:'):
+            # Explicit Load chooses current connectivity. Merely reopening or
+            # refreshing a saved circuit retains its original immutable graph.
+            try:
+                profile = load_default_profile()
+                latest = next((s for s in library_sources(profile, (source.dataset,))
+                               if s.key == source.key and s.server == source.server), None)
+                if latest is not None:
+                    # Saved/external roots may not be in this machine's current
+                    # profile. Add current locations without discarding those
+                    # exact saved inputs merely because discovery is narrower.
+                    locations = {(row['root'], row['dataset'], row['server']): row
+                                 for row in (*source.swc_sources, *latest.swc_sources)}
+                    locations = tuple(locations.values())
+                    locations_changed = source.swc_sources != locations
+                    source = replace(source, pair_graph_path=latest.pair_graph_path,
+                        pair_graph_index=latest.pair_graph_index, pair_graph_sha256=latest.pair_graph_sha256,
+                        swc_sources=locations)
+                    self._sources = tuple(source if i == self.connectome_combo.currentIndex() else s
+                                          for i, s in enumerate(self._sources))
+                    self._catalog_cache.clear()
+                    self._edge_catalog = None
+                    self._update_pair_graph_note()
+                    if locations_changed:
+                        self._start_source_inventory()
+                        self._assemble_after_inventory = (source.key, self.query_edit.text(), self.saved_browser.generation)
+                        return
+            except (OSError, ValueError, KeyError) as exc:
+                self.status_message.emit('Current connectivity could not be read: ' + str(exc))
+                return
         expression = self.query_edit.text().strip()
         self._clear_missing_neuprint_request()
         self.assemble_button.setEnabled(False)

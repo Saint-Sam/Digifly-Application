@@ -6,6 +6,7 @@ from .circuit import ConnectomeRef
 from .linked_libraries import canonical_dataset, pair_binding_dataset
 from .neuprint import DEFAULT_NEUPRINT_SERVER
 from .resource_profile import ResourceKind
+from .pair_graph import selected_dataset_graph, source_with_graph
 from .saved_neurons import SavedSource, _server, profile_saved_sources
 
 
@@ -37,16 +38,14 @@ def library_sources(profile, releases, legacy=()):
             root = native.root if native else str(folders[0].root) if folders else ''
             key = f'library:{dataset}' + (f'@{server}' if server != DEFAULT_NEUPRINT_SERVER else '')
             source = ConnectomeRef(key, dataset, root, dataset, swc_sources=rows, server=server)
-            if profile and server == DEFAULT_NEUPRINT_SERVER:
+            if profile:
                 pairs = [b for b in profile.bindings(ResourceKind.DATA_SOURCE)
                          if b.metadata.get('format') == 'digifly-weighted-pair-graph-v1'
                          and b.metadata.get('server', DEFAULT_NEUPRINT_SERVER) == server
                          and pair_binding_dataset(b.metadata) == dataset]
-                if len(pairs) == 1:
-                    pair = pairs[0]
-                    source = replace(source, pair_graph_path=pair.path,
-                        pair_graph_index=str(pair.metadata.get('index', '')),
-                        pair_graph_sha256=str(pair.metadata.get('source_sha256', '')))
+                pair = selected_dataset_graph(pairs)
+                if pair is not None:
+                    source = source_with_graph(source, pair)
                 elif len(pairs) > 1:
                     # Do not choose among independent connectivity tables.
                     source = replace(source, label=dataset + ' (choose connectivity in Data Library)')

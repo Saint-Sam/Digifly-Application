@@ -9,6 +9,18 @@ import sys
 from PySide6.QtCore import QSettings
 
 
+def run_child(command, project, environment):
+    """Retain real timeout output; a missing receipt is a failure, not silence."""
+    try:
+        return subprocess.run(command, cwd=project, env=environment,
+                              capture_output=True, text=True, timeout=120), False
+    except subprocess.TimeoutExpired as exc:
+        def decoded(value):
+            return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or ''
+        return subprocess.CompletedProcess(command, -1, decoded(exc.stdout),
+            decoded(exc.stderr) + '\nNative app check exceeded its unchanged 120-second limit.\n'), True
+
+
 def fingerprint():
     settings = QSettings("digifly", "Digifly Workstation")
     # Compare this app's values, not macOS-global fallback preferences such as
@@ -36,16 +48,19 @@ def main():
     archive_sha = hashlib.sha256(args.archive.read_bytes()).hexdigest() if args.archive else None
     before = fingerprint()
     environment = dict(os.environ, QT_QPA_PLATFORM="cocoa" if sys.platform == "darwin" else "windows")
-    result = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True, timeout=120)
+    result, timed_out = run_child(command, project, environment)
     after = fingerprint()
-    evidence = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    output.mkdir(parents=True, exist_ok=True)
+    receipt = output / 'receipt.json'
+    evidence = json.loads(receipt.read_text(encoding='utf-8')) if receipt.is_file() else {}
     isolated_settings = list((output / "settings").glob("*.ini"))
-    report = {"ok": result.returncode == 0 and evidence["ok"] and before == after and bool(isolated_settings),
+    report = {"ok": result.returncode == 0 and evidence.get("ok") is True and before == after and bool(isolated_settings),
               "schema": "digifly-native-library-runner-v1", "execution_mode": "source" if args.source else "packaged",
               "executable_sha256": executable_sha, "archive_sha256": archive_sha,
               "native_preferences_before_sha256": before, "native_preferences_after_sha256": after,
               "native_preferences_unchanged": before == after, "explicit_settings_files": [str(p) for p in isolated_settings],
-              "exit_code": result.returncode, "engineering_only": True}
+              "exit_code": result.returncode, "timed_out": timed_out,
+              "child_receipt_present": receipt.is_file(), "engineering_only": True}
     if args.executable and hashlib.sha256(args.executable.read_bytes()).hexdigest() != executable_sha:
         report["ok"] = False
     if args.archive and hashlib.sha256(args.archive.read_bytes()).hexdigest() != archive_sha:

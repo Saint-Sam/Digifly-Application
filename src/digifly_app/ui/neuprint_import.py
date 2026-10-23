@@ -359,11 +359,13 @@ class NeuPrintImportDialog(QDialog):
         self.name_edit.hide()
         self.snapshot_edit.hide()
         self.connectivity_check = QCheckBox(
-            "Include directed connections among the selected neurons"
+            "Update this dataset's shared connectivity file"
         )
         self.connectivity_check.setChecked(True)
         self.connectivity_check.setToolTip(
-            "Adds a bounded CSV table of selected-to-selected ConnectsTo edges and weights"
+            "Adds both directions between selected and earlier app-managed neurons. "
+            "Counts replace earlier observations of the same directed pair; they are not added twice. "
+            "Linked external libraries are not automatically queried."
         )
         destination_form.addRow("Connectivity table", self.connectivity_check)
         self.destination_label = QLabel("Preview neurons to calculate the exact destination")
@@ -373,7 +375,8 @@ class NeuPrintImportDialog(QDialog):
         destination_form.addRow("Neuron files", self.destination_label)
         self.storage_help = QLabel("Every search uses the same dataset folder: family → type → body ID → SWC. "
             "Before downloading, the app checks this folder and asks which existing files you want to replace. "
-            "Download details and any connectivity table are saved separately; no new search-named SWC folder is created.")
+            "Connectivity grows in one file alongside this dataset's SWCs. Internal history keeps saved experiments reproducible; "
+            "no new search-named SWC folder is created.")
         self.storage_help.setWordWrap(True)
         destination_form.addRow("", self.storage_help)
         self.discard_checkpoint_button = QPushButton("Discard saved partial download…")
@@ -833,10 +836,17 @@ class NeuPrintImportDialog(QDialog):
             QMessageBox.warning(self, "Download details are incomplete", str(exc))
             return
         self.status.setText("Checking this dataset's SWC folders for existing neurons…")
-        def ready(existing):
-            self._after_operation = lambda: self._review_download(request, existing)
-        self._start_operation("existing-file check", lambda: inspect_existing_swcs(
-            self.profile, request.server, request.dataset, (neuron.body_id for neuron in request.neurons)), ready)
+        def inspect():
+            bodies = tuple(neuron.body_id for neuron in request.neurons)
+            existing = inspect_existing_swcs(self.profile, request.server, request.dataset, bodies)
+            from digifly_app.core.selected_connectivity import review_connectivity
+            plan = review_connectivity(self.profile, request.server, request.dataset, bodies) if request.include_connectivity else None
+            return existing, plan
+        def ready(result):
+            existing, plan = result
+            reviewed = replace(request, connectivity_review=plan)
+            self._after_operation = lambda: self._review_download(reviewed, existing)
+        self._start_operation("existing-file check", inspect, ready)
 
     def _review_download(self, request, existing):
         replacements = ()
@@ -855,7 +865,12 @@ class NeuPrintImportDialog(QDialog):
         self._reviewed_request = request
         count = len(request.neurons)
         connectivity_note = (
-            " A bounded selected-to-selected connectivity CSV will also be included."
+            f"\n\nShared connectivity: {len(request.connectivity_review['participants']):,} app-managed neurons, "
+            f"refreshing {len(request.connectivity_review['focus']):,} selected/new endpoints in both directions. "
+            "Earlier directed pairs are retained or refreshed, never counted twice. "
+            "This is not the whole connectome or the contents of linked external libraries. "
+            "Limit: 5,000 managed neurons / 250,000 pairs / 128 MiB per update.\n"
+            f"{library_root(self.profile, request.server, request.dataset) / 'connectivity/connectivity.sqlite'}"
             if request.include_connectivity
             else ""
         )
@@ -873,7 +888,9 @@ class NeuPrintImportDialog(QDialog):
             f"Neuron folder:\n{library_root(self.profile, request.server, request.dataset) / 'export_swc'}\n\n"
             "Each file follows family/type/body-ID/body-ID.swc. Previous files are backed up before an "
             "approved replacement. Different datasets and releases stay separate. "
-            f"Download details and connectivity are saved separately.{connectivity_note}{resume_note}{large_note}",
+            f"Download details are kept in the dataset history.{connectivity_note}{resume_note}{large_note}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return

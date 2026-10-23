@@ -150,6 +150,7 @@ class NeuPrintAcquisitionRequest:
     max_connectivity_bytes: int = DEFAULT_MAX_CONNECTIVITY_BYTES
     library_review: dict[str, dict] | None = None
     replacement_ids: tuple[int, ...] = ()
+    connectivity_review: dict | None = None
 
     def __post_init__(self) -> None:
         normalize_server(self.server)
@@ -473,18 +474,32 @@ class NeuPrintClient:
     ) -> tuple[NeuPrintConnection, ...]:
         """Fetch a bounded directed edge table among the reviewed neurons."""
 
-        if not self.dataset:
-            raise ValueError("Choose a neuPrint dataset before downloading connectivity")
         ids = tuple(dict.fromkeys(int(value) for value in body_ids))
         if not ids or len(ids) > MAX_SELECTION_LIMIT:
             raise ValueError("Connectivity requires 1–500 reviewed neuron body IDs")
+        return self.fetch_connectivity_between(ids, ids, cancel=cancel, max_rows=max_rows,
+                                               max_bytes=max_bytes, on_bytes=on_bytes)
+
+    def fetch_connectivity_between(self, source_ids, target_ids, *, cancel=None,
+                                   max_rows=DEFAULT_MAX_CONNECTIVITY_ROWS,
+                                   max_bytes=DEFAULT_MAX_CONNECTIVITY_BYTES, on_bytes=None):
+        """One bounded directed rectangle; caller budgets the whole acquisition."""
+        if not self.dataset:
+            raise ValueError("Choose a neuPrint dataset before downloading connectivity")
+        from .selected_connectivity import _ids
+        sources, targets = _ids(source_ids), _ids(target_ids)
+        if not sources or not targets or max(len(sources), len(targets)) > MAX_SELECTION_LIMIT:
+            raise ValueError('Connectivity query endpoints must contain 1–500 reviewed body IDs')
+        if max_bytes < 1:
+            raise ValueError('Connectivity byte budget exhausted')
         limit = int(max_rows)
         if not 1 <= limit <= DEFAULT_MAX_CONNECTIVITY_ROWS:
             raise ValueError("Invalid neuPrint connectivity row limit")
-        body_list = ",".join(str(value) for value in ids)
+        source_list = ",".join(str(value) for value in sources)
+        target_list = ",".join(str(value) for value in targets)
         cypher = (
             "MATCH (source:Neuron)-[edge:ConnectsTo]->(target:Neuron) "
-            f"WHERE source.bodyId IN [{body_list}] AND target.bodyId IN [{body_list}] "
+            f"WHERE source.bodyId IN [{source_list}] AND target.bodyId IN [{target_list}] "
             "RETURN source.bodyId AS sourceBodyId, target.bodyId AS targetBodyId, "
             "edge.weight AS weight ORDER BY sourceBodyId, targetBodyId "
             f"LIMIT {limit + 1}"
@@ -651,9 +666,10 @@ def _parse_connectivity_rows(
         else:
             raise NeuPrintError("neuPrint returned a malformed connectivity row")
         try:
-            source = int(row.get("sourceBodyId"))
-            target = int(row.get("targetBodyId"))
-            weight = int(row.get("weight"))
+            values = [row.get(name) for name in ('sourceBodyId', 'targetBodyId', 'weight')]
+            if any(isinstance(value, bool) or not str(value).isdigit() or int(value) >= 2**63 for value in values):
+                raise ValueError('IDs/counts must be signed 64-bit integer values')
+            source, target, weight = map(int, values)
         except (TypeError, ValueError) as exc:
             raise NeuPrintError("neuPrint returned a malformed connectivity row") from exc
         if source < 0 or target < 0 or weight < 0:
@@ -702,6 +718,8 @@ def _request_descriptor(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
     }
     if request.library_review is not None:
         result.update(library_review=request.library_review, replacement_ids=list(request.replacement_ids))
+    if request.connectivity_review is not None:
+        result['connectivity_review'] = request.connectivity_review
     return result
 
 
@@ -905,6 +923,9 @@ def acquire_neuprint_bundle(
     destination = preview_destination(profile, request)
     if add_to_library:
         from .swc_library import inspect_existing_swcs, library_root, store_dataset_download, _plain_path
+        current_profile = ResourceProfile.load(profile_path) if Path(profile_path).is_file() else profile
+        if current_profile.managed_data_root != profile.managed_data_root:
+            raise ValueError('The Data Library location changed; reopen the download window before downloading')
         request = replace(request, server=normalize_server(request.server))
         found = inspect_existing_swcs(profile, request.server, request.dataset,
                                       (neuron.body_id for neuron in request.neurons))
@@ -912,6 +933,13 @@ def acquire_neuprint_bundle(
             request = replace(request, library_review=found)
         elif found != request.library_review:
             raise ValueError("Existing neurons changed after review. No files were replaced; review them again")
+        if request.include_connectivity:
+            from .selected_connectivity import review_connectivity, require_current_review
+            bodies = tuple(neuron.body_id for neuron in request.neurons)
+            plan = (review_connectivity(profile, request.server, request.dataset, bodies)
+                    if request.connectivity_review is None else require_current_review(
+                        profile, request.server, request.dataset, bodies, request.connectivity_review))
+            request = replace(request, connectivity_review=plan)
         request = matching_library_checkpoint(profile, request)
     if not add_to_library and destination.exists():
         raise FileExistsError(f"A managed neuPrint download already exists at {destination}")
@@ -1096,13 +1124,15 @@ def acquire_neuprint_bundle(
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
             emit("Downloading selected connectivity", completed_tasks())
             body_ids = tuple(neuron.body_id for neuron in request.neurons)
-            connections = provider.fetch_connectivity(
-                body_ids,
-                cancel=cancel_event,
-                max_rows=request.max_connectivity_rows,
-                max_bytes=request.max_connectivity_bytes,
-                on_bytes=add_bytes,
-            )
+            if request.connectivity_review is not None:
+                from .selected_connectivity import fetch_updates
+                connections = fetch_updates(provider, request.connectivity_review,
+                    cancel=cancel_event, max_rows=request.max_connectivity_rows,
+                    max_bytes=request.max_connectivity_bytes, on_bytes=add_bytes)
+            else:
+                connections = provider.fetch_connectivity(body_ids, cancel=cancel_event,
+                    max_rows=request.max_connectivity_rows, max_bytes=request.max_connectivity_bytes,
+                    on_bytes=add_bytes)
             table_buffer = io.StringIO(newline="")
             writer = csv.writer(table_buffer, lineterminator="\n")
             writer.writerow(("source_body_id", "target_body_id", "weight"))
@@ -1149,7 +1179,8 @@ def acquire_neuprint_bundle(
         total_bytes = sum(int(record["size_bytes"]) for record in final_inventory)
         connectivity_payload = {
             "included": bool(request.include_connectivity),
-            "scope": "selected_to_selected",
+            "scope": "cumulative_managed_neurons" if request.connectivity_review is not None else "selected_to_selected",
+            **({'review': request.connectivity_review} if request.connectivity_review is not None else {}),
             "table_path": (
                 "source/connectivity/selected_connections.csv"
                 if request.include_connectivity
@@ -1205,7 +1236,8 @@ def acquire_neuprint_bundle(
                 len(final_inventory), total_bytes, len(request.neurons), fetched_at)
             library = store_dataset_download(profile, Path(profile_path), staged_resource,
                 server=normalize_server(request.server), dataset=request.dataset,
-                reviewed_existing=request.library_review or {}, replacement_ids=request.replacement_ids)
+                reviewed_existing=request.library_review or {}, replacement_ids=request.replacement_ids,
+                cancel=cancel_event)
             # Only remove the exact completed task-owned files; unexpected files
             # in staging are retained rather than recursively deleted.
             for record in final_inventory:
@@ -1268,7 +1300,19 @@ def acquire_neuprint_bundle(
         return ManagedResource(
             **{**resource.__dict__, "registered_binding": binding_id}
         )
-    except Exception:
+    except Exception as exc:
+        if (isinstance(exc, AcquisitionCancelled) and request.connectivity_review is not None
+                and staging.is_dir()):
+            # Completed SWCs keep their resumable checkpoint. A cancelled graph
+            # update never leaves a partial/cached table for a later refresh.
+            for record in tuple(inventory):
+                if record.get('data_role') != 'connectivity':
+                    continue
+                path = staging / record['path']
+                if path.is_file() and not path.is_symlink() and _sha256_bytes(path.read_bytes()) == record['sha256']:
+                    path.unlink()
+                    inventory.remove(record)
+            save_checkpoint()
         if promoted and destination.exists() and not add_to_library:
             checkpoint_at_destination = destination / NEUPRINT_CHECKPOINT_FILENAME
             if not checkpoint_at_destination.exists():

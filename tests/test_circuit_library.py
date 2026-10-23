@@ -20,6 +20,17 @@ SWC = ('# Source: Janelia male-cns v0.9 public skeleton release\n'
        '1 1 0 0 0 2 -1\n2 3 1 0 0 1 1\n')
 
 
+def test_incomplete_graph_binding_does_not_hide_morphology_choices(tmp_path):
+    profile, roots = fixture(tmp_path)
+    bad = ResourceBinding('incomplete', ResourceKind.DATA_SOURCE, str(tmp_path / 'missing.parquet'),
+        AccessMode.READ_ONLY, metadata={'format': 'digifly-weighted-pair-graph-v1', 'dataset': 'male-cns:v0.9'})
+    choices = library_sources(replace(profile, resources=(*profile.resources, bad)), RELEASES)
+    source = next(s for s in choices if s.dataset == 'male-cns:v0.9')
+    assert source.swc_sources and source.pair_graph_path.endswith('missing.parquet')
+    from digifly_app.core.connectomes import ConnectomeEdgeCatalog
+    assert not ConnectomeEdgeCatalog(source)._chemical_summary('1', '2').available
+
+
 def fixture(tmp_path):
     public = tmp_path / 'Public'
     roots = [public / 'Phase 1/male-cns_v0.9/export_swc', tmp_path / 'external']

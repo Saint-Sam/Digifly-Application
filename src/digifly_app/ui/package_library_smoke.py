@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import time
 import traceback
+import faulthandler
 
 
 def run_library_review(destination: Path, workspace: Path) -> int:
@@ -59,6 +60,8 @@ def run_library_smoke(destination: Path) -> int:
     destination.mkdir(parents=True, exist_ok=False)
     record = {"schema": "digifly-packaged-swc-library-check-v1", "ok": False,
               "scope": "actual packaged controls/worker/storage with tiny fixtures; fake neuPrint transport; no credential, network, simulator or scientific acceptance"}
+    stack_output = (destination / 'thread-stacks.txt').open('w')
+    faulthandler.dump_traceback_later(45, file=stack_output)
     app = window = None
     saved_question = QMessageBox.question
     saved_item = QInputDialog.getItem
@@ -118,6 +121,11 @@ def run_library_smoke(destination: Path) -> int:
         record['circuit_library_cold_handoff'] = True
         record['circuit_library_cross_family_handoff'] = True
         def click_menu(button, action, filename=None):
+            # Native menu delivery requires the fixture window, not another
+            # open app copy, to own focus. Keep the visible-menu assertion.
+            window.raise_()
+            window.activateWindow()
+            QTest.qWait(60)
             # Older storage/registration controls remain under explicit details.
             if page.storage_details.isAncestorOf(button) and not page.storage_details_button.isChecked():
                 QTest.mouseClick(page.storage_details_button, Qt.MouseButton.LeftButton)
@@ -506,11 +514,15 @@ def run_library_smoke(destination: Path) -> int:
         def accept_link():
             modal = app.activeModalWidget()
             if not isinstance(modal, QMessageBox):
+                if time.monotonic() < link_review_deadline:
+                    QTimer.singleShot(40, accept_link)
+                    return
                 raise ValueError('Library shortcut did not request explicit read-only confirmation')
             modal.grab().save(str(destination / 'library-shortcut-review.png'))
             QTest.mouseClick(modal.button(QMessageBox.StandardButton.Yes), Qt.MouseButton.LeftButton)
         for shortcut in shortcuts:
             QFileDialog.getOpenFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
+            link_review_deadline = time.monotonic() + 10
             QTimer.singleShot(250, accept_link)
             click_menu(page.add_data_button, page.load_link_button)
         if {link.root for link in page._all_linked} != {male.resolve(), manc.resolve()}:
@@ -603,6 +615,11 @@ def run_library_smoke(destination: Path) -> int:
         def close_fixture_dialog():
             modal = app.activeModalWidget()
             if modal is None:
+                # Native menu focus/layout delivery can outlast the scheduled
+                # opener delay. Wait for the actual modal, not a guessed clock.
+                if time.monotonic() < close_fixture_deadline:
+                    QTimer.singleShot(40, close_fixture_dialog)
+                    return
                 raise ValueError('Compact menu did not open its existing dialog')
             dialogs_closed.append(modal.windowTitle())
             modal.grab().save(str(destination / ('compact-dialog-' + str(len(dialogs_closed)) + '.png')))
@@ -616,6 +633,7 @@ def run_library_smoke(destination: Path) -> int:
             managed_action(page.reveal_selected_button, 'compact-managed-row-menu.png')
             if urls != [str(second_resource.root)]:
                 raise ValueError('Managed row menu opened a different selected row')
+            close_fixture_deadline = time.monotonic() + 10
             QTimer.singleShot(300, close_fixture_dialog)
             managed_action(page.inspect_button)
             if not dialogs_closed:
@@ -654,6 +672,7 @@ def run_library_smoke(destination: Path) -> int:
             for button, action in ((page.add_data_button, page.modeldb_button),
                                    (page.add_data_button, page.pair_graph_button),
                                    (page.library_tools_button, page.manage_trash_button)):
+                close_fixture_deadline = time.monotonic() + 10
                 QTimer.singleShot(300, close_fixture_dialog)
                 click_menu(button, action)
             click_menu(page.library_tools_button, page.open_managed_action)
@@ -1297,6 +1316,93 @@ def run_library_smoke(destination: Path) -> int:
         record.update(connectivity_exact_release_catalog=True, connectivity_built_in_reader=True,
             connectivity_ready_handoff=True, connectivity_preserves_previous=True,
             connectivity_cancel_safe=True, connectivity_64bit_and_weak_edges=True)
+        full_graph_spec = builder.circuit_spec().to_dict()
+        journal('cumulative_selected_connectivity')
+        growing_rows = ((51, 'DNp01', 'DNp01_R'), (52, 'TTMn', 'TTMn_R'), (53, 'PSI', 'PSI_L'),
+                        (54, 'IN21A026', 'IN21A026_L'), (55, 'AN08B098', 'AN08B098_R'))
+        growing_edges = {(51, 52): 3, (52, 53): 1, (53, 54): 7, (54, 51): 2, (55, 52): 4}
+        growing_queries, growing_skeletons = [], []
+        def growing_transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+            if '/api/skeletons/skeleton/' in url:
+                growing_skeletons.append(int(url.split('?')[0].split('/')[-1]))
+                return swc
+            body = json.loads(payload)
+            if body['dataset'] != 'male-cns:v1.0':
+                raise ValueError('Cumulative query switched release')
+            query = body['cypher']
+            if 'ConnectsTo' in query:
+                sources, targets = [set(map(int, group.split(','))) for group in re.findall(r'bodyId IN \[([^]]+)\]', query)]
+                growing_queries.append({'sources': sorted(sources), 'targets': sorted(targets)})
+                rows = [[a, b, w] for (a, b), w in growing_edges.items() if a in sources and b in targets]
+                return json.dumps({'columns': ['sourceBodyId', 'targetBodyId', 'weight'], 'data': rows}).encode()
+            terms = [json.loads(value) for value in re.findall(r'STARTS WITH ("(?:[^"\\]|\\.)*")', query)]
+            rows = [row for row in growing_rows if any(row[1].lower().startswith(term) for term in terms)]
+            return json.dumps({'columns': ['bodyId', 'type', 'instance'], 'data': rows}).encode()
+        class GrowingClient(NeuPrintClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs, transport=growing_transport)
+            def validate_and_list_datasets(self, **kwargs):
+                return (NeuPrintDataset('male-cns:v1.0'),)
+        from digifly_app.core.pair_graph import pair_rows, validated_manifest
+        from digifly_app.core.circuit_library import library_sources
+        cumulative_resources, frozen_graph = [], None
+        for expression in ('DNp01, TTMn, PSI', 'IN21A026, AN08B098'):
+            dialog = NeuPrintImportDialog(ResourceProfile.load(profile_path), profile_path, window,
+                client_factory=GrowingClient, credential_store=NoCredentialStore())
+            dialog.resource_imported.connect(cumulative_resources.append)
+            dialog.show()
+            dialog.token_edit.setText('engineering-fixture-not-a-credential')
+            QTest.mouseClick(dialog.connect_button, Qt.MouseButton.LeftButton)
+            wait_for(lambda: not dialog.operation_in_progress, 'Cumulative connect did not finish')
+            dialog.selection_edit.setText(expression)
+            QTest.mouseClick(dialog.preview_button, Qt.MouseButton.LeftButton)
+            wait_for(lambda: not dialog.operation_in_progress, 'Cumulative preview did not finish')
+            before_count = len(cumulative_resources)
+            QTest.mouseClick(dialog.download_button, Qt.MouseButton.LeftButton)
+            wait_for(lambda: not dialog.operation_in_progress, 'Cumulative download did not finish')
+            if len(cumulative_resources) != before_count + 1:
+                raise ValueError('Cumulative app download failed: ' + dialog.status.text())
+            current_graph = library_sources(ResourceProfile.load(profile_path), ('male-cns:v1.0',))[0]
+            if frozen_graph is None:
+                frozen_graph = current_graph
+            dialog.grab().save(str(destination / f'cumulative-download-{len(cumulative_resources)}.png'))
+            dialog.accept()
+        if len({r.root for r in cumulative_resources}) != 1 or growing_skeletons != [51, 52, 53, 54, 55]:
+            raise ValueError('Successive app downloads did not share one neuron library')
+        current_graph = library_sources(ResourceProfile.load(profile_path), ('male-cns:v1.0',))[0]
+        if ([r['total_weight'] for r in pair_rows(current_graph, '53', '54')] != [7] or
+                [r['total_weight'] for r in pair_rows(current_graph, '54', '51')] != [2] or
+                validated_manifest(current_graph)['rows'] != 5 or
+                validated_manifest(frozen_graph)['rows'] != 2):
+            raise ValueError('Cross-batch graph, duplicate count or frozen previous revision differs')
+        window.pages.setCurrentWidget(page)
+        page.refresh()
+        page.open_connectome('male-cns:v1.0')
+        if '5 directed pairs / 5 checked neurons' not in page.pair_graph_label.text():
+            raise ValueError('Data Library does not show the cumulative graph coverage')
+        window._open_library_circuit('male-cns:v1.0')
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 builder.saved_browser.inventory.dataset == 'male-cns:v1.0', 'Cumulative circuit index did not finish')
+        builder.query_edit.setText('51, 52, 53, 54, 55')
+        builder.assemble_circuit()
+        wait_for(lambda: set(builder.loaded_records) == {'51','52','53','54','55'},
+                 'Load did not finish indexing the newly added dataset folder')
+        attached = window.experiment_page._circuit.connectome
+        if (set(builder.loaded_records) != {'51','52','53','54','55'} or
+                attached.pair_graph_sha256 != current_graph.pair_graph_sha256 or
+                attached.pair_graph_path != current_graph.pair_graph_path or
+                attached.pair_graph_index != current_graph.pair_graph_index):
+            raise ValueError('Both builders did not use the same latest cumulative connectivity revision')
+        if library_sources(ResourceProfile.load(profile_path), ('male-cns:v0.9',))[0].pair_graph_path:
+            raise ValueError('Cumulative connectivity leaked into another release')
+        window.grab().save(str(destination / 'cumulative-circuit-handoff.png'))
+        record.update(cumulative_connectivity_two_downloads=True, cumulative_cross_batch_directions=True,
+            cumulative_unique_pairs=True, cumulative_frozen_circuit=True,
+            cumulative_builder_handoff=True, cumulative_release_isolation=True,
+            cumulative_query_rectangles=growing_queries,
+            cumulative_shared_file=str(cumulative_resources[-1].root / 'connectivity/connectivity.sqlite'))
+        builder.set_circuit_spec(CircuitSpec.from_dict(full_graph_spec))
+        builder.load_saved_assets()
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
                       separate_downloads_same_library=True, local_intake=True,
                       combined_list_download=True, combined_list_terms=["DNp01", "TTMn", "PSI"],
@@ -1305,6 +1411,8 @@ def run_library_smoke(destination: Path) -> int:
     except Exception:
         record["error"] = traceback.format_exc()
     finally:
+        faulthandler.cancel_dump_traceback_later()
+        stack_output.close()
         QMessageBox.question = saved_question
         QInputDialog.getItem = saved_item
         QInputDialog.getText = saved_text

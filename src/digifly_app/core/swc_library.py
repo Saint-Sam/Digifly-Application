@@ -54,7 +54,7 @@ def _plain_path(path: Path, boundary: Path) -> None:
     path.relative_to(boundary)
     current = path
     while current != boundary.parent:
-        if current.is_symlink():
+        if current.is_symlink() or (hasattr(current, 'is_junction') and current.is_junction()):
             raise ValueError(f"SWC library paths cannot contain symbolic links: {current}")
         current = current.parent
 
@@ -141,7 +141,7 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 def store_dataset_download(profile: ResourceProfile, profile_path: Path,
                            resource: ManagedResource, *, server: str, dataset: str,
-                           reviewed_existing: dict[str, dict], replacement_ids=()) -> ManagedResource:
+                           reviewed_existing: dict[str, dict], replacement_ids=(), cancel=None) -> ManagedResource:
     """Commit staged SWCs to one tree; approved old bytes remain recoverable."""
     incoming = load_managed_resource(resource.manifest, verify=True)
     if incoming.integrity != "verified":
@@ -158,7 +158,20 @@ def store_dataset_download(profile: ResourceProfile, profile_path: Path,
     _plain_path(root, profile.managed_data_root)
     root.mkdir(parents=True, exist_ok=True)
     manifest = root / MANIFEST_FILENAME
+    def check_cancel():
+        if cancel is not None and cancel.is_set():
+            from .neuprint import AcquisitionCancelled
+            raise AcquisitionCancelled('Download cancelled; the shared library was not changed')
     with _locked(root):
+        check_cancel()
+        graph_info = payload.get('connectivity', {})
+        cumulative = graph_info.get('included') and graph_info.get('scope') == 'cumulative_managed_neurons'
+        if cumulative:
+            from .selected_connectivity import require_current_review
+            require_current_review(profile, origin, dataset, selected, graph_info.get('review'))
+            tables = [row for row in payload['files'] if row.get('data_role') == 'connectivity']
+            if len(tables) != 1 or tables[0]['path'] != graph_info.get('table_path'):
+                raise ValueError('Cumulative connectivity needs exactly one checksum-verified update table')
         _plain_path(manifest, profile.managed_data_root)
         actual = inspect_existing_swcs(profile, origin, dataset, selected)
         if actual != reviewed_existing:
@@ -202,7 +215,12 @@ def store_dataset_download(profile: ResourceProfile, profile_path: Path,
         history.mkdir(parents=True)
         created, moved, actions = [], [], []
         try:
+            staged_graph = None
+            if cumulative:
+                from .selected_connectivity import stage_graph, graph_binding
+                staged_graph = stage_graph(root, history, resource, payload, check_cancel)
             for body, record in selected.items():
+                check_cancel()
                 existing = actual.get(body)
                 if existing and body not in replacements:
                     if existing["sha256"] != record["sha256"]:
@@ -273,17 +291,37 @@ def store_dataset_download(profile: ResourceProfile, profile_path: Path,
             acquisitions = list(old.get("acquisitions", [])) if old else []
             acquisitions.append({"manifest": str(receipt), "sha256": _hash(receipt)})
             records = sorted(inventory.values(), key=lambda row: int(row["body_id"]))
+            graph_record = old.get('connectivity') if old else None
+            if staged_graph is not None:
+                candidate, canonical, graph_record = staged_graph
+                check_cancel()
+                _plain_path(canonical, profile.managed_data_root)
+                canonical.parent.mkdir(parents=True, exist_ok=True)
+                if canonical.exists():
+                    if _hash(canonical) != graph_info['review']['previous_sha256']:
+                        raise ValueError('Shared connectivity changed after review')
+                    backup = history / 'previous-connectivity.sqlite'
+                    os.replace(canonical, backup)
+                    moved.append((canonical, backup))
+                os.link(candidate, canonical)
+                created.append((canonical, graph_record['source_sha256']))
+                candidate.unlink()
+                graph = graph_binding(identity, canonical, graph_record)
+                from .pair_graph import with_selected_graph
+                updated = with_selected_graph(updated, graph)
             result = {"schema_version": 1, "library_schema": LIBRARY_SCHEMA, "provider": "swc-library",
                 "resource_id": root.name, "source_version": "cumulative-v1", "dataset": dataset,
                 "server": origin, "fetched_at": payload["fetched_at"], "swc_coordinate_convention": convention,
                 "acquisitions": acquisitions, "file_count": len(records), "swc_count": len(records),
-                "total_bytes": sum(row["size_bytes"] for row in records), "files": records}
+                "total_bytes": sum(row["size_bytes"] for row in records), "files": records,
+                **({'connectivity': graph_record} if graph_record else {})}
             for family in FAMILIES:
                 (root / "export_swc" / family).mkdir(parents=True, exist_ok=True)
             _write_json_atomic(manifest, result)
             checked = load_managed_resource(manifest, verify=True)
             if checked.integrity != "verified":
                 raise ValueError("The stored dataset library failed its final checksum check")
+            check_cancel()
             updated.save(profile_file, replace=profile_file.exists())
         except Exception as exc:
             conflicts = []
@@ -313,6 +351,14 @@ def store_dataset_download(profile: ResourceProfile, profile_path: Path,
                 "unexpected_files_preserved": conflicts})
             if (history / "download.json").exists():
                 (history / "download.json").unlink()
+            # Failed/cancelled revisions are not saved experiments. Remove only
+            # these exact task-created intermediate files, never prior backups.
+            if cumulative:
+                for relative in ('incoming-connectivity.sqlite', 'connectivity/connectivity.sqlite',
+                                 'connectivity/manifest.json'):
+                    unfinished = history / relative
+                    if unfinished.is_file() and not unfinished.is_symlink():
+                        unfinished.unlink()
             if conflicts:
                 raise ValueError("A file changed during recovery. It and the previous backup were preserved; review the dataset history folder") from exc
             raise
@@ -418,6 +464,7 @@ def add_bundle_to_library(
             "swc_coordinate_convention": convention, "acquisitions": acquisitions,
             "file_count": len(inventory), "swc_count": len(inventory),
             "total_bytes": sum(row["size_bytes"] for row in inventory), "files": inventory,
+            **({'connectivity': old['connectivity']} if old and old.get('connectivity') else {}),
         }
         # Read the current profile, not a stale dialog snapshot from before an
         # earlier acquisition. Refuse changed managed roots or identity clashes.

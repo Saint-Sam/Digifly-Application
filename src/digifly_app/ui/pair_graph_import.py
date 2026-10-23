@@ -202,7 +202,8 @@ class PairGraphImportDialog(QDialog):
                       "dataset": dataset,
                       "dataset_association": "selected_connectome_release_not_file_verification"})
         # Retain every previous index directory; this only changes the selected binding.
-        replace(profile, resources=(*remaining, binding)).save(profile_path, replace=True)
+        from digifly_app.core.pair_graph import with_selected_graph
+        with_selected_graph(replace(profile, resources=remaining), binding).save(profile_path, replace=True)
         self.registered_source = source
         self.status.setText(f"Using {self.original_file.name}: {verified['rows']:,} directed pairs, {verified['represented_neurons']:,} represented IDs. All supplied rows preserved. SWCs remain separate.")
         self.use_button.setText("Done")

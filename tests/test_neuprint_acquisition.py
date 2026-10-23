@@ -158,6 +158,19 @@ def test_preview_preserves_motor_superclass_for_family_classification():
     assert _family('OtherMotorType') == 'UNKNOWN'
 
 
+@pytest.mark.parametrize('bad', [1.5, True, 2**63, -1, '1.0'])
+def test_rectangular_connectivity_rejects_inexact_ids_and_counts(bad):
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        query = json.loads(payload)['cypher']
+        assert 'source.bodyId IN [1]' in query and 'target.bodyId IN [9007199254740999]' in query
+        return json.dumps({'columns': ['sourceBodyId', 'targetBodyId', 'weight'],
+                          'data': [[1, 9007199254740999, bad]]}).encode()
+    client = NeuPrintClient('https://neuprint.janelia.org', SECRET,
+                            dataset='male-cns:v1.0', transport=transport)
+    with pytest.raises(NeuPrintError, match='malformed connectivity'):
+        client.fetch_connectivity_between((1,), (9007199254740999,))
+
+
 def test_neuprint_client_retries_only_transient_failures_and_honors_cancellation():
     transient_calls = 0
 

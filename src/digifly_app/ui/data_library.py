@@ -657,7 +657,12 @@ class DataLibraryPage(QWidget):
                 try:
                     import json
                     manifest = json.loads((Path(str(binding.metadata["index"])).parent / "manifest.json").read_text(encoding="utf-8"))
-                    graph_text.append(f"{Path(binding.path).name}: {manifest['rows']:,} pairs / {manifest['represented_neurons']:,} IDs; SWCs separate; read-only")
+                    if 'covered_body_ids' in manifest:
+                        graph_text.append(f"Saved-neuron connectivity: {manifest['rows']:,} directed pairs / "
+                            f"{len(manifest['covered_body_ids']):,} checked neurons. Grows with downloads; "
+                            "other neurons' connections are unknown.\n" + str(binding.path))
+                    else:
+                        graph_text.append(f"{Path(binding.path).name}: {manifest['rows']:,} pairs / {manifest['represented_neurons']:,} IDs; SWCs separate; read-only")
                 except (OSError, ValueError, KeyError):
                     graph_text.append(f"{Path(binding.path).name}: selected index unavailable; no fallback")
             self.pair_graph_label.setText("\n".join(graph_text))

@@ -19,6 +19,242 @@ DATASET = "manc:v1.2.1"
 SWC = b"1 1 0 0 0 5 -1\n2 3 1 0 0 1 1\n"
 
 
+class GrowingGraphClient:
+    def __init__(self, rows):
+        self.rows, self.queries, self.skeletons = rows, [], []
+
+    def fetch_skeleton(self, body_id, **kwargs):
+        self.skeletons.append(body_id)
+        return SWC
+
+    def fetch_connectivity_between(self, sources, targets, **kwargs):
+        from digifly_app.core.neuprint import NeuPrintConnection
+        self.queries.append((tuple(sources), tuple(targets)))
+        return tuple(NeuPrintConnection(a, b, w) for (a, b), w in self.rows.items()
+                     if a in sources and b in targets)
+
+
+def grow_graph(profile, path, client, bodies, version, **changes):
+    request = NeuPrintAcquisitionRequest(SERVER, 'male-cns:v1.0', 'selected', version,
+        NeuPrintSelection('name_list', 'fixture'),
+        tuple(NeuPrintNeuron(body, 'DNp01') for body in bodies), 'fixture-secret',
+        include_connectivity=True, **changes)
+    return acquire_neuprint_bundle(profile, path, request, client=client, add_to_library=True)
+
+
+def graph_ref(path, dataset='male-cns:v1.0', server=SERVER):
+    from digifly_app.core.circuit_library import library_sources
+    return next(s for s in library_sources(ResourceProfile.load(path), (dataset,)) if s.server == server)
+
+
+def test_cumulative_two_batches_cross_edges_update_delete_and_frozen_circuit(state):
+    from digifly_app.core.pair_graph import pair_rows, validated_manifest
+    profile, path = state
+    large_id = 2**53 + 7
+    client = GrowingGraphClient({(1, 2): 4, (2, 1): 1, (2, large_id): 6,
+                                (large_id, 1): 3, (large_id, 3): 2})
+    first = grow_graph(profile, path, client, (1, 2), 'one')
+    frozen = graph_ref(path)
+    assert pair_rows(frozen, '1', '2')[0]['total_weight'] == 4
+    original_swcs = {p: p.read_bytes() for p in first.root.rglob('*.swc')}
+    second = grow_graph(profile, path, client, (large_id, 3), 'two')
+    current = graph_ref(path)
+    assert second.root == first.root
+    canonical = second.root / 'connectivity/connectivity.sqlite'
+    assert canonical.is_file()
+    assert len(ResourceProfile.load(path).bindings(ResourceKind.DATA_SOURCE)) == 1
+    assert pair_rows(current, '2', str(large_id))[0]['total_weight'] == 6
+    assert pair_rows(current, str(large_id), '1')[0]['total_weight'] == 3
+    assert validated_manifest(current)['covered_body_ids'] == [1, 2, 3, large_id]
+    assert all(p.read_bytes() == raw for p, raw in original_swcs.items())
+    client.rows[(1, 2)] = 9
+    del client.rows[(2, 1)]
+    grow_graph(profile, path, client, (1, 2), 'three')
+    updated = graph_ref(path)
+    assert [r['total_weight'] for r in pair_rows(updated, '1', '2')] == [9]
+    assert pair_rows(updated, '2', str(large_id))[0]['total_weight'] == 6
+    assert [r['total_weight'] for r in pair_rows(frozen, '1', '2')] == [4, 1]
+    assert client.skeletons == [1, 2, large_id, 3]
+    grow_graph(profile, path, client, (1, 2), 'four')
+    assert [r['total_weight'] for r in pair_rows(graph_ref(path), '1', '2')] == [9]
+    assert len(ResourceProfile.load(path).bindings(ResourceKind.DATA_SOURCE)) == 1
+
+
+def test_cumulative_zero_edges_and_rollback_preserve_canonical_and_profile(state, monkeypatch):
+    from digifly_app.core.pair_graph import pair_rows, validated_manifest
+    profile, path = state
+    first = grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    canonical = first.root / 'connectivity/connectivity.sqlite'
+    assert validated_manifest(graph_ref(path))['rows'] == 0
+    assert pair_rows(graph_ref(path), '1', '1') == ()
+    before = canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()
+    def fail(*args, **kwargs):
+        raise OSError('fixture profile failure')
+    monkeypatch.setattr(ResourceProfile, 'save', fail)
+    with pytest.raises(OSError, match='profile failure'):
+        grow_graph(profile, path, GrowingGraphClient({(1, 2): 8}), (2,), 'two')
+    assert (canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()) == before
+    assert not list((first.root / 'export_swc').rglob('2.swc'))
+
+
+def test_cumulative_plan_rejects_changed_review_before_http_and_isolated_origin(state):
+    from digifly_app.core.selected_connectivity import review_connectivity
+    profile, path = state
+    grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    plan = review_connectivity(profile, SERVER, 'male-cns:v1.0', (2,))
+    assert plan['participants'] == [1, 2]
+    assert review_connectivity(profile, SERVER, 'male-cns:v0.9', (2,))['participants'] == [2]
+    assert review_connectivity(profile, 'https://other.example', 'male-cns:v1.0', (2,))['participants'] == [2]
+    grow_graph(profile, path, GrowingGraphClient({}), (3,), 'intervening')
+    client = GrowingGraphClient({})
+    with pytest.raises(ValueError, match='changed after review'):
+        grow_graph(profile, path, client, (2,), 'two', connectivity_review=plan)
+    assert client.queries == [] and client.skeletons == []
+
+
+def test_cumulative_cancel_during_fetch_never_changes_committed_files(state):
+    import threading
+    from digifly_app.core.neuprint import AcquisitionCancelled
+    profile, path = state
+    first = grow_graph(profile, path, GrowingGraphClient({(1, 1): 4}), (1,), 'one')
+    canonical = first.root / 'connectivity/connectivity.sqlite'
+    before = canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()
+    event = threading.Event()
+    class CancelClient(GrowingGraphClient):
+        def fetch_connectivity_between(self, *args, **kwargs):
+            event.set()
+            raise AcquisitionCancelled('fixture cancelled')
+    request = NeuPrintAcquisitionRequest(SERVER, 'male-cns:v1.0', 'cancel', 'two',
+        NeuPrintSelection('name_list', 'fixture'), (NeuPrintNeuron(2, 'TTMn'),), 'fixture-secret',
+        include_connectivity=True)
+    with pytest.raises(AcquisitionCancelled):
+        acquire_neuprint_bundle(profile, path, request, client=CancelClient({}), cancel=event, add_to_library=True)
+    assert (canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()) == before
+    assert not list((first.root / 'export_swc').rglob('2.swc'))
+
+
+def test_cumulative_chunk_plan_covers_every_directed_pair_once_and_budgets():
+    import threading
+    from digifly_app.core.selected_connectivity import fetch_updates
+    from digifly_app.core.neuprint import NeuPrintError, NeuPrintConnection
+    focus, participants = [1, 502], list(range(1, 504))
+    client = GrowingGraphClient({(1, 501): 8, (503, 502): 2, (502, 1): 3})
+    plan = {'participants': participants, 'focus': focus}
+    rows = fetch_updates(client, plan, cancel=threading.Event(), max_rows=10, max_bytes=1000, on_bytes=lambda n: None)
+    assert len(rows) == 3
+    pairs = [(a, b) for sources, targets in client.queries for a in sources for b in targets]
+    expected = {(a, b) for a in participants for b in participants if a in focus or b in focus}
+    assert len(pairs) == len(set(pairs)) and set(pairs) == expected
+    with pytest.raises(NeuPrintError, match='total row limit'):
+        fetch_updates(client, plan, cancel=threading.Event(), max_rows=1, max_bytes=1000, on_bytes=lambda n: None)
+    class Bad:
+        def fetch_connectivity_between(self, *args, **kwargs):
+            return (NeuPrintConnection(999, 999, 1),)
+    with pytest.raises(NeuPrintError, match='Unexpected'):
+        fetch_updates(Bad(), plan, cancel=threading.Event(), max_rows=10, max_bytes=1000, on_bytes=lambda n: None)
+    class TooManyBytes:
+        def fetch_connectivity_between(self, *args, **kwargs):
+            kwargs['on_bytes'](1001)
+            return ()
+    with pytest.raises(NeuPrintError, match='total byte limit'):
+        fetch_updates(TooManyBytes(), plan, cancel=threading.Event(), max_rows=10, max_bytes=1000, on_bytes=lambda n: None)
+
+
+def test_cumulative_unqueried_neuron_is_unknown_not_zero(state):
+    from digifly_app.core.pair_graph import pair_rows
+    from digifly_app.core.connectomes import ConnectomeEdgeCatalog
+    profile, path = state
+    grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    source = graph_ref(path)
+    with pytest.raises(ValueError, match='unknown, not zero'):
+        pair_rows(source, '1', '999')
+    summary = ConnectomeEdgeCatalog(source)._chemical_summary('1', '999')
+    assert not summary.available and 'unknown, not zero' in summary.unavailable_reason
+
+
+def test_cumulative_limits_and_untracked_file_refuse_before_network(state):
+    from digifly_app.core.selected_connectivity import review_connectivity
+    profile, path = state
+    root = library_root(profile, SERVER, 'male-cns:v1.0')
+    canonical = root / 'connectivity/connectivity.sqlite'
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b'untracked user data')
+    client = GrowingGraphClient({})
+    with pytest.raises(ValueError, match='untracked'):
+        grow_graph(profile, path, client, (1,), 'one')
+    assert not client.skeletons and canonical.read_bytes() == b'untracked user data'
+    with pytest.raises(ValueError, match='5,000'):
+        review_connectivity(profile, SERVER, 'male-cns:v0.9', range(1, 5002))
+
+
+def test_cumulative_retains_independent_full_table_and_declares_current_selection(state):
+    from digifly_app.core.resource_profile import ResourceBinding, AccessMode
+    profile, path = state
+    full = path.parent / 'full.parquet'
+    full.write_bytes(b'fixture external full table unchanged')
+    binding = ResourceBinding('full', ResourceKind.DATA_SOURCE, str(full), AccessMode.READ_ONLY,
+        metadata={'format': 'digifly-weighted-pair-graph-v1', 'dataset': 'male-cns:v1.0',
+                  'server': SERVER, 'index': str(path.parent / 'external-index/pairs.sqlite'), 'source_sha256': 'fixture'})
+    replace(profile, resources=(*profile.resources, binding)).save(path, replace=True)
+    grow_graph(profile, path, GrowingGraphClient({(1, 2): 1}), (1, 2), 'one')
+    assert full.read_bytes() == b'fixture external full table unchanged'
+    saved = ResourceProfile.load(path)
+    assert len(saved.bindings(ResourceKind.DATA_SOURCE)) == 2
+    assert next(b for b in saved.resources if b.resource_id == 'full').metadata['active_for_dataset'] is False
+    assert graph_ref(path).pair_graph_path.endswith('connectivity.sqlite')
+
+
+def test_cumulative_cancelled_revision_leaves_no_partial_database(state, monkeypatch):
+    import threading
+    from digifly_app.core import swc_library
+    from digifly_app.core.neuprint import AcquisitionCancelled
+    profile, path = state
+    first = grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    canonical = first.root / 'connectivity/connectivity.sqlite'
+    before = canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()
+    event = threading.Event()
+    original = swc_library._write_json_atomic
+    def stop(path, payload):
+        original(path, payload)
+        if path.name == 'manifest.json' and payload.get('storage_schema'):
+            event.set()
+    monkeypatch.setattr(swc_library, '_write_json_atomic', stop)
+    request = NeuPrintAcquisitionRequest(SERVER, 'male-cns:v1.0', 'cancel', 'two',
+        NeuPrintSelection('name_list', 'fixture'), (NeuPrintNeuron(2, 'TTMn'),), 'fixture-secret', include_connectivity=True)
+    with pytest.raises(AcquisitionCancelled):
+        acquire_neuprint_bundle(profile, path, request, client=GrowingGraphClient({(1, 2): 3}), cancel=event, add_to_library=True)
+    assert (canonical.read_bytes(), first.manifest.read_bytes(), path.read_bytes()) == before
+    failed, = first.root.glob('.history/*/failed-download.json')
+    assert not (failed.parent / 'connectivity/connectivity.sqlite').exists()
+    assert not (failed.parent / 'incoming-connectivity.sqlite').exists()
+
+
+def test_cumulative_missing_coverage_after_swc_only_download_is_filled_next_time(state):
+    from digifly_app.core.pair_graph import pair_rows, validated_manifest
+    profile, path = state
+    first = grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    no_graph = NeuPrintAcquisitionRequest(SERVER, 'male-cns:v1.0', 'swc-only', 'two',
+        NeuPrintSelection('name_list', 'fixture'), (NeuPrintNeuron(2, 'TTMn'),), 'fixture-secret')
+    acquire_neuprint_bundle(profile, path, no_graph, client=GrowingGraphClient({}), add_to_library=True)
+    assert json.loads(first.manifest.read_text())['connectivity']['covered_body_ids'] == [1]
+    with pytest.raises(ValueError, match='unknown'):
+        pair_rows(graph_ref(path), '1', '2')
+    grow_graph(profile, path, GrowingGraphClient({(1, 2): 7, (2, 3): 4}), (3,), 'three')
+    assert validated_manifest(graph_ref(path))['covered_body_ids'] == [1, 2, 3]
+    assert pair_rows(graph_ref(path), '1', '2')[0]['total_weight'] == 7
+
+
+def test_cumulative_snapshot_cannot_be_relabelled_as_another_dataset(state):
+    from digifly_app.core.pair_graph import validated_manifest
+    profile, path = state
+    grow_graph(profile, path, GrowingGraphClient({}), (1,), 'one')
+    source = graph_ref(path)
+    with pytest.raises(ValueError, match='another server or connectome'):
+        validated_manifest(replace(source, dataset='male-cns:v0.9'))
+    with pytest.raises(ValueError, match='another server or connectome'):
+        validated_manifest(replace(source, server='https://other.example'))
+
+
 @pytest.fixture
 def state(tmp_path):
     profile = make_standalone_profile(workstation_root=tmp_path / "Workspace with spaces")

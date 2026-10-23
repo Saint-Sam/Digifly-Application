@@ -325,14 +325,16 @@ class ConnectomeEdgeCatalog:
 
     def _chemical_summary(self, neuron_a: str, neuron_b: str) -> ConnectionClassSummary:
         if self.source.pair_graph_path:
-            from .pair_graph import pair_rows
+            from .pair_graph import pair_rows, validated_manifest
             try:
                 rows = pair_rows(self.source, neuron_a, neuron_b)
                 forward = [row for row in rows if str(row["preId"]) == neuron_a]
                 reverse = [row for row in rows if str(row["preId"]) == neuron_b]
+                manifest = validated_manifest(self.source)
                 return ConnectionClassSummary(True, len(forward), len(reverse),
-                    source_path=self.source.pair_graph_path, source_label="Selected aggregate pair Parquet",
-                    scope_note="All supplied pair rows; weight is total_weight, not µS or located contacts. Missing pairs are only absent in this file; release/weak-edge completeness unverified.",
+                    source_path=self.source.pair_graph_path, source_label="Selected aggregate pair graph",
+                    scope_note=(manifest.get('source_scope', '') + ' Missing pairs are absent only among the covered saved neurons; other pairs are unknown. Counts are not conductances or located contacts.'
+                        if 'covered_body_ids' in manifest else "All supplied pair rows; weight is total_weight, not µS or located contacts. Missing pairs are only absent in this file; release/weak-edge completeness unverified."),
                     connection_kind="weighted pair", a_to_b_weight=sum(row["total_weight"] for row in forward),
                     b_to_a_weight=sum(row["total_weight"] for row in reverse))
             except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
@@ -477,7 +479,7 @@ class ConnectomeEdgeCatalog:
         """
 
         if self.source.pair_graph_path:
-            raise ValueError("The selected connectivity Parquet is an aggregate pair graph, not located chemical contacts. An explicit aggregate-weight/kinetics/placement simulation policy is not implemented yet; the previous contact source is not substituted.")
+            raise ValueError("The selected connectivity file is an aggregate pair graph, not located chemical contacts. An explicit aggregate-weight/kinetics/placement simulation policy is not implemented yet; the previous contact source is not substituted.")
         selected = tuple(dict.fromkeys(str(value).strip() for value in neuron_ids))
         if not selected:
             return ()
