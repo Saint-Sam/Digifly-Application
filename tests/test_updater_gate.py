@@ -51,7 +51,8 @@ def test_digest_gate_requires_actual_verifier_without_sidecar(tmp_path):
         (folder / 'digest-download.json').write_text(json.dumps({
             'ok': True, 'archive_sha256': gate.file_hash(archive),
             'github_asset_digest': 'sha256:' + gate.file_hash(archive), 'actual_verifier_used': True,
-            'checksum_file_requested': False, 'checksum_file_created': False}))
+            'legacy_checksum_fixture': name == 'legacy_install',
+            'checksum_file_requested': name == 'legacy_install', 'checksum_file_created': name == 'legacy_install'}))
     receipt.write_text(json.dumps(data))
     kwargs = dict(archive_sha256=gate.file_hash(archive), executable_sha256=gate.file_hash(exe),
                   system=gate.platform.system(), require_asset_digest=True)

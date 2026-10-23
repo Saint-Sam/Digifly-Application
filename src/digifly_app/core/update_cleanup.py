@@ -191,8 +191,10 @@ def cleanup_completed_update(request_path: Path, cache_root: Path, *, wait_secon
                 archive = Path(download["archive"])
                 # Never delete a manually selected ZIP outside updater cache.
                 if archive.parent.parent == cache_root and archive.parent.name.startswith("download-"):
-                    for artifact, expected_hash in ((archive, download["archive_sha256"]),
-                            (archive.with_name(archive.name + ".sha256"), download["checksum_sha256"])):
+                    artifacts = [(archive, download["archive_sha256"])]
+                    if "checksum_sha256" in download:
+                        artifacts.append((archive.with_name(archive.name + ".sha256"), download["checksum_sha256"]))
+                    for artifact, expected_hash in artifacts:
                         _plain_path(artifact)
                         if artifact.exists():
                             if file_hash(artifact) != expected_hash:

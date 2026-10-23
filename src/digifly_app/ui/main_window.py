@@ -184,13 +184,14 @@ class UpdatePreparationWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, archive: Path, target: Path, transaction: Path, draft: Path, parent: QWidget):
+    def __init__(self, archive: Path, target: Path, transaction: Path, draft: Path, parent: QWidget, *, expected_sha256: str | None = None):
         super().__init__(parent)
         self.arguments = archive, target, transaction, draft
+        self.expected_sha256 = expected_sha256
 
     def run(self) -> None:
         try:
-            self.succeeded.emit(prepare_install(*self.arguments))
+            self.succeeded.emit(prepare_install(*self.arguments, expected_sha256=self.expected_sha256))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -3181,6 +3182,7 @@ class MainWindow(QMainWindow):
             return
         self.update_button.setEnabled(False)
         self.update_button.setText("Downloading update…")
+        self._reviewed_update_digest = result.asset.digest.removeprefix('sha256:') if result.asset.digest else None
         self._update_worker = UpdateWorker(result.asset, self)
         self._update_worker.succeeded.connect(self._update_download_finished)
         self._update_worker.failed.connect(self._update_failed)
@@ -3219,7 +3221,8 @@ class MainWindow(QMainWindow):
             return
         self.update_button.setEnabled(False)
         self.update_button.setText("Preparing installation…")
-        self._update_worker = UpdatePreparationWorker(archive, target, transaction, draft, self)
+        self._update_worker = UpdatePreparationWorker(archive, target, transaction, draft, self,
+            expected_sha256=getattr(self, '_reviewed_update_digest', None))
         self._update_worker.succeeded.connect(self._update_prepared)
         self._update_worker.failed.connect(self._update_failed)
         self._update_worker.finished.connect(self._update_worker.deleteLater)

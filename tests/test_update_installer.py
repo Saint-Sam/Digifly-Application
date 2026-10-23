@@ -22,7 +22,7 @@ def fake_app(root, value=b"MZold"):
     return root
 
 
-def transaction(tmp_path, monkeypatch):
+def transaction(tmp_path, monkeypatch, *, sidecar=True, expected_digest=None):
     monkeypatch.setattr(installer.platform, "system", lambda: "Windows")
     target = fake_app(tmp_path / "installed" / "Digifly")
     new = fake_app(tmp_path / "new", b"MZnew")
@@ -30,12 +30,14 @@ def transaction(tmp_path, monkeypatch):
     with zipfile.ZipFile(archive, "x") as bundle:
         for path in new.iterdir():
             bundle.write(path, path.name)
-    archive.with_name("update.zip.sha256").write_text(installer.file_hash(archive) + "  update.zip")
+    if sidecar:
+        archive.with_name("update.zip.sha256").write_text(installer.file_hash(archive) + "  update.zip")
     folder = tmp_path / "cache" / "transaction"
     folder.mkdir(parents=True)
     draft = folder / "draft.json"
     draft.write_text('{"name":"my unsaved draft"}')
-    request = installer.prepare_install(archive, target, folder, draft)
+    request = installer.prepare_install(archive, target, folder, draft,
+        expected_sha256=None if sidecar else expected_digest or installer.file_hash(archive))
     data = installer.read_request(request)
     monkeypatch.setattr(installer, "installation_root", lambda: Path(data["helper"]))
     class DoneParent:
@@ -79,6 +81,22 @@ def test_prepare_leaves_current_app_and_external_data_untouched(tmp_path, monkey
     assert not Path(data["backup"]).exists()
     assert sentinel.read_text() == "user data"
     assert installer.tree_inventory(Path(data["helper"])) == data["original"]
+
+
+def test_asset_digest_crosses_install_boundary_without_checksum_file(tmp_path, monkeypatch):
+    request, data = transaction(tmp_path, monkeypatch, sidecar=False)
+    assert 'checksum_sha256' not in data['cleanup']
+    assert not list(tmp_path.rglob('*.sha256'))
+    assert installer.tree_inventory(Path(data['target'])) == data['original']
+    assert Path(data['helper']).is_dir() and request.is_file()
+
+
+@pytest.mark.parametrize('digest', ['0' * 64, 'sha256:' + '1' * 64, 'bad', 'A' * 64])
+def test_wrong_or_invalid_carried_digest_refuses_before_staging(tmp_path, monkeypatch, digest):
+    with pytest.raises(ValueError, match='digest|integrity'):
+        transaction(tmp_path, monkeypatch, sidecar=False, expected_digest=digest)
+    assert not (tmp_path / 'cache/transaction/helper').exists()
+    assert (tmp_path / 'installed/Digifly/Digifly Workstation.exe').read_bytes() == b'MZold'
 
 
 @pytest.mark.parametrize("candidate", ["20261018.1", "20261019.1", "broken"])

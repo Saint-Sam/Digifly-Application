@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import plistlib
 import posixpath
+import re
 import shutil
 import stat
 import subprocess
@@ -230,7 +231,7 @@ def checked_members(archive: zipfile.ZipFile, system: str) -> list[zipfile.ZipIn
     return members
 
 
-def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path) -> Path:
+def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path, *, expected_sha256: str | None = None) -> Path:
     """Stage only; the live installation is not modified by preparation."""
     system = platform.system()
     target, transaction, archive, draft = (path.resolve() for path in (target, transaction, archive, draft))
@@ -240,8 +241,12 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
         raise ValueError("App, verified archive or saved draft is missing.")
     if len(target.parts) < 3 or target.parent == Path.home() or target == Path.home():
         raise ValueError("Keep Digifly in its own extracted app folder. The updater will not replace your home, Desktop or Downloads folder.")
-    # Check the checksum again after the UI/download-worker boundary.
-    checksum = archive.with_name(archive.name + ".sha256").read_text("ascii").split()[0].lower()
+    # Repeat verification against the reviewed asset digest carried in memory
+    # across the UI/worker boundary. Older callers retain sidecar support.
+    checksum_file = archive.with_name(archive.name + ".sha256")
+    checksum = expected_sha256 if expected_sha256 is not None else checksum_file.read_text("ascii").split()[0].lower()
+    if not isinstance(checksum, str) or not re.fullmatch('[0-9a-f]{64}', checksum):
+        raise ValueError('The reviewed update digest is invalid.')
     if file_hash(archive) != checksum:
         raise ValueError("The staged update failed its integrity check.")
     original = validate_app(target, system)
@@ -289,7 +294,7 @@ def prepare_install(archive: Path, target: Path, transaction: Path, draft: Path)
                        "helper": str(helper), "draft": str(draft),
                        "draft_sha256": file_hash(draft), "original": original,
                        "cleanup": {"archive": str(archive), "archive_sha256": file_hash(archive),
-                                   "checksum_sha256": file_hash(archive.with_name(archive.name + ".sha256")),
+                                   **({"checksum_sha256": file_hash(checksum_file)} if checksum_file.exists() else {}),
                                    "stage": str(stage), "stage_remainder": stage_remainder},
                        "candidate_inventory": candidate_inventory, "build_check": versions})
     return request

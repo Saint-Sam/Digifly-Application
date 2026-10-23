@@ -60,9 +60,13 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, le
     expected_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     asset = updates.UpdateAsset(archive.name,
         'https://github.com/Saint-Sam/Digifly-Application/releases/download/fixture/' + archive.name,
-        '', '', digest='sha256:' + expected_digest)
+        ('https://github.com/Saint-Sam/Digifly-Application/releases/download/fixture/' + archive.name + '.sha256') if legacy_request else '',
+        '', digest='sha256:' + expected_digest)
     ui.check_for_update = lambda: updates.UpdateStatus(True, asset, "Explicit packaged updater check")
     def transfer(url, path, *, maximum):
+        if legacy_request and url == asset.checksum_url:
+            path.write_text(expected_digest + '  ' + archive.name, 'ascii')
+            return
         if url != asset.url or archive.stat().st_size > maximum:
             raise ValueError('Unexpected updater transfer; no checksum file is supplied')
         shutil.copyfile(archive, path)
@@ -73,7 +77,8 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, le
         saved = real_download(selected)
         result = {'ok': hashlib.sha256(saved.read_bytes()).hexdigest() == expected_digest,
             'archive_sha256': expected_digest, 'github_asset_digest': selected.digest,
-            'checksum_file_requested': False, 'checksum_file_created': bool(list(saved.parent.glob('*.sha256'))),
+            'legacy_checksum_fixture': legacy_request,
+            'checksum_file_requested': legacy_request, 'checksum_file_created': bool(list(saved.parent.glob('*.sha256'))),
             'actual_verifier_used': True}
         (destination / 'digest-download.json').write_text(json.dumps(result), 'utf-8')
         return saved

@@ -42,8 +42,9 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
             if (details.get('ok') is not True or details.get('actual_verifier_used') is not True
                     or details.get('archive_sha256') != archive_sha256
                     or details.get('github_asset_digest') != 'sha256:' + archive_sha256
-                    or details.get('checksum_file_requested') is not False
-                    or details.get('checksum_file_created') is not False):
+                    or details.get('checksum_file_requested') is not (name == 'legacy_install')
+                    or details.get('checksum_file_created') is not (name == 'legacy_install')
+                    or (name == 'legacy_install' and details.get('legacy_checksum_fixture') is not True)):
                 raise ValueError('Missing native GitHub asset-digest download verification.')
         metadata_path = receipt_path.parent / name / "gui/metadata-safety.json"
         if record.get("metadata_safety_checked"):

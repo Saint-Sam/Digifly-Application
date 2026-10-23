@@ -63,3 +63,36 @@ def test_close_does_not_destroy_a_preparing_update_thread(window, monkeypatch):
     window.closeEvent(event)
     assert not event.isAccepted()
     window._update_worker = None
+
+
+def test_preparation_worker_preserves_reviewed_digest(window, monkeypatch, tmp_path):
+    from digifly_app.ui import main_window as ui
+    calls = []
+    monkeypatch.setattr(ui, 'prepare_install', lambda *args, **kwargs: calls.append((args, kwargs)))
+    values = tuple(tmp_path / name for name in ('archive.zip', 'target', 'transaction', 'draft'))
+    worker = ui.UpdatePreparationWorker(*values, window, expected_sha256='a' * 64)
+    worker.run()
+    assert calls == [(values, {'expected_sha256': 'a' * 64})]
+
+
+def test_download_dialog_carries_asset_digest_to_install_worker(window, monkeypatch, tmp_path):
+    from digifly_app.ui import main_window as ui
+    class Signal:
+        def connect(self, callback): pass
+    class Worker:
+        succeeded = failed = finished = Signal()
+        def __init__(self, *args, **kwargs): self.kwargs = kwargs
+        def deleteLater(self): pass
+        def start(self): pass
+    monkeypatch.setattr(ui, 'UpdateWorker', Worker)
+    monkeypatch.setattr(ui, 'UpdatePreparationWorker', Worker)
+    monkeypatch.setattr(QMessageBox, 'question', lambda *a: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(window, '_update_busy', lambda: False)
+    monkeypatch.setattr(window, '_save_update_draft', lambda path: path.write_text('separate draft'))
+    monkeypatch.setattr(ui, 'installation_root', lambda: tmp_path / 'installed')
+    monkeypatch.setattr(ui, 'update_cache_root', lambda: tmp_path / 'cache')
+    asset = ui.UpdateAsset('app.zip', 'official', '', '', digest='sha256:' + 'b' * 64)
+    window._update_check_finished(ui.UpdateStatus(True, asset, 'test'))
+    window._update_download_finished(tmp_path / 'app.zip')
+    assert window._update_worker.kwargs == {'expected_sha256': 'b' * 64}
+    window._update_worker = None

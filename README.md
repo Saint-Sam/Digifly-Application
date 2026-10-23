@@ -9,8 +9,8 @@ circuits and experiments, and reviewing simulation results.
 
 ## Mac and Windows downloads
 
-The [current release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.5)
-contains build **20261023.5** for Mac Apple silicon and Windows x86-64.
+The [current release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.6)
+contains build **20261023.6** for Mac Apple silicon and Windows x86-64.
 Download and extract the ZIP for the target platform. Older app versions need
 one manual installation of this release because their updater expects the
 discontinued checksum files.

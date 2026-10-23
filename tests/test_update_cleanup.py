@@ -115,6 +115,19 @@ def test_only_exact_download_files_removed_and_unknown_files_retained(tmp_path, 
     assert (folder / "my-notes.txt").read_text() == "keep"
 
 
+def test_digest_only_download_cleanup_needs_no_checksum_sidecar(tmp_path, monkeypatch):
+    request, data = committed(tmp_path, monkeypatch)
+    folder = request.parent.parent / 'download-digest-only'
+    folder.mkdir()
+    archive = folder / 'update.zip'
+    archive.write_bytes(b'verified download')
+    data['cleanup'].pop('checksum_sha256')
+    data['cleanup'].update(archive=str(archive), archive_sha256=installer.file_hash(archive))
+    request.write_text(json.dumps(data))
+    result = cleanup.cleanup_completed_update(request, request.parent.parent, wait_seconds=0)
+    assert result['ok'] and not archive.exists() and not folder.exists()
+
+
 @pytest.mark.parametrize("edited", [False, True])
 def test_superseded_unchanged_draft_removed_but_edited_draft_kept(tmp_path, monkeypatch, edited):
     request, data = committed(tmp_path, monkeypatch)

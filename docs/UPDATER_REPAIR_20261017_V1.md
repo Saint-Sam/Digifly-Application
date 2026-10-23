@@ -1,6 +1,6 @@
 # Windows updater completion gate
 
-## Update downloads from build20261023.5
+## Update downloads from build20261023.6
 
 The updater discovers versioned apps across release pages and checks downloaded
 bytes against GitHub's asset digest. Separate checksum downloads are no longer
