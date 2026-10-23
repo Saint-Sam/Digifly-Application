@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any, Iterable, TYPE_CHECKING
 
 from .circuit import ConnectomeRef
-from .neuron_labels import neuron_family
+from .neuron_labels import neuron_family, canonical_saved_type
 
 if TYPE_CHECKING:
     from .workspace import DigiflyWorkspace
@@ -41,6 +41,11 @@ class NeuronRecord:
     neuron_type: str
     swc_path: str
     connectome_key: str
+    type_aliases: tuple[str, ...] = ()
+
+    @property
+    def type_names(self) -> tuple[str, ...]:
+        return (self.neuron_type, *self.type_aliases)
 
 
 @dataclass(frozen=True)
@@ -777,7 +782,7 @@ def _infer_id(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def _infer_labels(path: Path, root: Path, neuron_id: str) -> tuple[str, str]:
+def _infer_labels(path: Path, root: Path, neuron_id: str, dataset: str = '') -> tuple[str, str]:
     try:
         parts = path.relative_to(root).parts
     except ValueError:
@@ -789,6 +794,7 @@ def _infer_labels(path: Path, root: Path, neuron_id: str) -> tuple[str, str]:
         neuron_type = parts[id_index - 1]
     if id_index > 1 and parts[id_index - 2].upper() in NEURON_FAMILIES:
         family = parts[id_index - 2].upper()
+    neuron_type = canonical_saved_type(neuron_type, dataset)
     if family == "UNKNOWN":
         family = neuron_family(neuron_type)
     return family, neuron_type
@@ -868,7 +874,7 @@ class ConnectomeCatalog:
             else:
                 chosen = paths[0]
             records.append(NeuronRecord(neuron.body_id, neuron.family, neuron.neuron_type,
-                                        str(chosen), source.key))
+                                        str(chosen), source.key, neuron.type_aliases))
             alternatives[neuron.body_id] = tuple(paths)
         catalog = cls(source, records)
         catalog.alternatives, catalog.issues = alternatives, inventory.issues
@@ -919,7 +925,7 @@ class ConnectomeCatalog:
                 chosen[neuron_id] = path
         records = []
         for neuron_id, path in chosen.items():
-            family, neuron_type = _infer_labels(path, root, neuron_id)
+            family, neuron_type = _infer_labels(path, root, neuron_id, source.dataset)
             records.append(
                 NeuronRecord(
                     neuron_id=neuron_id,
@@ -968,15 +974,15 @@ class ConnectomeCatalog:
                 elif key in {"class", "family", "all"}:
                     matches = [record for record in self.records if record.family.casefold() == value]
                 elif key in {"type", "celltype"}:
-                    matches = [record for record in self.records if record.neuron_type.casefold() == value]
+                    matches = [record for record in self.records if any(name.casefold() == value for name in record.type_names)]
                 elif token_folded.upper() in NEURON_FAMILIES:
                     matches = [record for record in self.records if record.family == token_folded.upper()]
                 else:
                     matches = [
                         record
                         for record in self.records
-                        if record.neuron_type.casefold() == value
-                        or record.neuron_type.casefold().startswith(value.rstrip("*"))
+                        if any(name.casefold() == value or name.casefold().startswith(value.rstrip("*"))
+                               for name in record.type_names)
                     ]
             if not matches:
                 unmatched.append(token)

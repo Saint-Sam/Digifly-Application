@@ -139,6 +139,43 @@ def test_missing_family_ttmn_name_reaches_experiment_without_hiding_copy_choice(
     assert all(p.read_bytes() == data for p, data in originals.items())
 
 
+def test_documented_manc_instance_aliases_are_release_and_server_bound(tmp_path):
+    from digifly_app.core.saved_neurons import SavedSource
+    from digifly_app.core.morphology import load_swc
+    from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+    root = tmp_path / 'export_swc'
+    for family, kind, body in (('MN', 'TTMn', '10068'),
+                               ('UNKNOWN', 'MNwm34_PDMNp_L', '10068'),
+                               ('UNKNOWN', 'MNwm34_PDMNp_R', '10110')):
+        path = root / f'{family}/{kind}/{body}/{body}.swc'
+        path.parent.mkdir(parents=True)
+        path.write_text(SWC)
+    source = ConnectomeRef('library:manc:v1.2.1', 'MANC', str(root), 'manc:v1.2.1',
+                           server='https://neuprint.janelia.org')
+    inventory = scan_saved_neurons((SavedSource(root, source.dataset),), source.dataset)
+    catalog = ConnectomeCatalog.from_saved_inventory(source, inventory)
+    assert {r.neuron_id for r in catalog.query('TTMn').records} == {'10068', '10110'}
+    assert tuple(r.neuron_id for r in catalog.query('type:MNwm34_PDMNp_L').records) == ('10068',)
+    assert tuple(r.neuron_id for r in catalog.query('MNwm34_PDMNp_R').records) == ('10110',)
+    app = QApplication.instance() or QApplication([])
+    page = ExperimentBuilderPage(output_root=tmp_path / 'runs')
+    try:
+        records = catalog.query('TTMn').records
+        page.set_circuit_snapshot(CircuitSpec(connectome=source, neuron_ids=('10068', '10110')),
+                                  tuple(load_swc(r) for r in records))
+        for name, expected in (('TTMn', ('10068', '10110')), ('MNwm34_PDMNp_L', ('10068',))):
+            page.stimulus_targets.setText(name)
+            assert page._target_neuron_ids() == (expected, ())
+    finally:
+        page.close()
+        app.processEvents()
+    other = scan_saved_neurons((SavedSource(root, source.dataset, 'https://other.example'),), source.dataset)
+    assert next(n for n in other.neurons if n.body_id == '10068').label_conflict
+    assert next(n for n in other.neurons if n.body_id == '10110').neuron_type == 'MNwm34_PDMNp_R'
+    other = scan_saved_neurons((SavedSource(root, 'manc:v1.2.3'),), 'manc:v1.2.3')
+    assert next(n for n in other.neurons if n.body_id == '10068').label_conflict
+
+
 def test_compact_controls_use_shared_inventory_and_browse_without_loading(tmp_path, monkeypatch):
     from digifly_app.ui.circuit_builder import CircuitBuilderPage
     profile, roots = fixture(tmp_path)

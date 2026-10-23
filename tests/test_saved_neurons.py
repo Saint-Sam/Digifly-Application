@@ -118,6 +118,19 @@ def test_legacy_unknown_ttmn_is_a_motor_neuron_without_moving_files(tmp_path, da
     assert not (root / 'MN').exists()
 
 
+def test_manc_ttmn_type_and_instance_folder_are_one_annotation(tmp_path):
+    root = tmp_path / 'export_swc'
+    swc(root, 'MN/TTMn/10068/10068.swc')
+    swc(root, 'UNKNOWN/MNwm34_PDMNp_L/10068/10068_healed.swc')
+    swc(root, 'UNKNOWN/MNwm34_PDMNp_R/10110/10110.swc')
+    result = scan_saved_neurons((SavedSource(root, 'manc:v1.2.1'),), 'manc:v1.2.1')
+    assert {n.body_id for n in result.family('MN')} == {'10068', '10110'}
+    assert all(n.neuron_type == 'TTMn' and not n.label_conflict for n in result.neurons)
+    left = next(n for n in result.neurons if n.body_id == '10068')
+    assert left.source_labels == (('MN', 'TTMn'), ('UNKNOWN', 'MNwm34_PDMNp_L'))
+    assert left.type_aliases == ('MNwm34_PDMNp_L',)
+
+
 def test_no_follow_links_cancel_and_inaccessible_subtree(tmp_path, monkeypatch):
     root = tmp_path / 'root'
     swc(root, 'DN/DNp01/42/42.swc')

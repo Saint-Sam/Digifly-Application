@@ -1081,6 +1081,14 @@ def run_library_smoke(destination: Path) -> int:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(swc)
                 protected[path] = path.read_bytes()
+            if dataset == 'manc:v1.2.1':
+                # Real MANC10068 additionally has an old instance-named folder.
+                # Its type is TTMn in the supplied official annotation table.
+                for body, side in zip(bodies, ('L', 'R')):
+                    path = old_root / f'UNKNOWN/MNwm34_PDMNp_{side}/{body}/{body}_healed.swc'
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(swc)
+                    protected[path] = path.read_bytes()
             profile = ResourceProfile.load(profile_path)
             replace(profile, resources=(*profile.resources, ResourceBinding(
                 'ttmn-' + dataset.replace(':', '-'), ResourceKind.MORPHOLOGY_SOURCE,
@@ -1105,6 +1113,11 @@ def run_library_smoke(destination: Path) -> int:
                     any(r.family != 'MN' or r.neuron_type != 'TTMn' for r in builder.loaded_records.values()) or
                     set(experiment._target_neuron_ids()[0]) != expected or experiment._target_neuron_ids()[1]):
                 raise ValueError('TTMn named Circuit/Experiment selection differs across releases: ' + dataset)
+            if dataset == 'manc:v1.2.1':
+                experiment.stimulus_targets.setText('MNwm34_PDMNp_L')
+                if experiment._target_neuron_ids() != (('10068',), ()):
+                    raise ValueError('MANC instance alias does not reach its own Experiment target')
+                experiment.stimulus_targets.setText('TTMn')
             if any(p.read_bytes() != data for p, data in protected.items()) or (old_root / 'MN').exists():
                 raise ValueError('Legacy classification moved or rewrote existing SWCs')
             classification_rows.append({'dataset': dataset, 'bodies': sorted(expected), 'type': 'TTMn', 'family': 'MN'})
@@ -1112,7 +1125,7 @@ def run_library_smoke(destination: Path) -> int:
         if not (resources[-1].root / 'export_swc/MN/TTMn/43/43.swc').is_file():
             raise ValueError('The app-owned TTMn download did not use the MN storage folder')
         record.update(ttmn_motor_classification=True, ttmn_motor_classification_rows=classification_rows,
-                      ttmn_motor_download_folder=True)
+                      ttmn_motor_download_folder=True, ttmn_instance_aliases=True)
         journal('built_in_connectivity_reader')
         from digifly_app.core.connectivity_download import export_for, SERVER
         from digifly_app.ui.connectivity_download import ConnectivityDownloadDialog, graph_bindings

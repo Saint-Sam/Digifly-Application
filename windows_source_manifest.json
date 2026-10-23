@@ -358,8 +358,8 @@
       "bytes": 12703
     },
     "src/digifly_app/core/connectomes.py": {
-      "sha256": "bd822dfcc66ab6766a32694084c106daa4996cc9d02c51b4930a095df474b1a5",
-      "bytes": 40650
+      "sha256": "886a08b1d3e70925e8704cc3008885914bb1cbdfa009c1b6df34bc3b7d6d1e6d",
+      "bytes": 40977
     },
     "src/digifly_app/core/credentials.py": {
       "sha256": "b066a88bd60de36ac422eaea1ff904ea1fbe3e62b5552dba7be8daecba5d4465",
@@ -410,8 +410,8 @@
       "bytes": 53108
     },
     "src/digifly_app/core/neuron_labels.py": {
-      "sha256": "9378a1504f951040f3d4546bce42b511632512817545a97421cf842049a6572d",
-      "bytes": 1000
+      "sha256": "80f884f63f0ecb9da1c48f18e18cd073bbf178ede83122fd33e3e2d5db1a0ebe",
+      "bytes": 1910
     },
     "src/digifly_app/core/pair_graph.py": {
       "sha256": "746e620f5767355f744efb8da9ee99cb7b21fa3d5b2f364d11eed76cb9ccdbcd",
@@ -494,8 +494,8 @@
       "bytes": 10533
     },
     "src/digifly_app/core/saved_neurons.py": {
-      "sha256": "aaa612277f99141071cd7abee540a38de95152746594aa659730ea0ee4c9c80b",
-      "bytes": 10051
+      "sha256": "ad4a17f15e50ad526e922d4b9ed92d74bed8c41c16029f5dcd9fea6685b55648",
+      "bytes": 10277
     },
     "src/digifly_app/core/swc_library.py": {
       "sha256": "4837d76d6a893d74103e761e87fe8fe1258d63657af8cbe98b4c62dd1ab73be4",
@@ -710,8 +710,8 @@
       "bytes": 70253
     },
     "src/digifly_app/ui/experiment_builder.py": {
-      "sha256": "f07a1f2c91bfaa38d6447b3121fd774d18cf3493330beeb2c5e1bd203fb38c58",
-      "bytes": 75411
+      "sha256": "fb5439bfc302ff86b11536a788f4b1b76edbbd7a4c8c379973c7989e1ac1f86b",
+      "bytes": 75452
     },
     "src/digifly_app/ui/main_window.py": {
       "sha256": "56f66c6f9fa495bf856778c4ea59890d121c48ed0b01bcc588d0f70cebde90b1",
@@ -730,8 +730,8 @@
       "bytes": 47240
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "a2ad0cae2652e9c8389d2cb2e662256c847035043ac747ee9be3cec5b120eeda",
-      "bytes": 90420
+      "sha256": "f790995d7e4553b78110732e31bdf20d94b94a0452f776252a8a8938682a9eb5",
+      "bytes": 91309
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -882,7 +882,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "cec6e9aa1155dade7513f53995e614a51a89d738219b0d2b0b6d1a9151486aec",
+      "sha256": "7ad0bcd94243c9822a17521c1b18cf299909e286ac27fb48c8a248aa960fea77",
       "bytes": 10382
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -922,12 +922,12 @@
       "bytes": 8576
     },
     "tests/test_saved_neurons.py": {
-      "sha256": "91910549f0feac4007a8cce7e283bf577e84ce43c5a6ae484697baa22c79b146",
-      "bytes": 13662
+      "sha256": "263dab7c72589c9d80064528382186a39175d751c310a74bd065fffa4b844bfd",
+      "bytes": 14380
     },
     "tests/test_circuit_library.py": {
-      "sha256": "c901af7a2edbb38642cade523a3fe1c67227bde72db452fce3ef780cfbe7527c",
-      "bytes": 12397
+      "sha256": "cd59e19882163ffc65382386e508c795e4d350c300e51779205055aa3e4a0cb4",
+      "bytes": 14678
     },
     "tests/test_circuit_builder_ui.py": {
       "sha256": "9e1cac0fb9253de49b1ae451463607d3935a69c47d223af54a7ef71b6e7f9bb8",

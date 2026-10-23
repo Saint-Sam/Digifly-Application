@@ -959,9 +959,10 @@ class ExperimentBuilderPage(QWidget):
         type_matches: dict[str, list[str]] = {}
         for morphology in self._morphologies:
             neuron_id = morphology.record.neuron_id
-            neuron_type = morphology.record.neuron_type.strip().casefold()
-            if neuron_id in available_ids and neuron_type:
-                type_matches.setdefault(neuron_type, []).append(neuron_id)
+            for name in morphology.record.type_names:
+                neuron_type = name.strip().casefold()
+                if neuron_id in available_ids and neuron_type:
+                    type_matches.setdefault(neuron_type, []).append(neuron_id)
 
         resolved: list[str] = []
         unmatched: list[str] = []
