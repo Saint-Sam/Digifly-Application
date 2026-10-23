@@ -253,7 +253,7 @@ class ExperimentBuilderPage(QWidget):
         ).expanduser()
         self._circuit = CircuitSpec()
         self._morphologies: tuple[Morphology, ...] = ()
-        self._morphology_signature: tuple[tuple[str, str, int], ...] = ()
+        self._morphology_signature: tuple[tuple[str, str, str, int], ...] = ()
         self._restoring = False
         self._runtime_paths = {
             "neuron": str(neuron_runtime or ""),
@@ -887,7 +887,10 @@ class ExperimentBuilderPage(QWidget):
         """Attach a circuit document, retaining geometry only for the same cell set."""
 
         existing_ids = tuple(item.record.neuron_id for item in self._morphologies)
-        morphologies = self._morphologies if existing_ids == tuple(spec.neuron_ids) else ()
+        previous, current = self._circuit.connectome, spec.connectome
+        same_source = all(getattr(previous, field) == getattr(current, field)
+                          for field in ("key", "dataset", "root", "server", "swc_paths"))
+        morphologies = self._morphologies if same_source and existing_ids == tuple(spec.neuron_ids) else ()
         self.set_circuit_snapshot(spec, morphologies)
 
     def set_circuit_snapshot(
@@ -905,7 +908,7 @@ class ExperimentBuilderPage(QWidget):
             if neuron_id in by_id
         )
         signature = tuple(
-            (item.record.neuron_id, item.record.swc_path, len(item.segments))
+            (item.record.connectome_key, item.record.neuron_id, item.record.swc_path, len(item.segments))
             for item in ordered
         )
         if signature != self._morphology_signature:
@@ -928,6 +931,10 @@ class ExperimentBuilderPage(QWidget):
                 f"Neuron IDs: {', '.join(self._circuit.neuron_ids[:12])}"
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
+                + (f"\nConnectivity: {Path(self._circuit.connectome.pair_graph_path).name} · aggregate pair table. "
+                   "Connected simulation requires a weight, kinetics and placement policy; not implemented yet. "
+                   "No other contact source will be substituted."
+                   if self._circuit.connectome.pair_graph_path else "")
             )
         else:
             self.circuit_state.set_state(CheckState.WARNING, text="NO CIRCUIT")

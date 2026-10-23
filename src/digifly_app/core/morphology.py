@@ -11,7 +11,7 @@ import shutil
 from typing import Any
 
 from .circuit import CircuitSpec
-from .connectomes import NeuronRecord
+from .connectomes import NeuronRecord, unwrapped_connectome_key
 from .swc_units import source_coordinate_contract
 
 
@@ -88,7 +88,7 @@ def locate_soma(morphology: Morphology) -> SomaLocation:
 
     nodes = morphology.nodes
     family = str(morphology.record.family).strip().upper()
-    connectome_key = str(morphology.record.connectome_key).strip().lower()
+    connectome_key = unwrapped_connectome_key(morphology.record.connectome_key)
     is_dn = family == "DN" or family.startswith("DN")
     is_manc_dn = is_dn and connectome_key.startswith("manc")
     parent_ids = {node.parent_id for node in nodes if node.parent_id >= 0}

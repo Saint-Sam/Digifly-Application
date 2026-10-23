@@ -20,6 +20,19 @@ if TYPE_CHECKING:
 NEURON_FAMILIES = ("AN", "DN", "IN", "MN", "SN")
 
 
+def unwrapped_connectome_key(key: str) -> str:
+    """Remove only known source namespaces, not dataset/release information.
+
+    Shared libraries and saved download selections refer to the same anatomy
+    as their original key. Never guess this identity from labels or paths.
+    """
+    value = str(key).strip().casefold()
+    for prefix in ("library:", "neuprint:"):
+        if value.startswith(prefix):
+            return value[len(prefix):]
+    return value
+
+
 @dataclass(frozen=True)
 class NeuronRecord:
     neuron_id: str
@@ -458,7 +471,7 @@ class ConnectomeEdgeCatalog:
         """
 
         if self.source.pair_graph_path:
-            raise ValueError("The selected MANC Parquet is an aggregate pair graph, not located chemical contacts. Choose an explicit aggregate-weight/kinetics/placement simulation policy first; the previous SQLite contact source is not substituted.")
+            raise ValueError("The selected connectivity Parquet is an aggregate pair graph, not located chemical contacts. An explicit aggregate-weight/kinetics/placement simulation policy is not implemented yet; the previous contact source is not substituted.")
         selected = tuple(dict.fromkeys(str(value).strip() for value in neuron_ids))
         if not selected:
             return ()

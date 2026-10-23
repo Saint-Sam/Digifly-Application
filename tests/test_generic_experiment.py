@@ -41,6 +41,20 @@ def test_cpu_gap_cache_version_preserves_prior_failed_build(tmp_path, monkeypatc
     assert log.read_bytes() == b"Preserved static-link compiler failure\n"
 
 
+def test_downloaded_male_pair_graph_cannot_silently_use_native_contacts(tmp_path, monkeypatch):
+    from digifly_app.core.connectomes import ConnectomeEdgeCatalog
+    root = tmp_path / "male-cns_v0.9/export_swc"
+    root.mkdir(parents=True)
+    circuit = CircuitSpec(connectome=ConnectomeRef("library:male-cns:v0.9", "Male CNS", str(root),
+        "male-cns:v0.9", pair_graph_path=str(tmp_path / "downloaded.parquet")), neuron_ids=("1", "2"))
+    adapter = generic.GenericExperimentAdapter({})
+    assert ConnectomeEdgeCatalog(circuit.connectome).is_male_cns
+    monkeypatch.setattr(adapter, "_male_cns_chemical_contacts",
+        lambda *args: pytest.fail("Selected downloaded graph was bypassed for native contacts"))
+    with pytest.raises(ValueError, match="explicit aggregate-weight"):
+        adapter._edge_manifest(circuit, (_morphology(tmp_path, "1"), _morphology(tmp_path, "2")))
+
+
 def _morphology(tmp_path: Path, neuron_id: str = "1") -> Morphology:
     path = tmp_path / f"{neuron_id}.swc"
     path.write_text(

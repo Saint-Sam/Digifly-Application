@@ -19,6 +19,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QApplication, QMessageBox, QRubberBand
 
 from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
+from digifly_app.core.connectomes import unwrapped_connectome_key
 from .snapshot import HIGH_RESOLUTION_WIDTH, save_image_with_dialog
 from .style import DARK_THEME, LIGHT_THEME, normalize_theme, theme_color
 
@@ -493,10 +494,7 @@ class CircuitViewport(QOpenGLWidget):
             MALE_CNS_ROLL_DEGREES
             if items
             and all(
-                item.record.connectome_key.casefold().startswith("male-cns")
-                or item.record.connectome_key.casefold().startswith(
-                    "neuprint:male-cns"
-                )
+                unwrapped_connectome_key(item.record.connectome_key).startswith("male-cns")
                 for item in items
             )
             else DEFAULT_ROLL_DEGREES

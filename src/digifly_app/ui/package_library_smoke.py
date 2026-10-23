@@ -446,7 +446,9 @@ def run_library_smoke(destination: Path) -> int:
                         manc / 'DN/DNp01/10000/10000_axodendro_with_synapses.swc')
         for path in native_files:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(swc)
+            header = (b'# Source: Janelia male-cns v0.9 public skeleton release\n'
+                      b'# x/y/z/r converted from8nm units to micrometers, scale0.008\n') if path.is_relative_to(male) else b''
+            path.write_bytes(header + swc)
         (manc / '.phase2_export_index.json').write_text('{}')
         (manc / 'edges').mkdir()
         (manc / 'edges/master_edges_cache.sqlite').touch()
@@ -936,6 +938,67 @@ def run_library_smoke(destination: Path) -> int:
             circuit_library_release_isolation=True, circuit_library_compact_layout=True,
             circuit_library_readonly=True, circuit_library_inline_choices=True,
             circuit_library_widths=[1120, 1700])
+        journal('connectome_orientation_and_experiment_snapshot')
+        from PySide6.QtCore import QPointF
+        from math import isclose
+        orientation_rows = []
+        for dataset, expected_roll in (('male-cns:v0.9', 180.0), ('male-cns:v1.0', 180.0),
+                                       ('manc:v1.2.1', 0.0)):
+            builder.select_library_release(dataset)
+            wait_for(lambda: builder.saved_browser.inventory is not None and
+                     builder.saved_browser.inventory.dataset == dataset, 'Orientation inventory did not finish')
+            body = builder.saved_browser.inventory.neurons[0].body_id
+            builder.query_edit.setText(body)
+            builder.page_scroll.ensureWidgetVisible(builder.assemble_button)
+            QTest.qWait(50)
+            QTest.mouseClick(builder.assemble_button, Qt.MouseButton.LeftButton)
+            viewport = builder.viewport
+            if (not builder._selected_source().key.startswith('library:') or
+                    set(builder.loaded_morphologies) != {body} or viewport.roll_degrees != expected_roll):
+                raise ValueError('Shared connectome lost its display orientation: ' + str({
+                    'dataset': dataset, 'key': builder._selected_source().key, 'wanted': body,
+                    'loaded': tuple(builder.loaded_morphologies), 'roll': viewport.roll_degrees,
+                    'load_enabled': builder.assemble_button.isEnabled(), 'summary': builder.viewport_summary.text()}))
+            builder.page_scroll.ensureWidgetVisible(builder.full_skeletons_button)
+            QTest.mouseClick(builder.full_skeletons_button, Qt.MouseButton.LeftButton)
+            geometry = viewport._vertex_data
+            morphology = builder.loaded_morphologies[body]
+            original_swc = Path(morphology.record.swc_path).read_bytes()
+            segment = morphology.segments[0]
+            midpoint = tuple((a + b) / 2 for a, b in zip(segment.parent, segment.child))
+            projected = viewport._project(midpoint, viewport._mvp())
+            if projected is None or viewport._pick(QPointF(*projected))[0] != body:
+                raise ValueError('Displayed skeleton picking no longer matches geometry: ' + dataset)
+            viewport.roll_degrees = 0.0
+            zero_projection = viewport._project(midpoint, viewport._mvp())
+            viewport.setFocus()
+            QTest.keyClick(viewport, Qt.Key.Key_R)
+            reset_projection = viewport._project(midpoint, viewport._mvp())
+            if viewport.roll_degrees != expected_roll or geometry != viewport._vertex_data:
+                raise ValueError('Reset did not preserve raw geometry and the release camera')
+            if expected_roll and not (isclose(reset_projection[0], viewport.width() - zero_projection[0], abs_tol=.02)
+                                     and isclose(reset_projection[1], viewport.height() - zero_projection[1], abs_tol=.02)):
+                raise ValueError('Male CNS correction is not a camera-space half-turn')
+            frozen_orientation = builder.circuit_spec().to_dict()
+            builder.set_circuit_spec(CircuitSpec.from_dict(frozen_orientation))
+            builder.load_saved_assets()
+            experiment = window.experiment_page
+            if (builder.viewport.roll_degrees != expected_roll or
+                    experiment.target_region_viewport.roll_degrees != expected_roll or
+                    experiment._circuit.connectome != builder.circuit_spec().connectome):
+                raise ValueError('Saved circuit or Experiment Builder lost the exact source/camera')
+            if Path(morphology.record.swc_path).read_bytes() != original_swc:
+                raise ValueError('Orientation changed an SWC file')
+            builder.page_scroll.ensureWidgetVisible(builder.viewport)
+            QTest.qWait(80)
+            filename = 'orientation-' + dataset.replace(':', '-') + '.png'
+            if not window.grab().save(str(destination / filename)):
+                raise ValueError('Could not save the rendered orientation control')
+            orientation_rows.append({'dataset': dataset, 'key': morphology.record.connectome_key,
+                'roll': expected_roll, 'pick_matches': True, 'reset_matches': True,
+                'saved_reload_matches': True, 'experiment_camera_matches': True, 'swc_unchanged': True})
+        record.update(connectome_orientation=True, connectome_orientation_rows=orientation_rows,
+                      experiment_source_snapshot=True)
         journal('built_in_connectivity_reader')
         from digifly_app.core.connectivity_download import export_for, SERVER
         from digifly_app.ui.connectivity_download import ConnectivityDownloadDialog, graph_bindings
@@ -1034,6 +1097,19 @@ def run_library_smoke(destination: Path) -> int:
                 rows = pair_rows(source_ref, '42', str(2**53+7))
                 if {r['total_weight'] for r in rows} != {1, 9}:
                     raise ValueError('Connectivity conversion lost exact 64-bit IDs or weak edges')
+                builder.refresh_connectomes()
+                builder.select_library_release('male-cns:v1.0')
+                wait_for(lambda: builder.saved_browser.inventory is not None and
+                    builder.saved_browser.inventory.dataset == 'male-cns:v1.0', 'Downloaded graph handoff did not finish')
+                builder.query_edit.setText('802401')
+                builder.assemble_circuit()
+                attached = window.experiment_page._circuit.connectome
+                if (attached.pair_graph_path != old.path or attached.pair_graph_index != old.metadata['index'] or
+                        attached.pair_graph_sha256 != old.metadata['source_sha256'] or
+                        Path(old.path).name not in window.experiment_page.circuit_detail.text() or
+                        'not implemented yet' not in window.experiment_page.circuit_detail.text()):
+                    raise ValueError('Experiment Builder lost the selected downloaded table or hid its execution boundary')
+                record['experiment_downloaded_connectivity'] = True
                 dialog.grab().save(str(destination / 'connectivity-ready.png'))
                 QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.No
                 QTest.mouseClick(dialog.download, Qt.MouseButton.LeftButton)

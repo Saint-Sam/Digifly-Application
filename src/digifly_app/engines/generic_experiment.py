@@ -1224,7 +1224,7 @@ class GenericExperimentAdapter:
         sources: list[dict[str, Any]] = []
         chemical_rows: tuple[dict[str, Any], ...] = ()
         try:
-            if edge_catalog.is_male_cns:
+            if edge_catalog.is_male_cns and not circuit.connectome.pair_graph_path:
                 chemical_rows = self._male_cns_chemical_contacts(
                     edge_catalog, neuron_ids
                 )

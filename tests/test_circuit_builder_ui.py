@@ -534,14 +534,21 @@ def test_primary_sources_prefer_older_app_local_male_cns_over_managed_v1(tmp_pat
     assert fallback[1].label == "Male CNS v1.0"
 
 
-def test_male_cns_morphology_defaults_and_resets_to_180_degree_roll():
+@pytest.mark.parametrize("source_key", (
+    "male-cns:v0.9", "male-cns:v1.0",
+    "neuprint:male-cns:v0.9:selection", "neuprint:male-cns:v1.0:selection",
+    "library:male-cns:v0.9", "library:male-cns:v1.0",
+    "library:male-cns:v0.9@https://example.test",
+    "library:male-cns:v1.0@https://example.test",
+))
+def test_male_cns_morphology_defaults_and_resets_to_180_degree_roll(source_key):
     application = QApplication.instance() or QApplication([])
     record = NeuronRecord(
         "57245",
         "AN",
         "AN08B098",
         "/57245.swc",
-        "male-cns:v0.9",
+        source_key,
     )
     morphology = Morphology(
         record,
@@ -554,8 +561,10 @@ def test_male_cns_morphology_defaults_and_resets_to_180_degree_roll():
         viewport.resize(640, 480)
         viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
         viewport.set_morphologies((morphology,))
+        original_vertices = viewport._vertex_data
         assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
         assert viewport.roll_degrees == MALE_CNS_ROLL_DEGREES
+        assert viewport._vertex_data == original_vertices
         male_projection = viewport._project((2.0, 1.0, 0.0), viewport._mvp())
         viewport.yaw_degrees = 23.0
         viewport.roll_degrees = 42.0
@@ -573,6 +582,7 @@ def test_male_cns_morphology_defaults_and_resets_to_180_degree_roll():
         viewport.set_morphologies((manc,))
         assert viewport.yaw_degrees == DEFAULT_YAW_DEGREES
         assert viewport.roll_degrees == DEFAULT_ROLL_DEGREES
+        assert viewport._vertex_data == original_vertices
         manc_projection = viewport._project((2.0, 1.0, 0.0), viewport._mvp())
         assert male_projection is not None
         assert manc_projection is not None
