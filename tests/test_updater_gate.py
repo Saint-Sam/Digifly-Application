@@ -41,6 +41,29 @@ def test_new_cleanup_gate_rejects_historical_retention_only_evidence(tmp_path):
             executable_sha256=gate.file_hash(exe), system=gate.platform.system(), require_cleanup=True)
 
 
+def test_digest_gate_requires_actual_verifier_without_sidecar(tmp_path):
+    receipt, archive, exe = fixture(tmp_path)
+    data = json.loads(receipt.read_text())
+    data['github_asset_digest_checked'] = True
+    for name in data['cases']:
+        folder = tmp_path / name / 'gui'
+        folder.mkdir(parents=True)
+        (folder / 'digest-download.json').write_text(json.dumps({
+            'ok': True, 'archive_sha256': gate.file_hash(archive),
+            'github_asset_digest': 'sha256:' + gate.file_hash(archive), 'actual_verifier_used': True,
+            'checksum_file_requested': False, 'checksum_file_created': False}))
+    receipt.write_text(json.dumps(data))
+    kwargs = dict(archive_sha256=gate.file_hash(archive), executable_sha256=gate.file_hash(exe),
+                  system=gate.platform.system(), require_asset_digest=True)
+    assert gate.validate_release_evidence(receipt, **kwargs)['ok']
+    path = tmp_path / 'install/gui/digest-download.json'
+    failed = json.loads(path.read_text())
+    failed['actual_verifier_used'] = False
+    path.write_text(json.dumps(failed))
+    with pytest.raises(ValueError, match='asset-digest'):
+        gate.validate_release_evidence(receipt, **kwargs)
+
+
 @pytest.mark.parametrize("change", ["archive", "executable", "screenshot", "rollback", "startup"])
 def test_native_gate_rejects_stale_or_incomplete_evidence(tmp_path, change):
     receipt, archive, exe = fixture(tmp_path)

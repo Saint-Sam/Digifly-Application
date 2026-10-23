@@ -17,6 +17,47 @@ def test_update_cache_is_outside_workspace(monkeypatch, tmp_path: Path) -> None:
     assert "Digifly Workstation Workspace" not in cache.parts
 
 
+def test_new_release_discovery_and_download_use_github_digest_without_sidecar(monkeypatch, tmp_path):
+    payload = b'checked package'
+    item, _ = _release_asset('0.1.0-alpha.20261023.5')
+    item['digest'] = 'sha256:' + hashlib.sha256(payload).hexdigest()
+    draft, _ = _release_asset('9.9.9-alpha.20990101.1')
+    monkeypatch.setattr(updates, '_read_json', lambda url: [
+        {'draft': True, 'assets': [draft]}, {'draft': False, 'assets': [item]}])
+    monkeypatch.setattr(updates, 'platform_asset_fragment', lambda: 'Windows-x86_64.zip')
+    monkeypatch.setattr(updates, 'build_info', lambda: {'version': '0.1.0-alpha.20261023.4'})
+    result = updates.check_for_update()
+    assert result.available and result.asset.name == item['name'] and result.asset.checksum_url == ''
+    monkeypatch.setattr(updates, 'update_cache_root', lambda: tmp_path)
+    requested = []
+    def download(url, destination, **kwargs):
+        requested.append(url)
+        destination.write_bytes(payload)
+    monkeypatch.setattr(updates, '_download', download)
+    assert updates.download_verified_update(result.asset).read_bytes() == payload
+    assert requested == [item['browser_download_url']]
+    assert not list(tmp_path.rglob('*.sha256'))
+
+
+@pytest.mark.parametrize('digest', ['', 'sha1:' + '0' * 40, 'sha256:bad', 'sha256:' + 'A' * 64])
+def test_missing_or_invalid_digest_cannot_enable_sidecar_free_update(monkeypatch, digest):
+    item, _ = _release_asset('0.1.0-alpha.20261023.5')
+    item['digest'] = digest
+    monkeypatch.setattr(updates, '_read_json', lambda url: {'assets': [item]})
+    monkeypatch.setattr(updates, 'platform_asset_fragment', lambda: 'Windows-x86_64.zip')
+    monkeypatch.setattr(updates, 'build_info', lambda: {'version': '0.1.0-alpha.20261023.4'})
+    assert not updates.check_for_update().available
+
+
+def test_github_digest_mismatch_rejects_archive_without_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, 'update_cache_root', lambda: tmp_path)
+    monkeypatch.setattr(updates, '_download', lambda url, destination, **kw: destination.write_bytes(b'changed'))
+    asset = updates.UpdateAsset('app.zip', 'archive', '', '', digest='sha256:' + '0' * 64)
+    with pytest.raises(ValueError, match='integrity'):
+        updates.download_verified_update(asset)
+    assert not list(tmp_path.rglob('*.partial')) and not list(tmp_path.rglob('*.zip'))
+
+
 def test_verified_download_rejects_bad_checksum(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(updates, "update_cache_root", lambda: tmp_path)
 

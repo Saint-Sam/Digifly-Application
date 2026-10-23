@@ -1,5 +1,16 @@
 # Windows updater completion gate
 
+## Update downloads from build20261023.5
+
+The updater discovers versioned apps across release pages and checks downloaded
+bytes against GitHub's asset digest. Separate checksum downloads are no longer
+needed. Missing or invalid integrity metadata blocks installation. Draft releases
+and historical versions cannot replace a newer installed app.
+
+Older versions need one manual installation because their updater expects the
+discontinued checksum files. Native package checks cover the actual verifier,
+installation, draft restoration and recovery after an injected startup failure.
+
 ## October19 current public paired delivery
 
 Both current packages are published on the existing GitHub release and linked

@@ -23,7 +23,7 @@ def validate_evidence(receipt_path: Path, archive: Path, executable: Path) -> di
                                      executable_sha256=file_hash(executable), system=platform.system())
 
 
-def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows", require_cleanup=False, require_metadata=False) -> dict:
+def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, executable_sha256: str, system="Windows", require_cleanup=False, require_metadata=False, require_asset_digest=False) -> dict:
     record = json.loads(receipt_path.read_text("utf-8"))
     if (record.get("schema") != "digifly-native-updater-gate-v1" or record.get("ok") is not True
             or record.get("platform") != system
@@ -37,6 +37,14 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
         cases.append(("legacy_install", "installed"))
     for name, status in cases:
         case = record["cases"][name]
+        if record.get('github_asset_digest_checked') or require_asset_digest:
+            details = json.loads((receipt_path.parent / name / 'gui/digest-download.json').read_text('utf-8'))
+            if (details.get('ok') is not True or details.get('actual_verifier_used') is not True
+                    or details.get('archive_sha256') != archive_sha256
+                    or details.get('github_asset_digest') != 'sha256:' + archive_sha256
+                    or details.get('checksum_file_requested') is not False
+                    or details.get('checksum_file_created') is not False):
+                raise ValueError('Missing native GitHub asset-digest download verification.')
         metadata_path = receipt_path.parent / name / "gui/metadata-safety.json"
         if record.get("metadata_safety_checked"):
             metadata = json.loads(metadata_path.read_text("utf-8"))
@@ -65,6 +73,8 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
         raise ValueError("Missing native post-update cleanup evidence.")
     if require_metadata and not record.get("metadata_safety_checked"):
         raise ValueError("Missing actual packaged metadata/downgrade check.")
+    if require_asset_digest and not record.get('github_asset_digest_checked'):
+        raise ValueError('Missing native GitHub asset-digest download verification.')
     return record
 
 
@@ -77,6 +87,7 @@ def check(application: Path, archive: Path, output: Path) -> dict:
               "cleanup_policy": "after_verified_startup",
               "legacy_request_checked": True,
               "metadata_safety_checked": True,
+              "github_asset_digest_checked": True,
               "platform": system, "archive_sha256": file_hash(archive),
               "source_app_executable_sha256": file_hash(executable_in(application, system)),
               "scope": "actual packaged app, offline verified-archive fixture, GUI update controls/workers, external copied-app helper, replacement and MainWindow/draft restart; explicit startup fault for rollback; not live GitHub transport, Windows11, SmartScreen or scientific acceptance", "cases": {}}

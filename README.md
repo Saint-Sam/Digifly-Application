@@ -5,19 +5,15 @@
 </p>
 
 Digifly Workstation is a desktop app for loading neuron morphologies, configuring
-circuits and experiments, and reviewing simulation results. The current source
-includes the shared SWC-library, neuron-list download and updater repairs.
+circuits and experiments, and reviewing simulation results.
 
 ## Mac and Windows downloads
 
-Use the [release page](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.1)
-for packaged applications. Prefer explicitly versioned downloads; historical
-and rollback assets remain available for recovery.
-
-Current editions: **Mac Apple silicon20261020.3** and
-**Windows x86-64 20261020.2**. Use the explicitly versioned ZIPs on the release
-page, which keeps only the current platform downloads and their checksums.
-Release notes identify the exact checks and remaining limitations.
+The [current release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.5)
+contains build **20261023.5** for Mac Apple silicon and Windows x86-64.
+Download and extract the ZIP for the target platform. Older app versions need
+one manual installation of this release because their updater expects the
+discontinued checksum files.
 
 - **Mac:** Apple silicon, macOS 14 or newer. Local tester builds are ad-hoc
   signed, not Apple-notarized. Intel Mac packages are not currently supplied.
@@ -29,6 +25,17 @@ Release notes identify the exact checks and remaining limitations.
   selected, checksum-pinned MANC connectivity Parquet; it contains no SWCs.
 
 ## Recent improvements
+
+Optional neuron connectivity downloads now grow one shared database per exact
+connectome release, including connections between successive groups in both
+directions. Repeated pairs update their saved counts without being counted twice.
+Circuit Builder and Experiment Builder use the same graph revision. Saved
+experiments retain their original data when new downloads arrive.
+
+TTMn searches and motor-neuron labels work across Male CNS and MANC. Male CNS
+skeletons display upright in Circuit Builder. Aggregate connectivity tables can
+be downloaded, browsed and passed between builders; connected simulation from
+these tables remains unavailable.
 
 The new Data Library source separates linked local SWC libraries from downloaded
 subsets. Workspace sources and registered folders appear without copying files;
@@ -53,7 +60,7 @@ The page scrolls at smaller window sizes so controls do not overlap tables.
   files when a replacement is requested.
 - Clear download destinations and plain-language download details.
 - Data Library support for saved NEURON, Arbor, BioNet and NetPyNE settings.
-- Verified update downloads, Install and Restart, saved-draft recovery and
+- Verified update downloads without separate checksum files, Install and Restart, saved-draft recovery and
   restoration after early startup failure.
 - Post-success cleanup of exact, unchanged updater-owned obsolete files.
   Saved projects, SWCs, installed simulators and run data are protected.

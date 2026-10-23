@@ -7,6 +7,7 @@ import sys
 import shutil
 from pathlib import Path
 import traceback
+import hashlib
 
 
 def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, legacy_request=False) -> int:
@@ -56,15 +57,26 @@ def run_update_smoke(destination: Path, archive: Path, *, fail_startup=False, le
     # No authenticated request, custom scientific preset or simulation. Native
     # controls and workers exercise selection -> download result -> preparation
     # -> close -> external helper -> replacement -> actual MainWindow reopen.
-    asset = updates.UpdateAsset(archive.name, "offline engineering fixture", "offline checksum", "")
+    expected_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    asset = updates.UpdateAsset(archive.name,
+        'https://github.com/Saint-Sam/Digifly-Application/releases/download/fixture/' + archive.name,
+        '', '', digest='sha256:' + expected_digest)
     ui.check_for_update = lambda: updates.UpdateStatus(True, asset, "Explicit packaged updater check")
+    def transfer(url, path, *, maximum):
+        if url != asset.url or archive.stat().st_size > maximum:
+            raise ValueError('Unexpected updater transfer; no checksum file is supplied')
+        shutil.copyfile(archive, path)
+    updates._download = transfer
+    updates.update_cache_root = lambda: destination / 'cache'
+    real_download = updates.download_verified_update
     def download(selected):
-        folder = destination / "cache/download-fixture"
-        folder.mkdir(parents=True)
-        saved = folder / archive.name
-        shutil.copyfile(archive, saved)
-        shutil.copyfile(archive.with_name(archive.name + ".sha256"), saved.with_name(saved.name + ".sha256"))
-        return saved.resolve()
+        saved = real_download(selected)
+        result = {'ok': hashlib.sha256(saved.read_bytes()).hexdigest() == expected_digest,
+            'archive_sha256': expected_digest, 'github_asset_digest': selected.digest,
+            'checksum_file_requested': False, 'checksum_file_created': bool(list(saved.parent.glob('*.sha256'))),
+            'actual_verifier_used': True}
+        (destination / 'digest-download.json').write_text(json.dumps(result), 'utf-8')
+        return saved
     ui.download_verified_update = download
     ui.update_cache_root = lambda: destination / "cache"
     QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.Yes

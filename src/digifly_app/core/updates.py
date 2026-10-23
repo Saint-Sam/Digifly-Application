@@ -23,8 +23,7 @@ from urllib.parse import urlsplit, unquote
 
 RELEASE_TAG = "v0.1.0-alpha.1"
 RELEASE_API = (
-    "https://api.github.com/repos/Saint-Sam/Digifly-Application/releases/tags/"
-    + RELEASE_TAG
+    "https://api.github.com/repos/Saint-Sam/Digifly-Application/releases?per_page=20"
 )
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 
@@ -80,15 +79,15 @@ def platform_asset_fragment() -> str:
     raise RuntimeError(f"Automatic updates are not yet packaged for {system}.")
 
 
-def _read_json(url: str) -> dict[str, Any]:
+def _read_json(url: str) -> dict[str, Any] | list:
     request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Digifly-Workstation-Updater"})
     with urlopen(request, timeout=15) as response:
         payload = response.read(MAX_METADATA_BYTES + 1)
     if len(payload) > MAX_METADATA_BYTES:
         raise ValueError("The update response was unexpectedly large.")
     value = json.loads(payload)
-    if not isinstance(value, dict):
-        raise ValueError("The update response was not an object.")
+    if not isinstance(value, (dict, list)):
+        raise ValueError("The update response was not a release or release list.")
     return value
 
 
@@ -121,9 +120,13 @@ def _time_key(value: str) -> datetime:
 def check_for_update(*, release_api: str = RELEASE_API) -> UpdateStatus:
     release = _read_json(release_api)
     fragment = platform_asset_fragment()
-    assets = release.get("assets", [])
-    if not isinstance(assets, list):
-        raise ValueError("The release asset list is invalid.")
+    releases = release if isinstance(release, list) else [release]
+    assets = []
+    for item in releases:
+        if not isinstance(item, dict) or not isinstance(item.get('assets', []), list):
+            raise ValueError('The release asset list is invalid.')
+        if not item.get('draft', False):
+            assets.extend(item.get('assets', []))
     candidates = [(item, _asset_version(str(item.get("name", "")), fragment))
                   for item in assets if isinstance(item, dict)]
     candidates = [(item, version) for item, version in candidates if version is not None]
@@ -134,15 +137,18 @@ def check_for_update(*, release_api: str = RELEASE_API) -> UpdateStatus:
     # app/build version, never a renamed rollback or a later-edited old asset.
     selected, version = max(candidates, key=lambda pair: (_version_key(pair[1]), _time_key(pair[0].get("updated_at", ""))))
     checksum = next((item for item in assets if isinstance(item, dict) and item.get("name") == f"{selected.get('name')}.sha256"), None)
-    if checksum is None:
+    digest = str(selected.get('digest') or '')
+    if digest and not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+        return UpdateStatus(False, None, 'The release asset digest is invalid; download refused.')
+    if checksum is None and not digest:
         return UpdateStatus(False, None, "The update exists but its checksum is missing.")
     asset = UpdateAsset(
         name=str(selected["name"]),
         url=str(selected["browser_download_url"]),
-        checksum_url=str(checksum["browser_download_url"]),
+        checksum_url=str(checksum["browser_download_url"]) if checksum else '',
         updated_at=str(selected.get("updated_at", "")),
         version=version,
-        digest=str(selected.get("digest") or ""),
+        digest=digest,
     )
     current = build_info()
     local_key = _version_key(str(current.get("version", "")), str(current.get("build", "")))
@@ -204,13 +210,21 @@ def download_verified_update(asset: UpdateAsset) -> Path:
     archive = root / asset.name
     checksum_file = root / f"{asset.name}.sha256"
     partial = root / f"{asset.name}.partial"
-    _download(asset.checksum_url, checksum_file, maximum=4096)
-    fields = checksum_file.read_text("ascii").strip().split()
-    if not fields or len(fields) > 2 or (len(fields) == 2 and fields[1].lstrip("*") != asset.name):
-        raise ValueError("The published checksum does not identify this update.")
-    expected = fields[0].lower()
-    if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
-        raise ValueError("The published update checksum is invalid.")
+    if asset.digest and not re.fullmatch(r'sha256:[0-9a-f]{64}', asset.digest):
+        raise ValueError('The release asset digest is invalid.')
+    if asset.checksum_url:
+        # Legacy releases remain readable; new releases need only the ZIP.
+        _download(asset.checksum_url, checksum_file, maximum=4096)
+        fields = checksum_file.read_text("ascii").strip().split()
+        if not fields or len(fields) > 2 or (len(fields) == 2 and fields[1].lstrip("*") != asset.name):
+            raise ValueError("The published checksum does not identify this update.")
+        expected = fields[0].lower()
+        if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
+            raise ValueError("The published update checksum is invalid.")
+    elif asset.digest:
+        expected = asset.digest.removeprefix('sha256:')
+    else:
+        raise ValueError('The update has no trusted integrity metadata; download refused.')
     if asset.digest and asset.digest != "sha256:" + expected:
         raise ValueError("The release asset digest and checksum disagree.")
     _download(asset.url, partial, maximum=4 * 1024 * 1024 * 1024)
