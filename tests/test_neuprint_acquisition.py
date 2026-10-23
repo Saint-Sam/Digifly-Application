@@ -142,6 +142,22 @@ def test_minimal_client_validates_lists_and_previews_without_exposing_token():
     assert SECRET not in repr(client)
 
 
+def test_preview_preserves_motor_superclass_for_family_classification():
+    calls = []
+    def transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
+        calls.append(json.loads(payload)['cypher'])
+        return json.dumps({'columns': ['bodyId', 'type', 'instance', 'superclass'],
+            'data': [[800146, 'TTMn', 'TTMn_R', 'vnc_motor']]}).encode()
+    client = NeuPrintClient('https://neuprint.janelia.org', SECRET,
+                            dataset='male-cns:v1.0', transport=transport)
+    neuron, = client.preview_neurons(NeuPrintSelection('type_exact', 'TTMn'))
+    assert neuron.to_dict()['superclass'] == 'vnc_motor'
+    assert 'AS superclass' in calls[0]
+    from digifly_app.core.neuprint import _family
+    assert _family('OtherMotorType', superclass='vnc_motor') == 'MN'
+    assert _family('OtherMotorType') == 'UNKNOWN'
+
+
 def test_neuprint_client_retries_only_transient_failures_and_honors_cancellation():
     transient_calls = 0
 

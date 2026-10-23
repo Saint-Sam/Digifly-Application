@@ -298,7 +298,7 @@ class SavedNeuronBrowser(Card):
             # keyboard and native accessibility; checkboxes may only toggle.
             button.setCheckable(False)
             if self._selected_type:
-                button.setToolTip(row[2].server + '\n' + '\n'.join(map(str, row[2].paths)))
+                button.setToolTip(self._neuron_details(row[2]))
             button.clicked.connect(lambda checked=False, index=i, expected=generation: self._activate(index, expected))
             self.row_buttons.append(button)
             self.row_layout.addWidget(button)
@@ -319,9 +319,15 @@ class SavedNeuronBrowser(Card):
         else:
             neuron = self._rows[row]
             self._selected_row = row
-            self.location.setText(neuron.server + '\n' + '\n'.join(map(str, neuron.paths)))
+            self.location.setText(self._neuron_details(neuron))
             self.open_folder.setEnabled(True)
             self.choose_neuron.setEnabled(True)
+
+    @staticmethod
+    def _neuron_details(neuron):
+        labels = '; '.join(f'{family} / {label}' for family, label in neuron.source_labels)
+        annotation = ('Saved labels disagree: ' if neuron.label_conflict else 'Saved labels: ') + labels
+        return '\n'.join((neuron.server, *((annotation,) if labels else ()), *map(str, neuron.paths)))
 
     def _choose_neuron(self):
         if self.inventory is not None and self._selected_type and 0 <= self._selected_row < len(self._rows):

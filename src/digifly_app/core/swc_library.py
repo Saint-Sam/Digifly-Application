@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from .data_library import MANIFEST_FILENAME, ManagedResource, load_managed_resource, safe_component
 from .resource_profile import AccessMode, ResourceBinding, ResourceKind, ResourceProfile
+from .neuron_labels import neuron_family
 
 
 LIBRARY_SCHEMA = "digifly-dataset-swc-library-v1"
@@ -83,12 +84,15 @@ def _labels(path: Path, body: str, neuron: dict) -> tuple[str, str]:
         if position:
             kind = path.parts[position - 1]
     kind = _component(kind, "Unknown")
-    family = next((item for item in FAMILIES[:-1] if kind.upper().startswith(item)), "UNKNOWN")
-    # A supplied export's explicit family is stronger than a type-name prefix.
+    explicit = ''
+    # A supplied known family is stronger than a type-name prefix. UNKNOWN may
+    # be filled only by the explicit motor annotation/exact TTMn rule.
     for part in path.parts[:-1]:
         if part.upper() in FAMILIES:
-            family = part.upper()
+            explicit = part.upper()
             break
+    family = neuron_family(kind, superclass=str(neuron.get('superclass') or neuron.get('superClass') or ''),
+                           explicit_family=explicit)
     return family, kind
 
 

@@ -69,6 +69,55 @@ def test_server_identity_labels_unknown_unidentified_and_missing(tmp_path):
     assert single.neurons[0].family == 'UNKNOWN'  # explicit UNKNOWN never guessed as DN
 
 
+def test_same_type_missing_family_is_not_a_name_conflict(tmp_path):
+    local, download = tmp_path / 'local', tmp_path / 'download'
+    for body in ('800146', '804642'):
+        swc(local, f'MN/TTMn/{body}/{body}_release.swc')
+        swc(download, f'UNKNOWN/TTMn/{body}/{body}_raw.swc')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*.swc')}
+    sources = (SavedSource(local, DATASET), SavedSource(download, DATASET))
+    result = scan_saved_neurons(sources, DATASET)
+    reverse = scan_saved_neurons(tuple(reversed(sources)), DATASET)
+    assert result == reverse
+    assert {n.body_id for n in result.family('MN')} == {'800146', '804642'}
+    for neuron in result.neurons:
+        assert neuron.neuron_type == 'TTMn' and not neuron.label_conflict
+        assert neuron.source_labels == (('MN', 'TTMn'), ('UNKNOWN', 'TTMn'))
+        assert len(neuron.paths) == 2
+    assert all(p.read_bytes() == value for p, value in before.items())
+
+
+def test_family_and_type_conflicts_are_independent_and_not_hidden(tmp_path):
+    a, b = tmp_path / 'a', tmp_path / 'b'
+    swc(a, 'MN/TTMn/1/1.swc')
+    swc(b, 'DN/TTMn/1/1.swc')
+    swc(a, 'MN/TTMn/2/2.swc')
+    swc(b, 'UNKNOWN/AnotherType/2/2.swc')
+    result = scan_saved_neurons((SavedSource(a, DATASET), SavedSource(b, DATASET)), DATASET)
+    by_id = {n.body_id: n for n in result.neurons}
+    assert by_id['1'].family == 'UNKNOWN' and by_id['1'].neuron_type == 'TTMn'
+    assert by_id['1'].label_conflict
+    assert by_id['2'].family == 'UNKNOWN' and by_id['2'].neuron_type == 'Conflicting labels'
+    assert by_id['2'].label_conflict
+    assert by_id['2'].source_labels == (('MN', 'TTMn'), ('UNKNOWN', 'AnotherType'))
+
+
+@pytest.mark.parametrize('dataset,bodies', [
+    ('male-cns:v0.9', ('800146', '804642')),
+    ('male-cns:v1.0', ('800146', '804642')),
+    ('manc:v1.2.1', ('10068', '10110')),
+])
+def test_legacy_unknown_ttmn_is_a_motor_neuron_without_moving_files(tmp_path, dataset, bodies):
+    root = tmp_path / 'old-download'
+    originals = [swc(root, f'UNKNOWN/TTMn/{body}/{body}.swc') for body in bodies]
+    result = scan_saved_neurons((SavedSource(root, dataset),), dataset)
+    assert {n.body_id for n in result.family('MN')} == set(bodies)
+    assert all(n.neuron_type == 'TTMn' and n.source_labels == (('UNKNOWN', 'TTMn'),)
+               and not n.label_conflict for n in result.neurons)
+    assert all(p.is_file() for p in originals)
+    assert not (root / 'MN').exists()
+
+
 def test_no_follow_links_cancel_and_inaccessible_subtree(tmp_path, monkeypatch):
     root = tmp_path / 'root'
     swc(root, 'DN/DNp01/42/42.swc')

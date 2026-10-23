@@ -12,6 +12,7 @@ import sqlite3
 from typing import Any, Iterable, TYPE_CHECKING
 
 from .circuit import ConnectomeRef
+from .neuron_labels import neuron_family
 
 if TYPE_CHECKING:
     from .workspace import DigiflyWorkspace
@@ -789,8 +790,7 @@ def _infer_labels(path: Path, root: Path, neuron_id: str) -> tuple[str, str]:
     if id_index > 1 and parts[id_index - 2].upper() in NEURON_FAMILIES:
         family = parts[id_index - 2].upper()
     if family == "UNKNOWN":
-        upper = neuron_type.upper()
-        family = next((prefix for prefix in NEURON_FAMILIES if upper.startswith(prefix)), "UNKNOWN")
+        family = neuron_family(neuron_type)
     return family, neuron_type
 
 

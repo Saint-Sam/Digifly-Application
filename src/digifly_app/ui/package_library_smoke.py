@@ -719,7 +719,7 @@ def run_library_smoke(destination: Path) -> int:
         choose_release('manc:v1.2.1')
         counted('manc:v1.2.1')
         counts = {f: len(browser.inventory.family(f)) for f in browser.family_buttons}
-        if counts != {'AN': 1, 'DN': 2, 'IN': 0, 'MN': 0, 'SN': 0, 'UNKNOWN': 3}:
+        if counts != {'AN': 1, 'DN': 2, 'IN': 0, 'MN': 1, 'SN': 0, 'UNKNOWN': 2}:
             raise ValueError('Saved family count double-counted variants, history or matching sources: ' + str(counts))
         expected_dn = browser.inventory.family('DN')
         if len(next(n for n in expected_dn if n.body_id == '42').paths) != 3:
@@ -999,6 +999,120 @@ def run_library_smoke(destination: Path) -> int:
                 'saved_reload_matches': True, 'experiment_camera_matches': True, 'swc_unchanged': True})
         record.update(connectome_orientation=True, connectome_orientation_rows=orientation_rows,
                       experiment_source_snapshot=True)
+        journal('ttmn_saved_label_merge')
+        # Reproduce the real old-download shape: the same name/body appears
+        # under MN locally and UNKNOWN in an earlier download. Identical tiny
+        # SWCs avoid a modal here; differing-copy refusal has its own regression.
+        from digifly_app.core.saved_neurons import SavedSource, scan_saved_neurons
+        unknown_ttmn = destination / 'ttmn-labels/old-download/export_swc'
+        label_files = []
+        for body in ('800146', '804642'):
+            for root, family in ((male, 'MN'), (unknown_ttmn, 'UNKNOWN')):
+                path = root / f'{family}/TTMn/{body}/{body}.swc'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    path.write_bytes(native_files[0].read_bytes())
+                label_files.append(path)
+        original_labels = {p: p.read_bytes() for p in label_files}
+        current_profile = ResourceProfile.load(profile_path)
+        replace(current_profile, resources=(*current_profile.resources, ResourceBinding(
+            'old-ttmn-labels', ResourceKind.MORPHOLOGY_SOURCE, str(unknown_ttmn), AccessMode.READ_ONLY,
+            metadata={'dataset': 'male-cns:v0.9'}))).save(profile_path, replace=True)
+        label_profile = profile_path.read_bytes()
+        builder.refresh_connectomes()
+        page.refresh()
+        window.pages.setCurrentWidget(page)
+        page.open_connectome('male-cns:v0.9')
+        counted('male-cns:v0.9')
+        ttmns = tuple(n for n in browser.inventory.family('MN') if n.neuron_type == 'TTMn')
+        if {n.body_id for n in ttmns} != {'800146', '804642'} or any(n.label_conflict for n in ttmns):
+            raise ValueError('A missing old-download family still hides the two TTMn names')
+        if any(n.source_labels != (('MN', 'TTMn'), ('UNKNOWN', 'TTMn')) for n in ttmns):
+            raise ValueError('TTMn merge discarded original saved labels')
+        page.scroll.ensureWidgetVisible(browser.family_buttons['MN'])
+        QTest.mouseClick(browser.family_buttons['MN'], Qt.MouseButton.LeftButton)
+        row = next(i for i, value in enumerate(browser.row_values) if value[0] == 'TTMn')
+        QTest.mouseClick(browser.row_buttons[row], Qt.MouseButton.LeftButton)
+        if {row[0] for row in browser.row_values} != {'800146', '804642'}:
+            raise ValueError('Data Library TTMn folder does not contain both saved bodies')
+        QTest.mouseClick(browser.row_buttons[0], Qt.MouseButton.LeftButton)
+        if any(label not in browser.location.text() for label in ('MN / TTMn', 'UNKNOWN / TTMn')):
+            raise ValueError('Original TTMn annotations are unavailable in saved-neuron details')
+        window.grab().save(str(destination / 'ttmn-library-labels.png'))
+        page.scroll.ensureWidgetVisible(page.circuit_button)
+        QTest.mouseClick(page.circuit_button, Qt.MouseButton.LeftButton)
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 builder.saved_browser.inventory.dataset == 'male-cns:v0.9', 'TTMn circuit inventory did not finish')
+        builder.query_edit.setText('TTMn')
+        builder.page_scroll.ensureWidgetVisible(builder.assemble_button)
+        QTest.mouseClick(builder.assemble_button, Qt.MouseButton.LeftButton)
+        if (set(builder.loaded_records) != {'800146', '804642'} or
+                any((r.family, r.neuron_type) != ('MN', 'TTMn') for r in builder.loaded_records.values())):
+            raise ValueError('Circuit Builder name query did not load both correctly labelled TTMns')
+        frozen_labels = builder.circuit_spec().to_dict()
+        builder.set_circuit_spec(CircuitSpec.from_dict(frozen_labels))
+        builder.load_saved_assets()
+        experiment = window.experiment_page
+        experiment.stimulus_targets.setText('TTMn')
+        if set(experiment._target_neuron_ids()[0]) != {'800146', '804642'} or experiment._target_neuron_ids()[1]:
+            raise ValueError('Experiment Builder TTMn named targets disagree with the saved circuit')
+        builder.page_scroll.ensureWidgetVisible(builder.viewport)
+        window.grab().save(str(destination / 'ttmn-circuit-labels.png'))
+        if profile_path.read_bytes() != label_profile or any(p.read_bytes() != raw for p, raw in original_labels.items()):
+            raise ValueError('TTMn lookup changed saved settings or original SWCs')
+        genuine_root = destination / 'ttmn-labels/genuine-conflict'
+        for relative in ('MN/TTMn/7/7.swc', 'UNKNOWN/AnotherType/7/7.swc'):
+            path = genuine_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(swc)
+        conflict, = scan_saved_neurons((SavedSource(genuine_root, 'male-cns:v0.9'),), 'male-cns:v0.9').neurons
+        if not conflict.label_conflict or conflict.neuron_type != 'Conflicting labels' or len(conflict.source_labels) != 2:
+            raise ValueError('TTMn repair hid a genuine type disagreement')
+        record.update(ttmn_label_merge=True, ttmn_named_circuit=True,
+            ttmn_named_experiment=True, ttmn_labels_readonly=True, ttmn_label_conflicts_preserved=True,
+            ttmn_label_bodies=['800146', '804642'])
+        classification_rows = []
+        for dataset, bodies in (('male-cns:v1.0', ('800146', '804642')),
+                                ('manc:v1.2.1', ('10068', '10110'))):
+            old_root = destination / 'ttmn-labels' / dataset.replace(':', '-') / 'export_swc'
+            protected = {}
+            for body in bodies:
+                path = old_root / f'UNKNOWN/TTMn/{body}/{body}.swc'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(swc)
+                protected[path] = path.read_bytes()
+            profile = ResourceProfile.load(profile_path)
+            replace(profile, resources=(*profile.resources, ResourceBinding(
+                'ttmn-' + dataset.replace(':', '-'), ResourceKind.MORPHOLOGY_SOURCE,
+                str(old_root), AccessMode.READ_ONLY, metadata={'dataset': dataset}))).save(profile_path, replace=True)
+            builder.refresh_connectomes()
+            page.refresh()
+            window.pages.setCurrentWidget(page)
+            page.open_connectome(dataset)
+            counted(dataset)
+            expected = set(bodies) | ({'43'} if dataset.startswith('manc:') else set())
+            if {n.body_id for n in browser.inventory.family('MN') if n.neuron_type == 'TTMn'} != expected:
+                raise ValueError('Legacy TTMn is still UNKNOWN or crosses releases: ' + dataset)
+            page.scroll.ensureWidgetVisible(page.circuit_button)
+            QTest.mouseClick(page.circuit_button, Qt.MouseButton.LeftButton)
+            wait_for(lambda: builder.saved_browser.inventory is not None and
+                     builder.saved_browser.inventory.dataset == dataset, 'TTMn release inventory did not finish')
+            builder.query_edit.setText('TTMn')
+            builder.page_scroll.ensureWidgetVisible(builder.assemble_button)
+            QTest.mouseClick(builder.assemble_button, Qt.MouseButton.LeftButton)
+            experiment.stimulus_targets.setText('TTMn')
+            if (set(builder.loaded_records) != expected or
+                    any(r.family != 'MN' or r.neuron_type != 'TTMn' for r in builder.loaded_records.values()) or
+                    set(experiment._target_neuron_ids()[0]) != expected or experiment._target_neuron_ids()[1]):
+                raise ValueError('TTMn named Circuit/Experiment selection differs across releases: ' + dataset)
+            if any(p.read_bytes() != data for p, data in protected.items()) or (old_root / 'MN').exists():
+                raise ValueError('Legacy classification moved or rewrote existing SWCs')
+            classification_rows.append({'dataset': dataset, 'bodies': sorted(expected), 'type': 'TTMn', 'family': 'MN'})
+            window.grab().save(str(destination / ('ttmn-' + dataset.replace(':', '-') + '.png')))
+        if not (resources[-1].root / 'export_swc/MN/TTMn/43/43.swc').is_file():
+            raise ValueError('The app-owned TTMn download did not use the MN storage folder')
+        record.update(ttmn_motor_classification=True, ttmn_motor_classification_rows=classification_rows,
+                      ttmn_motor_download_folder=True)
         journal('built_in_connectivity_reader')
         from digifly_app.core.connectivity_download import export_for, SERVER
         from digifly_app.ui.connectivity_download import ConnectivityDownloadDialog, graph_bindings

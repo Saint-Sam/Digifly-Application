@@ -16,6 +16,7 @@ from .connectomes import _infer_id
 from .data_library import load_managed_resource
 from .linked_libraries import canonical_dataset, path_key
 from .neuprint import DEFAULT_NEUPRINT_SERVER
+from .neuron_labels import neuron_family
 from .swc_library import FAMILIES, LIBRARY_SCHEMA
 
 # Export auxiliaries are not current morphology libraries. In particular,
@@ -40,6 +41,7 @@ class SavedNeuron:
     server: str
     paths: tuple[Path, ...]
     label_conflict: bool = False
+    source_labels: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -188,11 +190,20 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
             issues.append(str(error))
     neurons = []
     for (server, body), copies in found.items():
-        # Unknown unstructured copies do not erase an explicit annotation.
-        labels = {(family, label) for family, label, _ in copies if label != 'Unknown'}
-        conflict = len(labels) > 1
-        family, label = next(iter(labels)) if len(labels) == 1 else ('UNKNOWN', 'Conflicting labels' if conflict else 'Unknown')
+        # Merge annotations independently within this exact server/release/body.
+        # UNKNOWN is an absent family, not a different neuron type. In particular
+        # MN/TTMn and UNKNOWN/TTMn agree on the name and one supplies the family.
+        # Never infer a family from that name, or hide genuine disagreements.
+        labels = tuple(sorted({(family, label) for family, label, _ in copies}))
+        types = {label for _, label in labels if label != 'Unknown'}
+        families = {family for family, _ in labels if family != 'UNKNOWN'}
+        type_conflict = len(types) > 1
+        conflict = type_conflict or len(families) > 1
+        label = next(iter(types)) if len(types) == 1 else ('Conflicting labels' if type_conflict else 'Unknown')
+        family = next(iter(families)) if len(families) == 1 and not type_conflict else 'UNKNOWN'
+        if not families and len(types) == 1:
+            family = neuron_family(label, explicit_family='UNKNOWN')
         neurons.append(SavedNeuron(body, family, label, server,
-                                   tuple(sorted({path for _, _, path in copies}, key=str)), conflict))
+                                   tuple(sorted({path for _, _, path in copies}, key=str)), conflict, labels))
     return SavedInventory(dataset, tuple(sorted(neurons, key=lambda n: (n.family, n.neuron_type.casefold(), int(n.body_id), n.server))),
                           tuple(issues), unidentified, skipped)

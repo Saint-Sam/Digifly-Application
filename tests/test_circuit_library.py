@@ -96,6 +96,49 @@ def test_distinct_servers_never_merge_body_ids(tmp_path):
         'https://neuprint.janelia.org': {'1'}, 'https://another.example': {'2'}}
 
 
+def test_missing_family_ttmn_name_reaches_experiment_without_hiding_copy_choice(tmp_path):
+    from digifly_app.core.saved_neurons import SavedSource
+    from digifly_app.core.morphology import load_swc
+    from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+    roots = (tmp_path / 'local', tmp_path / 'download')
+    originals = {}
+    for root, family in zip(roots, ('MN', 'UNKNOWN')):
+        for body in ('800146', '804642'):
+            path = root / f'{family}/TTMn/{body}/{body}.swc'
+            path.parent.mkdir(parents=True)
+            path.write_text(SWC if family == 'MN' else SWC.replace('1 0 0 1', '2 0 0 1'))
+            originals[path] = path.read_bytes()
+    source = ConnectomeRef('library:male-cns:v0.9', 'Male CNS', str(roots[0]),
+                           'male-cns:v0.9', server='https://neuprint.janelia.org')
+    inventory = scan_saved_neurons(tuple(SavedSource(r, source.dataset) for r in roots), source.dataset)
+    catalog = ConnectomeCatalog.from_saved_inventory(source, inventory)
+    for query in ('TTMn', 'type:ttmn', 'TTM*', 'family:MN', 'TTMn, 800146'):
+        result = catalog.query(query)
+        assert not result.unmatched and {r.neuron_id for r in result.records} == {'800146', '804642'}
+        assert all((r.family, r.neuron_type) == ('MN', 'TTMn') for r in result.records)
+    assert catalog.query('TTMn', limit=1).truncated
+    with pytest.raises(ValueError, match='different SWC copies'):
+        catalog.verify_selection(catalog.query('TTMn').records)
+    pinned = replace(source, swc_paths={body: str(roots[0] / f'MN/TTMn/{body}/{body}.swc')
+                                      for body in ('800146', '804642')})
+    catalog = ConnectomeCatalog.from_saved_inventory(pinned, inventory)
+    records = catalog.query('TTMn').records
+    catalog.verify_selection(records)
+    app = QApplication.instance() or QApplication([])
+    page = ExperimentBuilderPage(output_root=tmp_path / 'runs')
+    try:
+        circuit = CircuitSpec(connectome=pinned, neuron_ids=tuple(r.neuron_id for r in records))
+        page.set_circuit_snapshot(circuit, tuple(load_swc(r) for r in records))
+        page.stimulus_targets.setText('ttmn')
+        assert page._resolve_stimulus_targets(all_if_blank=False) == (('800146', '804642'), ())
+        assert page._target_neuron_ids() == (('800146', '804642'), ())
+        assert not (tmp_path / 'runs').exists()
+    finally:
+        page.close()
+        app.processEvents()
+    assert all(p.read_bytes() == data for p, data in originals.items())
+
+
 def test_compact_controls_use_shared_inventory_and_browse_without_loading(tmp_path, monkeypatch):
     from digifly_app.ui.circuit_builder import CircuitBuilderPage
     profile, roots = fixture(tmp_path)

@@ -67,6 +67,25 @@ def test_separate_searches_and_local_import_share_one_source(state, tmp_path):
     assert not (profile.managed_data_root / "neuprint").exists()
 
 
+@pytest.mark.parametrize('dataset,bodies', [
+    ('male-cns:v0.9', (800146, 804642)),
+    ('male-cns:v1.0', (800146, 804642)),
+    ('manc:v1.2.1', (10068, 10110)),
+])
+def test_ttmn_new_downloads_use_mn_family_in_each_exact_release(state, dataset, bodies):
+    profile, path = state
+    class Client:
+        def fetch_skeleton(self, body_id, **kwargs):
+            return SWC
+    request = NeuPrintAcquisitionRequest(SERVER, dataset, 'ttmn', 'labels-test',
+        NeuPrintSelection('type_exact', 'TTMn'), tuple(NeuPrintNeuron(b, 'TTMn') for b in bodies),
+        'fixture-secret')
+    saved = acquire_neuprint_bundle(profile, path, request, client=Client(), add_to_library=True)
+    for body in bodies:
+        assert (saved.root / f'export_swc/MN/TTMn/{body}/{body}.swc').read_bytes() == SWC
+    assert not (saved.root / 'export_swc/UNKNOWN/TTMn').exists()
+
+
 def test_identical_intake_is_idempotent_conflicting_bytes_do_not_replace(state, tmp_path):
     profile, path = state
     original = local(tmp_path, profile, "original")

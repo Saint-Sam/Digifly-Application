@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 from digifly_app import __version__
 
 from .credentials import normalize_neuprint_token
+from .neuron_labels import neuron_family
 from .data_library import (
     MANIFEST_FILENAME,
     MANIFEST_SCHEMA_VERSION,
@@ -89,13 +90,17 @@ class NeuPrintNeuron:
     body_id: int
     neuron_type: str = ""
     instance: str = ""
+    superclass: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "body_id": self.body_id,
             "type": self.neuron_type,
             "instance": self.instance,
         }
+        if self.superclass:
+            value['superclass'] = self.superclass
+        return value
 
 
 @dataclass(frozen=True)
@@ -558,7 +563,8 @@ def _selection_cypher(selection: NeuPrintSelection) -> str:
     return (
         "MATCH (n:Neuron) "
         f"WHERE {where} "
-        "RETURN n.bodyId AS bodyId, n.type AS type, n.instance AS instance "
+        "RETURN n.bodyId AS bodyId, n.type AS type, n.instance AS instance, "
+        "coalesce(n.superclass, n.superClass, '') AS superclass "
         f"ORDER BY n.bodyId LIMIT {limit}"
     )
 
@@ -613,6 +619,7 @@ def _parse_custom_rows(payload: Any) -> list[NeuPrintNeuron]:
                 body_id,
                 str(row.get("type") or ""),
                 str(row.get("instance") or ""),
+                str(row.get("superclass") or row.get("superClass") or ""),
             )
         )
     return records
@@ -672,9 +679,8 @@ def _file_component(value: str, fallback: str) -> str:
     return (result or fallback)[:96]
 
 
-def _family(neuron_type: str) -> str:
-    upper = neuron_type.upper()
-    return next((prefix for prefix in ("AN", "DN", "IN", "MN", "SN") if upper.startswith(prefix)), "UNKNOWN")
+def _family(neuron_type: str, *, superclass: str = '') -> str:
+    return neuron_family(neuron_type, superclass=superclass)
 
 
 def _utc_text() -> str:
@@ -1045,7 +1051,7 @@ def acquire_neuprint_bundle(
             relative = (
                 Path("source")
                 / "export_swc"
-                / _family(neuron.neuron_type)
+                / _family(neuron.neuron_type, superclass=neuron.superclass)
                 / neuron_type
                 / str(neuron.body_id)
                 / f"{neuron.body_id}_neuprint_raw.swc"
@@ -1069,6 +1075,7 @@ def acquire_neuprint_bundle(
                 "body_id": neuron.body_id,
                 "type": neuron.neuron_type,
                 "instance": neuron.instance,
+                **({'superclass': neuron.superclass} if neuron.superclass else {}),
                 "download_action": "kept_existing" if keep else "downloaded",
                 "swc_rows": report.node_count,
                 "swc_quality": {
