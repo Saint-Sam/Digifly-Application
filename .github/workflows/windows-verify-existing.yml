@@ -1,7 +1,7 @@
 name: Verify existing Windows repair package
 on:
   push:
-    branches: [release-verification-20261019]
+    branches: [release-verification-20261023]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Windows-with-NEURON-20261015
-          run-id: 39280615048
+          run-id: 40018826451
           github-token: ${{ github.token }}
           path: previous
       - name: Verify unchanged executable and retain full native updater details
@@ -29,7 +29,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Verification environment setup failed' }
           $env:PYTHONPATH = 'src'
           $env:QT_QPA_PLATFORM = 'windows'
-          $archive = (Resolve-Path previous/dist/Digifly-Workstation-0.1.0-alpha.20261019.1-Windows-x86_64.zip).Path
+          $archive = (Resolve-Path previous/dist/Digifly-Workstation-0.1.0-alpha.20261023.6-Windows-x86_64.zip).Path
           $application = "$env:RUNNER_TEMP/existing-repair-app"
           $evidence = "$env:RUNNER_TEMP/release-evidence"
           Expand-Archive -LiteralPath $archive -DestinationPath $application
@@ -38,15 +38,15 @@ jobs:
           foreach ($name in @('source-neuron-ui-evidence','neuron-ui-evidence','swc-library-ui-evidence','included-pair-ui-evidence')) {
             Copy-Item -Recurse "previous/$name" "$evidence/$name"
           }
-          ./.venv/Scripts/python.exe -c "import json; from pathlib import Path; p=Path(r'$application'); b=json.loads((p/'digifly_build.json').read_text()); assert b['source_commit']=='3a5d94b1f7b67c4f083423b2e47bcb4df2636f96'; assert b['version']=='0.1.0-alpha.20261019.1'"
+          ./.venv/Scripts/python.exe -c "import json; from pathlib import Path; p=Path(r'$application'); b=json.loads((p/'digifly_build.json').read_text()); assert b['source_commit']=='e4ee7a8a72eb47a65ead1186d8a4d0a76422c762'; assert b['version']=='0.1.0-alpha.20261023.6'"
           if ($LASTEXITCODE -ne 0) { throw 'Existing package identity differs' }
           ./.venv/Scripts/python.exe scripts/check_packaged_updater.py --application $application --archive $archive --output "$evidence/updater-evidence"
           if ($LASTEXITCODE -ne 0) { throw 'Actual existing-package updater checks failed' }
-          ./.venv/Scripts/python.exe -c "import json; from pathlib import Path; from digifly_app.core.update_installer import file_hash; p=Path(r'$evidence'); p.joinpath('reuse.json').write_text(json.dumps({'ok':True,'original_build_run':39280615048,'compiled_source':'3a5d94b1f7b67c4f083423b2e47bcb4df2636f96','archive_sha256':file_hash(Path(r'$archive')),'executable_sha256':file_hash(Path(r'$application')/'Digifly Workstation.exe'),'not_recompiled':True},indent=2))"
+          ./.venv/Scripts/python.exe -c "import json; from pathlib import Path; from digifly_app.core.update_installer import file_hash; p=Path(r'$evidence'); p.joinpath('reuse.json').write_text(json.dumps({'ok':True,'original_build_run':40018826451,'compiled_source':'e4ee7a8a72eb47a65ead1186d8a4d0a76422c762','archive_sha256':file_hash(Path(r'$archive')),'executable_sha256':file_hash(Path(r'$application')/'Digifly Workstation.exe'),'not_recompiled':True},indent=2))"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Windows-existing-verified-20261019
+          name: Windows-existing-verified-20261023
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/release-evidence/neuron-source-tests.xml
@@ -58,5 +58,6 @@ jobs:
             ${{ runner.temp }}/release-evidence/updater-evidence/receipt.json
             ${{ runner.temp }}/release-evidence/updater-evidence/*-window.png
             ${{ runner.temp }}/release-evidence/updater-evidence/*/gui/metadata-safety.json
+            ${{ runner.temp }}/release-evidence/updater-evidence/*/gui/digest-download.json
             ${{ runner.temp }}/release-evidence/updater-evidence/**/*.log
             ${{ runner.temp }}/release-evidence/updater-evidence/*/gui/cache/install-*/*.json

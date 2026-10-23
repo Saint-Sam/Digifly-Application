@@ -142,6 +142,7 @@ jobs:
             updater-evidence/*/gui/ui-failure.json
             updater-evidence/*/gui/runtime-context.json
             updater-evidence/*/gui/metadata-safety.json
+            updater-evidence/*/gui/digest-download.json
             updater-evidence/*/gui/cache/install-*/installer.log
             updater-evidence/*/gui/cache/install-*/relaunch.log
             updater-evidence/*/gui/cache/install-*/rollback-relaunch.log
