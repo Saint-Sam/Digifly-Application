@@ -1010,8 +1010,8 @@
       "bytes": 4861
     },
     "tests/test_library_review_launch.py": {
-      "sha256": "ffbb50da8ff4c1bf32b62d868abd9f41eb81f939936c81c10d9fd13b3c6b30ee",
-      "bytes": 2241
+      "sha256": "91ab75b74eca7e6176c129142431413e927d8121857e71aeb14639b9198ba459",
+      "bytes": 3339
     },
     "scripts/launch_library_review.py": {
       "sha256": "acf94c60e3019f3422e0a5a6ab32b30f340072829581b38ff606c50b672f5350",
@@ -1058,8 +1058,8 @@
       "bytes": 8684
     },
     "tests/test_swc_fragments.py": {
-      "sha256": "99b8968abf96b8508f2a0a65ef7b58343f51113bcf69aaeea14a63542efcdf3d",
-      "bytes": 9904
+      "sha256": "942f8c56926560a010b0b012e984ab9c410308f4f6bfaddfddeb5ac1fdecd40e",
+      "bytes": 9894
     },
     "tests/test_swc_quality.py": {
       "sha256": "81d78fe072124fae36b59060366248c07d335901fc58ffdd06ebb5cd1d606c93",

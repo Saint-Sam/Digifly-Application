@@ -172,23 +172,25 @@ def test_joined_raw_voxel_copy_keeps_physical_units_once_only(fragments):
 def test_reviewed_plan_accepts_only_report_sum_roundoff_not_geometry_or_material_changes(fragments):
     import copy
     import math
+    import os
     from digifly_app.core.swc_fragments import _same_reviewed_plan,verified_fragment_source
     from digifly_app.core.swc_quality import sha256_file
     source,_=fragments
+    committed={os.path.normcase(os.path.abspath(source)):sha256_file(source)}
     joined=save_fragment_join(plan_fragment_join(analyze_swc(source)))
     sidecar=joined.with_suffix('.swc.quality.json')
     record=json.loads(sidecar.read_text());original=copy.deepcopy(record)
     for name in ('original_length_um','original_volume_um3','added_volume_fraction'):
         record['plan'][name]=math.nextafter(record['plan'][name],math.inf)
     sidecar.write_text(json.dumps(record))
-    assert verified_fragment_source(joined,{str(source.resolve()):sha256_file(source)})==source
+    assert verified_fragment_source(joined,committed)==source
     changed=copy.deepcopy(record['plan']);changed['filler_nodes'][0][2]=math.nextafter(changed['filler_nodes'][0][2],math.inf)
     assert not _same_reviewed_plan(changed,record['plan'])
     record['plan']['original_volume_um3']*=1+1e-8
     sidecar.write_text(json.dumps(record))
     with pytest.raises(ValueError,match='plan differs'):
-        verified_fragment_source(joined,{str(source.resolve()):sha256_file(source)})
+        verified_fragment_source(joined,committed)
     sidecar.write_text(json.dumps(original))
     joined.write_bytes(joined.read_bytes()+b'# changed\n')
     with pytest.raises(ValueError,match='bytes.*changed'):
-        verified_fragment_source(joined,{str(source.resolve()):sha256_file(source)})
+        verified_fragment_source(joined,committed)
