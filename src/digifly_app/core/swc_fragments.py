@@ -163,12 +163,8 @@ def _publish_new_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def save_fragment_join(plan: FragmentJoinPlan) -> Path:
+def _joined_text(plan: FragmentJoinPlan):
     source = Path(plan.source_path)
-    if sha256_file(source) != plan.source_sha256:
-        raise ValueError("SWC changed after the filler preview; review it again")
-    if plan != plan_fragment_join(analyze_swc(source)):
-        raise ValueError("Filler plan differs from the verified adaptive sizing policy; preview it again")
     original_lines, before, errors = _parse_swc(source)
     if errors:
         raise ValueError("SWC no longer parses")
@@ -176,10 +172,6 @@ def save_fragment_join(plan: FragmentJoinPlan) -> Path:
         "synthetic_node_ids": [int(row[0]) for row in plan.filler_nodes],
         "filler_edge_child_ids": [int(row[0]) for row in plan.filler_nodes] + list(plan.parent_changes),
         "original_root_ids": list(plan.original_roots), "original_source_sha256": plan.source_sha256}
-    output = source.with_name(f"{source.stem}_fragment_healed.swc")
-    sidecar = output.with_suffix(".swc.quality.json")
-    if os.path.lexists(output) or os.path.lexists(sidecar):
-        raise FileExistsError("A joined copy already exists; the original or prior copy will not be replaced")
     text = FILLER_HEADER + json.dumps(metadata, separators=(",", ":")) + "\n"
     for line in original_lines:
         fields = line.split()
@@ -189,6 +181,54 @@ def save_fragment_join(plan: FragmentJoinPlan) -> Path:
         text += line if line.endswith("\n") else line + "\n"
     for row in plan.filler_nodes:
         text += f"{row[0]} {row[1]} " + " ".join(format(value, ".17g") for value in row[2:6]) + f" {row[6]}\n"
+    return text, metadata, before
+
+
+def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Path | None:
+    """Admit only the exact reviewed derivative of a committed library SWC.
+
+    The raw library inventory stays immutable. An unlisted file is not made
+    visible merely by its name: its source, deterministic plan, complete bytes
+    and unit contract must still match the separately saved review record.
+    """
+    if not path.name.endswith("_fragment_healed.swc"):
+        return None
+    sidecar = path.with_suffix(".swc.quality.json")
+    if path.is_symlink() or sidecar.is_symlink() or not sidecar.is_file():
+        raise ValueError("Joined copy lacks its regular review record")
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    source = Path(record["plan"]["source_path"])
+    expected = source.with_name(f"{source.stem}_fragment_healed.swc")
+    key = os.path.normcase(os.path.abspath(source))
+    if (record.get("schema") != "digifly-fragment-join-v1" or path != expected
+            or source.is_symlink() or key not in committed_hashes
+            or sha256_file(source) != committed_hashes[key]):
+        raise ValueError("Joined copy is not bound to this committed source")
+    plan = plan_fragment_join(analyze_swc(source))
+    if record["plan"] != json.loads(json.dumps(plan.to_dict())):
+        raise ValueError("Joined copy's adaptive plan differs from its source")
+    text, metadata, _before = _joined_text(plan)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    transform = {**plan.coordinate_transform, "source_sha256": digest,
+        "geometry_policy": "Original geometry and real edges preserved; explicit synthetic filler edges added in the same coordinate frame."}
+    if (record.get("output_sha256") != digest or sha256_file(path) != digest
+            or record.get("metadata") != metadata
+            or record.get("coordinate_transform") != transform):
+        raise ValueError("Joined copy bytes or physical-unit record changed after review")
+    return source
+
+
+def save_fragment_join(plan: FragmentJoinPlan) -> Path:
+    source = Path(plan.source_path)
+    if sha256_file(source) != plan.source_sha256:
+        raise ValueError("SWC changed after the filler preview; review it again")
+    if plan != plan_fragment_join(analyze_swc(source)):
+        raise ValueError("Filler plan differs from the verified adaptive sizing policy; preview it again")
+    output = source.with_name(f"{source.stem}_fragment_healed.swc")
+    sidecar = output.with_suffix(".swc.quality.json")
+    if os.path.lexists(output) or os.path.lexists(sidecar):
+        raise FileExistsError("A joined copy already exists; the original or prior copy will not be replaced")
+    text, metadata, before = _joined_text(plan)
     handle, name = tempfile.mkstemp(prefix=".fragment-check-", dir=source.parent)
     checked = Path(name)
     with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:

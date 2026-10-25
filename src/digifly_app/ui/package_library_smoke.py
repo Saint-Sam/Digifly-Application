@@ -1428,8 +1428,17 @@ def run_library_smoke(destination: Path) -> int:
         from digifly_app.core.swc_quality import analyze_swc
         from digifly_app.core.morphology import load_swc
         from digifly_app.core.connectomes import NeuronRecord
-        fragment = destination / 'fragment-fixture.swc'
-        fragment.write_text('1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n')
+        from digifly_app.core.swc_library import add_bundle_to_library
+        fragment_seed = destination / 'fragment-seed/MN/fragment/777/777.swc'
+        fragment_seed.parent.mkdir(parents=True)
+        fragment_seed.write_text('1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n')
+        fragment_resource = import_local_source(ResourceProfile.load(profile_path), destination / 'fragment-seed',
+            provider='local', resource_id='fragment-fixture', source_version='fixture', dataset='male-cns:v1.0')
+        fragment_resource = add_bundle_to_library(ResourceProfile.load(profile_path), profile_path, fragment_resource,
+            server='https://fragments.example', dataset='male-cns:v1.0')
+        fragment_source = next(item for item in library_sources(ResourceProfile.load(profile_path), ('male-cns:v1.0',))
+                               if item.server == 'https://fragments.example')
+        fragment = Path(ConnectomeCatalog.scan(fragment_source).by_id['777'].swc_path)
         original_fragment = fragment.read_bytes()
         report = analyze_swc(fragment)
         QMessageBox.question = saved_question
@@ -1459,7 +1468,7 @@ def run_library_smoke(destination: Path) -> int:
                         item.reject()
             QTimer.singleShot(30, answer)
         answer_fragment(False)
-        if builder._offer_fragment_join(report) != (True, '') or fragment.with_name('fragment-fixture_fragment_healed.swc').exists():
+        if builder._offer_fragment_join(report) != (True, '') or fragment.with_name('777_fragment_healed.swc').exists():
             raise ValueError('Declining the fragment preview wrote a joined morphology')
         answer_fragment(True)
         reviewed, joined = builder._offer_fragment_join(report)
@@ -1468,10 +1477,21 @@ def run_library_smoke(destination: Path) -> int:
         joined_morph = load_swc(NeuronRecord('fixture', 'MN', 'fixture', joined, 'custom:fixture'))
         if sum(n.parent_id < 0 for n in joined_morph.nodes) != 1 or not joined_morph.filler_metadata:
             raise ValueError('Joined copy is not a tagged connected morphology')
+        builder.set_circuit_spec(CircuitSpec(connectome=fragment_source, neuron_ids=('777',)))
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 builder.saved_browser.inventory.dataset == 'male-cns:v1.0' and
+                 any(str(path) == joined for neuron in builder.saved_browser.inventory.neurons
+                     for path in neuron.paths), 'Managed joined-copy indexing did not finish')
+        builder.load_saved_assets()
+        if (builder.loaded_records['777'].swc_path != joined
+                or not builder.loaded_morphologies['777'].filler_metadata
+                or window.experiment_page._circuit.neuron_ids != ('777',)):
+            raise ValueError('Managed joined copy did not reach both builders on the next Load')
+        window.grab().save(str(destination / 'fragment-managed-builder-handoff.png'))
         record.update(aggregate_chemical_model_applied=True, aggregate_chemical_saved_handoff=True,
             aggregate_model_directed_pairs=5, fragment_preview_decline_preserves_original=True,
             fragment_preview_accept_saves_connected_copy=True,
-            fragment_original_geometry_preserved=True)
+            fragment_original_geometry_preserved=True, fragment_managed_library_builder_handoff=True)
         builder.set_circuit_spec(CircuitSpec.from_dict(full_graph_spec))
         builder.load_saved_assets()
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,

@@ -9,7 +9,7 @@ circuits and experiments, and reviewing simulation results.
 
 ## Mac and Windows downloads
 
-This is local test build **20261025.2**, not a published release.
+This is local test build **20261025.3**, not a published release.
 
 The [current public release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.6)
 contains build **20261023.6** for Mac Apple silicon and Windows x86-64.

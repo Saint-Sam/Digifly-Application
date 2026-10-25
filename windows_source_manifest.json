@@ -10,20 +10,12 @@
       "bytes": 1067
     },
     "README.md": {
-      "sha256": "d02f4a51fba28f65b20038e45fb99de75fb1ae623269334aa5d5b000ce068ced",
+      "sha256": "21f14a58988a358660a9fff874ad2313524682095ae9cb804cc407759896c710",
       "bytes": 6415
     },
     "THIRD_PARTY_NOTICES.md": {
       "sha256": "f70e39fd695bcc431a8c0ff92c043cd9575c76e786fc30bfc4cbc0ca8afc3116",
       "bytes": 3213
-    },
-    "bundled_data/manc/DATA_NOTICE.json": {
-      "sha256": "e7c104c2cc759320c4c5ae1d5341c0050bf8ee178bb0ade70458e84b49a3e111",
-      "bytes": 544
-    },
-    "bundled_data/manc/unique_pairs_by_id.parquet": {
-      "sha256": "e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099",
-      "bytes": 12092298
     },
     "docs/ARCHITECTURE.md": {
       "sha256": "b995d54c1160437e796dda78dc8d2019a987409c7ff2771eff499641a91b5794",
@@ -270,8 +262,8 @@
       "bytes": 3446
     },
     "scripts/stage_windows_source.py": {
-      "sha256": "7f13499d3f682f5decebc65c925023d4cdd492d26a783f6504540e936da0f2cc",
-      "bytes": 6328
+      "sha256": "db8c423293cb3ec607c693385ec960d712aba7c8204cacead992cb6ac5e568f3",
+      "bytes": 6364
     },
     "scripts/windows_package.py": {
       "sha256": "b348437ca5c36949a24fa7880471dd7b83a48885d46e11184246a0951d7184e7",
@@ -502,16 +494,16 @@
       "bytes": 10533
     },
     "src/digifly_app/core/saved_neurons.py": {
-      "sha256": "ad4a17f15e50ad526e922d4b9ed92d74bed8c41c16029f5dcd9fea6685b55648",
-      "bytes": 10277
+      "sha256": "a8a6b82ca0bb1d215664d8137706970eeffa4288ce86f4bbf3a9d28e413252b4",
+      "bytes": 10756
     },
     "src/digifly_app/core/selected_connectivity.py": {
       "sha256": "6e85ce201919d9c2dae70d493b44f07ed4477ea0cf698246407cc353e146d3fd",
       "bytes": 12211
     },
     "src/digifly_app/core/swc_fragments.py": {
-      "sha256": "5af724408e410e61030baf7026b99eef3e511bec8287ab869e5dd0875d2f8233",
-      "bytes": 11762
+      "sha256": "2b1c410f7ef6e8b95548f417d361af6db03df8791dc0acc802fdefb299e50a29",
+      "bytes": 13944
     },
     "src/digifly_app/core/swc_library.py": {
       "sha256": "cfb31c57ea10181a9d82841d26ae5dabab0b18bf96d060687ce7b3f12206139a",
@@ -746,8 +738,8 @@
       "bytes": 48521
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "f482b1374c0a18e2a52bd0b0e2a058d831b071c97ecbe2cf8e8b1513c4b10121",
-      "bytes": 104060
+      "sha256": "59131041cd4b3d04f2450c7f144c6413efff7e68fd2482cd10b9b5f1c9530d3e",
+      "bytes": 105814
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -834,8 +826,8 @@
       "bytes": 71569
     },
     "src/digifly_app/workers/bmtk_bionet_worker.py": {
-      "sha256": "be1f74fd37eccd4aca094bffc607b41d1f0842479e5e6515d2fa5f37ea50e445",
-      "bytes": 120248
+      "sha256": "50a5f53f38f557bbd2b9197fd6dc6ad15d5dc96889782af99378f0f50b048685",
+      "bytes": 122193
     },
     "src/digifly_app/workers/escape_siz_worker.py": {
       "sha256": "9e921554189ca523d3adbed0d59913e9f66c46f3583abfbe9e51a8f0c4957d41",
@@ -898,8 +890,8 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "90655d51e82b1b2c563d09b39cadadf9fb9685b0e57b27bb77c8acdcf458e5bd",
-      "bytes": 10818
+      "sha256": "d27a5dcf7640908379db871378f63b85f5bdcc4edb48b035b94865c3f6ee939b",
+      "bytes": 10851
     },
     "scripts/build_windows_neuron_payload.py": {
       "sha256": "0be75bb67fab0c8e9c0eca66eacba477671bade7248cbedebbbc543c286c36f2",
@@ -938,8 +930,8 @@
       "bytes": 8576
     },
     "tests/test_saved_neurons.py": {
-      "sha256": "263dab7c72589c9d80064528382186a39175d751c310a74bd065fffa4b844bfd",
-      "bytes": 14380
+      "sha256": "f34ce9afa7987d12e6f7d7616ff1a68c7b10dad5fddef31837f5328a697e0dc4",
+      "bytes": 17244
     },
     "tests/test_circuit_library.py": {
       "sha256": "c793f6e59ea4f2f923d0014928ef8cebf3319d55137be9f2a1997ba72465cfe5",
@@ -1057,6 +1049,10 @@
       "sha256": "58c3e8ddeecd150970ce30207eca5d7628601598cd2af2c94ea835a0503c4b91",
       "bytes": 6952
     },
+    "tests/test_bmtk_bionet_worker.py": {
+      "sha256": "f86eb4eb1fc12659325668d5ff3635fd2ac628ea028aeb7b000d6a8b3243f0f1",
+      "bytes": 30101
+    },
     "scripts/setup_dev.sh": {
       "sha256": "f3abe0f4397765d6145a46f4cff1af08e3b037a23a2e94b9cf0f06078b8d532f",
       "bytes": 1263
@@ -1120,6 +1116,14 @@
     "docs/CHANNEL_EXECUTION_REPAIR.md": {
       "sha256": "7db910e98cc30bfc3133a1f5f81e5b603ced1dc0822a3cd5b1f2ec146578d580",
       "bytes": 33935
+    },
+    "bundled_data/manc/unique_pairs_by_id.parquet": {
+      "sha256": "e07b39ae68d078b3f97364d3d235472120d1e64c19403ca63a8bba540c8d3099",
+      "bytes": 12092298
+    },
+    "bundled_data/manc/DATA_NOTICE.json": {
+      "sha256": "e7c104c2cc759320c4c5ae1d5341c0050bf8ee178bb0ade70458e84b49a3e111",
+      "bytes": 544
     }
   }
 }

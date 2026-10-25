@@ -142,7 +142,7 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
                     raise ValueError('Saved manifest release changed during scan')
                 if value.get('library_schema') == LIBRARY_SCHEMA:
                     load_managed_resource(source.manifest)
-                    committed = {os.path.normcase(os.path.abspath(source.manifest.parent / row['path'])) for row in value['files']
+                    committed = {os.path.normcase(os.path.abspath(source.manifest.parent / row['path'])): row['sha256'] for row in value['files']
                                  if str(row.get('path', '')).casefold().endswith('.swc')}
             pending = [root]
             observed = set()
@@ -168,7 +168,13 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
                                 # for the full libraries, with no added scope.
                                 file_key = os.path.normcase(str(path))
                                 if committed is not None and file_key not in committed:
-                                    continue
+                                    from .swc_fragments import verified_fragment_source
+                                    try:
+                                        if verified_fragment_source(path, committed) is None:
+                                            continue
+                                    except (OSError, ValueError, KeyError, TypeError) as error:
+                                        issues.append(f'{path}: {error}')
+                                        continue
                                 observed.add(file_key)
                                 if (server, file_key) in seen_files:
                                     continue
@@ -183,8 +189,8 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
                     raise
                 except OSError as error:
                     issues.append(f'{folder}: {error}')
-            if committed is not None and committed - observed:
-                issues.append(f'{root}: {len(committed - observed):,} listed SWC file(s) missing or skipped')
+            if committed is not None and committed.keys() - observed:
+                issues.append(f'{root}: {len(committed.keys() - observed):,} listed SWC file(s) missing or skipped')
         except InterruptedError:
             raise
         except (OSError, ValueError, KeyError, TypeError) as error:

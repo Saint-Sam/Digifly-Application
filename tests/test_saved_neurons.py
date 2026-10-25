@@ -179,6 +179,54 @@ def test_committed_manifest_missing_files_uncommitted_and_unsafe(tmp_path):
     assert not result.neurons and 'listed SWC' in result.issues[0]
 
 
+@pytest.mark.parametrize('damage', ['', 'output', 'source', 'review', 'units', 'unreviewed'])
+def test_managed_join_is_visible_only_with_complete_source_bound_review(tmp_path, damage):
+    from digifly_app.core.resource_profile import make_standalone_profile
+    from digifly_app.core.data_library import import_local_source
+    from digifly_app.core.swc_library import add_bundle_to_library
+    from digifly_app.core.saved_neurons import saved_sources
+    from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+    from digifly_app.core.swc_quality import analyze_swc
+    from digifly_app.core.connectomes import ConnectomeCatalog, ConnectomeRef
+    profile = make_standalone_profile(workstation_root=tmp_path / 'workspace')
+    profile_path = profile.save(tmp_path / 'profile.json')
+    source = tmp_path / 'source'
+    file = swc(source, 'DN/DNp01/42/42.swc')
+    file.write_text('1 1 0 0 0 1 -1\n2 3 2 0 0 .8 1\n3 3 6 0 0 .8 -1\n4 3 8 0 0 .7 3\n')
+    resource = import_local_source(profile, source, provider='local', resource_id='test', source_version='fixture', dataset=DATASET)
+    resource = add_bundle_to_library(profile, profile_path, resource, server='https://fixture.example', dataset=DATASET,
+        coordinate_convention={'units': 'um', 'coordinate_scale_to_um': 1.0, 'radius_scale_to_um': 1.0, 'basis': 'engineering fixture'})
+    sources = saved_sources((), (resource,))
+    raw = scan_saved_neurons(sources, DATASET).neurons[0].paths[0]
+    manifest_before = resource.manifest.read_bytes()
+    raw_before = raw.read_bytes()
+    joined = save_fragment_join(plan_fragment_join(analyze_swc(raw)))
+    sidecar = joined.with_suffix('.swc.quality.json')
+    if damage == 'output':
+        joined.write_text(joined.read_text().replace('2 3 2 0 0 .8 1', '2 3 20 0 0 .8 1'))
+    elif damage == 'source':
+        raw.write_text(raw.read_text() + '# changed\n')
+    elif damage == 'review':
+        sidecar.unlink()
+    elif damage == 'units':
+        note = json.loads(sidecar.read_text())
+        note['coordinate_transform']['scale_to_um'] = 1000
+        sidecar.write_text(json.dumps(note))
+    elif damage == 'unreviewed':
+        extra = swc(sources[0].root, 'DN/DNp01/99/99.swc')
+    inventory = scan_saved_neurons(sources, DATASET)
+    assert len(inventory.neurons) == 1  # variants never inflate body counts
+    catalog = ConnectomeCatalog.from_saved_inventory(ConnectomeRef('fixture', 'fixture', str(sources[0].root), DATASET,
+        server='https://fixture.example'), inventory)
+    expected = joined if damage in {'', 'unreviewed'} else raw
+    assert catalog.by_id['42'].swc_path == str(expected)
+    assert resource.manifest.read_bytes() == manifest_before
+    if damage != 'source':
+        assert raw.read_bytes() == raw_before
+    if damage not in {'', 'unreviewed', 'review'}:
+        assert inventory.issues
+
+
 def test_browser_real_clicks_counts_types_ids_paging_stale_and_cancel(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / 'export_swc'

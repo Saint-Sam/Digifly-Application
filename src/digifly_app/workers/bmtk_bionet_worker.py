@@ -1226,6 +1226,12 @@ class _ClassicHHCell:
             built = _common._neuron_regional_cell(h, swc_path, str(params["neuron_id"]), params["regional_data"], MAX_TOTAL_SEGMENTS)
             self.all = list(built["sections"])
             self.digifly_regional_plan = built["regional_plan"]
+            # NEURON stores pt3d coordinates at native precision. Compare the
+            # final BioCell with this constructed geometry, not the ideal
+            # double-precision Euclidean lengths in the simulator-free plan.
+            # This does not change geometry or relax the framework grid guard.
+            self.digifly_regional_sections = tuple(self.all)
+            self.digifly_regional_native = _regional_native_geometry(self.all)
             for group in ("soma", "axon", "dend", "apic"):
                 setattr(self, group, [self.all[s["section_id"]] for s in built["regional_plan"]["sections"] if s["section_group"] == group])
             return
@@ -1384,20 +1390,45 @@ def _attach_electrical_contacts(h: Any, network: Any, extension: Mapping[str, An
     return processes
 
 
+def _regional_native_geometry(sections: Sequence[Any]) -> list[dict[str, Any]]:
+    records = []
+    indices = {section: index for index, section in enumerate(sections)}
+    for section in sections:
+        parent = section.parentseg()
+        parent_index = indices.get(parent.sec) if parent is not None else None
+        if parent is not None and parent_index is None:
+            raise ValueError("Owned regional section has an external parent")
+        records.append({"nseg": int(section.nseg), "length_um": float(section.L),
+            "parent_section_id": parent_index,
+            "parent_section_pos": float(parent.x) if parent is not None else None,
+            "orientation": float(section.orientation()),
+            "points": [[float(section.x3d(i)), float(section.y3d(i)), float(section.z3d(i)),
+                        float(section.diam3d(i))] for i in range(int(section.n3d()))]})
+    return records
+
+
 def _regional_framework_cell_record(cell: Any) -> dict[str, Any] | None:
     """Check the FINAL BioCell morphology before framework clamps/reports."""
     plan = getattr(cell.hobj, "digifly_regional_plan", None)
     if not plan:
         return None
     sections = list(cell.hobj.all)
-    if len(sections) != len(plan["sections"]):
+    owned = getattr(cell.hobj, "digifly_regional_sections", ())
+    baseline = getattr(cell.hobj, "digifly_regional_native", None)
+    if (len(sections) != len(plan["sections"]) or len(owned) != len(sections)
+            or any(a != b for a, b in zip(sections, owned)) or baseline is None):
         raise ValueError("BioNet changed the owned regional section map")
+    native = _regional_native_geometry(sections)
+    if native != baseline or any(a["nseg"] != s["nseg"] for a, s in zip(native, plan["sections"])):
+        raise ValueError("BioNet changed the owned regional spatial discretization or native geometry")
     actual = [{"node_id":s["node_id"], "nseg":int(sec.nseg), "length_um":float(sec.L)}
               for s,sec in zip(plan["sections"],sections)]
-    if any(a["nseg"] != s["nseg"] or not math.isclose(a["length_um"],s["length_um"],abs_tol=1e-9)
-           for a,s in zip(actual,plan["sections"])):
-        raise ValueError("BioNet changed the owned regional spatial discretization")
-    return {"neuron_id":plan["neuron_id"], "sections":actual, "estimated_nseg":sum(a["nseg"] for a in actual)}
+    return {"neuron_id":plan["neuron_id"], "sections":actual,
+        "estimated_nseg":sum(a["nseg"] for a in actual),
+        "native_geometry_unchanged": True,
+        "native_geometry_sha256": hashlib.sha256(json.dumps(native, sort_keys=True).encode()).hexdigest(),
+        "maximum_native_vs_ideal_length_error_um": max((abs(a["length_um"]-s["length_um"])
+            for a,s in zip(actual,plan["sections"])), default=0.)}
 
 
 def _validate_independent_trial_inputs(config_payload: Mapping[str, Any], *, hash_bound: bool) -> None:

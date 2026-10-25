@@ -46,7 +46,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py", "tests/test_connectome_picker.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
             "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh",
-            "tests/test_aggregate_chemical_execution.py", "tests/test_swc_fragments.py", "tests/test_swc_quality.py", "tests/test_swc_units.py", "tests/test_mechanisms.py",
+            "tests/test_aggregate_chemical_execution.py", "tests/test_swc_fragments.py", "tests/test_swc_quality.py", "tests/test_swc_units.py", "tests/test_mechanisms.py", "tests/test_bmtk_bionet_worker.py",
             "scripts/setup_dev.sh", "scripts/run_dev.sh", "pysidedeploy.spec",
             "scripts/stage_build_source_manifest.py", "scripts/archive_macos_app.sh",
             "scripts/sign_macos_app.sh", "scripts/notarize_macos_app.sh",
