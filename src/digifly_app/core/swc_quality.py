@@ -345,6 +345,10 @@ def analyze_swc(
     source = Path(path).expanduser().resolve()
     _lines, nodes, parse_errors = _parse_swc(source)
     scale, source_unit, unit_warning = _source_scale_to_um(nodes, provider=provider, path=source)
+    from .swc_units import source_coordinate_contract
+    contract = source_coordinate_contract(source)
+    if contract["rule"] in {"male_cns_v09_neuprint_raw", "neuprint_8nm_raw"}:
+        scale, source_unit, unit_warning = contract["scale_to_um"], "8nm voxel units", None
     topology_errors, topology_warnings = _topology_issues(nodes)
     findings = _adaptive_radius_findings(nodes, scale=scale)
     warnings = list(topology_warnings)
@@ -540,6 +544,8 @@ def heal_swc(
     source = Path(report.path).resolve()
     if sha256_file(source) != report.sha256:
         raise ValueError("SWC changed after audit; run the checker again")
+    from .swc_units import source_coordinate_contract
+    original_coordinate_transform = source_coordinate_contract(source)
     lines, before_nodes, parse_errors = _parse_swc(source)
     if parse_errors:
         raise ValueError("SWC no longer parses cleanly")
@@ -566,6 +572,7 @@ def heal_swc(
     if set(verified_ids) != set(intended_ids):
         raise ValueError("post-write verification found unexpected radius changes")
     after_hash = sha256_file(output)
+    coordinate_transform = {**original_coordinate_transform, "source_sha256": after_hash}
     provenance_path = output.with_suffix(output.suffix + ".quality.json")
     result_without_report = {
         "input_path": str(source),
@@ -580,6 +587,7 @@ def heal_swc(
         "schema_version": QUALITY_SCHEMA_VERSION,
         "generated_utc": _utc_text(),
         "operation": "radius-only SWC healing",
+        "coordinate_transform": coordinate_transform,
         "audit": report.to_dict(),
         "result": result_without_report,
         "verification": {

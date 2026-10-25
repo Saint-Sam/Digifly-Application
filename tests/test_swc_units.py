@@ -133,3 +133,65 @@ def test_worker_rejects_unsupported_or_stale_transform(tmp_path, mutation):
     transform.update(mutation)
     with pytest.raises(ValueError, match="coordinate transform"):
         worker._normalize_swc(path, tmp_path, coordinate_transform=transform)
+
+
+@pytest.mark.parametrize("dataset", ("male-cns:v0.9", "male-cns:v1.0", "manc:v1.2.1"))
+def test_shared_library_raw_units_require_exact_download_action_and_hash(tmp_path, dataset):
+    from digifly_app.core.swc_units import source_coordinate_contract
+    path = tmp_path / "library/export_swc/DN/DNp01/10001/10001.swc"
+    path.parent.mkdir(parents=True)
+    raw = "1 1 40000 20000 16000 32 -1\n2 2 41000 55000 91000 64 1\n"
+    path.write_text(raw)
+    root = tmp_path / "library"
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    receipt = root / ".history/first/download.json"
+    receipt.parent.mkdir(parents=True)
+    payload = {"schema":"digifly-dataset-download-v1", "status":"stored",
+        "server":"https://neuprint.janelia.org", "dataset":dataset,
+        "actions":[{"action":"downloaded", "body_id":"10001", "sha256":digest}]}
+    receipt.write_text(json.dumps(payload))
+    manifest = {"provider":"swc-library", "server":payload["server"], "dataset":dataset,
+        "swc_coordinate_convention":None,
+        "files":[{"path":str(path.relative_to(root)), "body_id":"10001", "sha256":digest,
+                  "download_action":"downloaded"}],
+        "acquisitions":[{"manifest":str(receipt), "sha256":hashlib.sha256(receipt.read_bytes()).hexdigest()}]}
+    library_manifest = root / "digifly-resource.json"
+    library_manifest.write_text(json.dumps(manifest))
+    assert source_coordinate_contract(path)["scale_to_um"] == .008
+    morphology = load_swc(record(path))
+    assert morphology.bounds == (320,328,160,440,128,728)
+    assert morphology.nodes[0].radius == pytest.approx(.256)
+    output = tmp_path / "normalized"
+    output.mkdir()
+    normalized, _, _ = worker._normalize_swc(path, output, coordinate_transform=morphology.coordinate_transform)
+    assert worker._swc_rows(normalized)[0][2:6] == (320,160,128,.256)
+    request = {"circuit":CircuitSpec(neuron_ids=("10001",)).to_dict(),
+        "experiment":ExperimentSpec().to_dict(), "morphologies":{"10001":{
+            "path":str(path), "sha256":digest, "family":"DN",
+            "coordinate_transform":morphology.coordinate_transform}}}
+    bionet_root = tmp_path / "bionet-normalized"
+    bionet_root.mkdir()
+    cells, _, _ = bionet._prepare_morphologies(request, bionet_root)
+    assert worker._swc_rows(cells["10001"]["normalized_path"])[0][2:6] == (320,160,128,.256)
+    assert path.read_text() == raw
+    # A Keep action is not evidence that a locally imported file came from the raw API.
+    payload["actions"][0]["action"] = "kept"
+    receipt.write_text(json.dumps(payload))
+    manifest["acquisitions"][0]["sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    library_manifest.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="unit evidence"):
+        source_coordinate_contract(path)
+    manifest["files"][0].pop("download_action")
+    library_manifest.write_text(json.dumps(manifest))
+    assert source_coordinate_contract(path)["scale_to_um"] == 1
+    # A forged/moved receipt cannot silently turn an unknown source into zeros or a scale guess.
+    receipt.write_text(receipt.read_text() + " ")
+    with pytest.raises(ValueError, match="acquisition checksum"):
+        source_coordinate_contract(path)
+
+
+def test_official_convention_is_exact_release_origin_and_not_a_label_guess():
+    from digifly_app.core.swc_units import neuprint_raw_convention
+    assert neuprint_raw_convention("https://neuprint.janelia.org", "male-cns:v1.0")["scale_to_um"] == .008
+    assert neuprint_raw_convention("https://other.example", "male-cns:v1.0") is None
+    assert neuprint_raw_convention("https://neuprint.janelia.org", "manc:v1.2.3") is None

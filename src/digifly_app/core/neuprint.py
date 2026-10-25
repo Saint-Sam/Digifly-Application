@@ -34,6 +34,7 @@ from .data_library import (
 from .resource_profile import ResourceProfile
 from .remote import RetryPolicy, parse_retry_after, run_with_retry
 from .swc_quality import ADAPTIVE_RADIUS_RULE_ID, analyze_swc
+from .swc_units import neuprint_raw_convention
 
 
 DEFAULT_NEUPRINT_SERVER = "https://neuprint.janelia.org"
@@ -1156,13 +1157,12 @@ def acquire_neuprint_bundle(
             "schema_version": 1,
             "server": normalize_server(request.server),
             "dataset": request.dataset,
-            "swc_coordinate_convention": (
-                {"input_units": "8nm", "scale_to_um": 0.008,
-                 "frame": "male-cns-v0.9-native", "raw_bytes_preserved": True}
-                if request.dataset == "male-cns:v0.9"
-                and normalize_server(request.server) == "https://neuprint.janelia.org"
-                else None
-            ),
+            # Keep the historical library-wide field compatible; newer libraries
+            # may also contain local, already-micrometre files. Raw units are
+            # pinned per file by the exact acquisition receipt, not its label.
+            "swc_coordinate_convention": (neuprint_raw_convention(normalize_server(request.server), request.dataset)
+                                          if request.dataset == "male-cns:v0.9" else None),
+            "native_swc_coordinate_convention": neuprint_raw_convention(normalize_server(request.server), request.dataset),
             "selection": request.selection.to_dict(),
             "neurons": [neuron.to_dict() for neuron in request.neurons],
             "connectivity_included": bool(request.include_connectivity),
@@ -1198,6 +1198,7 @@ def acquire_neuprint_bundle(
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "provider": "neuprint",
             "swc_coordinate_convention": metadata.get("swc_coordinate_convention"),
+            "native_swc_coordinate_convention": metadata.get("native_swc_coordinate_convention"),
             "acquisition_entrypoint": request.acquisition_entrypoint,
             "credential_source": request.credential_source,
             "resource_id": safe_component(request.resource_id),

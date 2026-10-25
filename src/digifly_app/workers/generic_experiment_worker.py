@@ -633,6 +633,7 @@ def _normalize_swc(
         "male_cns_v09_phase1_legacy": 8.0,
         "male_cns_v09_release_um": 1.0,
         "male_cns_v09_neuprint_raw": 0.008,
+        "neuprint_8nm_raw": 0.008,
     }
     scale = 1.0
     if transform:

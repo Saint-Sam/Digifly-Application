@@ -144,3 +144,26 @@ def test_unsupported_geometry_refuses_without_silent_alteration(tmp_path, rows, 
         plan_fragment_join(analyze_swc(source))
     assert source.read_text() == rows
     assert list(tmp_path.iterdir()) == [source]
+
+
+def test_joined_raw_voxel_copy_keeps_physical_units_once_only(fragments):
+    import hashlib
+    source, record = fragments
+    source.write_text(source.read_text().replace("# units: um\n", ""))
+    original = source.read_bytes()
+    master = {"provider":"neuprint", "server":"https://neuprint.janelia.org", "dataset":"manc:v1.2.1",
+        "files":[{"path":source.name, "sha256":hashlib.sha256(original).hexdigest()}]}
+    (source.parent / "digifly-resource.json").write_text(json.dumps(master))
+    before = load_swc(record, allow_forest_preview=True)
+    plan = plan_fragment_join(analyze_swc(source))
+    assert plan.coordinate_transform["scale_to_um"] == .008
+    joined = save_fragment_join(plan)
+    after = load_swc(replace(record, swc_path=str(joined)))
+    assert after.coordinate_transform["scale_to_um"] == .008
+    assert next(n for n in after.nodes if n.node_id == 21).x == pytest.approx(.176)
+    assert locate_soma(after) == locate_soma(before)
+    assert source.read_bytes() == original
+    output = source.parent / "run"
+    output.mkdir()
+    normalized, _, _ = worker._normalize_swc(joined, output, coordinate_transform=after.coordinate_transform)
+    assert max(row[2] for row in worker._swc_rows(normalized)) == pytest.approx(.176)

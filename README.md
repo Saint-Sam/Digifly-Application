@@ -9,7 +9,9 @@ circuits and experiments, and reviewing simulation results.
 
 ## Mac and Windows downloads
 
-The [current release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.6)
+This is local test build **20261025.2**, not a published release.
+
+The [current public release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.6)
 contains build **20261023.6** for Mac Apple silicon and Windows x86-64.
 Download and extract the ZIP for the target platform. Older app versions need
 one manual installation of this release because their updater expects the
@@ -33,9 +35,18 @@ Circuit Builder and Experiment Builder use the same graph revision. Saved
 experiments retain their original data when new downloads arrive.
 
 TTMn searches and motor-neuron labels work across Male CNS and MANC. Male CNS
-skeletons display upright in Circuit Builder. Aggregate connectivity tables can
-be downloaded, browsed and passed between builders; connected simulation from
-these tables remains unavailable.
+skeletons display upright in Circuit Builder. Downloaded connection counts can
+be used with an explicit chemical model: choose strength per count or per pair,
+kinetics, delay, reversal and assumed soma/AIS placement. These are editable model
+assumptions, not measured contact locations or conductances. Chemical count tables
+do not supply gap-junction data.
+
+Disconnected skeleton pieces can be joined in a separately saved copy after
+reviewing the added length and volume. Short tapered filler compartments keep
+existing points, radii and connection locations unchanged, but add membrane and
+change conduction. They are synthetic cables, not recovered anatomy. Raw
+Male CNS v0.9/v1.0 and MANC v1.2.1 downloads use their checked 8 nm convention;
+already-converted local SWCs are not rescaled just because of their dataset label.
 
 The new Data Library source separates linked local SWC libraries from downloaded
 subsets. Workspace sources and registered folders appear without copying files;
