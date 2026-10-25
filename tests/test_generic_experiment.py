@@ -86,6 +86,20 @@ def _morphology_hashes(
     }
 
 
+def test_classic_arbor_request_pins_hh_table_translator_without_native_channels(tmp_path):
+    morphology = _morphology(tmp_path)
+    circuit = CircuitSpec(connectome=ConnectomeRef('test:v1', 'Test', str(tmp_path)),
+        neuron_ids=('1',), morphology_sha256=_morphology_hashes((morphology,)))
+    adapter = generic.GenericExperimentAdapter({'arbor':os.sys.executable})
+    payload = adapter.request_payload(circuit, _experiment('arbor'), (morphology,),
+        PreflightReport((_passing_runtime(),)), output_root=tmp_path/'runs')
+    assert payload['native_channel_sources'] == {}
+    translator = payload['arbor_channel_translator']
+    path = Path(translator['path'])
+    assert path.name == 'arbor_channel_translation.py'
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == translator['sha256']
+
+
 def _uniform_radius_morphology(
     tmp_path: Path,
     radius: float,

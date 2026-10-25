@@ -1582,7 +1582,7 @@ class GenericExperimentAdapter:
             "arbor_channel_translator": {
                 "path": str(worker_path("arbor_channel_translation.py")),
                 "sha256": _file_sha256(worker_path("arbor_channel_translation.py")),
-            } if experiment.engine == "arbor" and any(m.active_channels for m in _effective_membrane_specs(circuit)) else {},
+            } if experiment.engine == "arbor" else {},
             "native_builder": {
                 "path": str(self.neuron_gap_builder_path),
                 "sha256": _file_sha256(self.neuron_gap_builder_path),

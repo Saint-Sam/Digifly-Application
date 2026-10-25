@@ -376,8 +376,6 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
                 for key in _active_native_channels(membrane)}
     if set(sources) != required:
         raise ValueError("Native channel source set does not match the selected circuit")
-    if not required:
-        return {}
     for key, record in sources.items():
         if (record.get("suffix"), record.get("sha256")) != NATIVE_CHANNELS.get(key):
             raise ValueError(f"Unverified native channel source: {key}")
@@ -398,6 +396,12 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
     staged = build / "sources"
     staged.mkdir()
     translations = {}
+    classic_hh = staged / "classic_hh_table.mod"
+    classic_hh.write_text(helper.classic_hh_source(), encoding="utf-8")
+    classic_hh_record = {"path": str(classic_hh), "sha256": _sha256(classic_hh),
+        "policy": "NEURON9.0.1 default HH inf/tau TABLE -100..100mV WITH200, clamped linear interpolation",
+        "source_url": "https://github.com/neuronsimulator/nrn/blob/9.0.1/src/nrnoc/hh.mod",
+        "native_table_disabled": False, "trace_fitting": False}
     for key, record in sources.items():
         data = Path(record["path"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != record["sha256"]:
@@ -432,11 +436,13 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
     if linked.returncode or not library.is_file():
         raise RuntimeError("Arbor channel ABI plugin linking failed; see arbor_channels/build.log")
     catalogue = arbor.load_catalogue(str(library))
+    if "classic_hh_table" not in catalogue:
+        raise RuntimeError("Compiled Arbor catalogue is missing native-default HH")
     for record in sources.values():
         if record["suffix"] not in catalogue:
             raise RuntimeError("Compiled Arbor catalogue is missing a selected channel")
     evidence = {"engine": "arbor", "arbor_version": arbor.__version__, "sources": sources,
-                "translations": translations, "translator": translator, "command": command,
+                "translations": translations, "classic_hh": classic_hh_record, "translator": translator, "command": command,
                 "link_command": link_command, "build_method": "modcc_generated_cpu_C_ABI_plugin_no_static_solver",
                 "modcc_sha256": _sha256(modcc),
                 "headers": {str(p.relative_to(arbor_root)): _sha256(p) for p in (arbor_root / "include" / "arbor").glob("*.h*")},
@@ -468,7 +474,7 @@ def _decorate_arbor_channels(arbor: Any, decor: Any, hh: Mapping[str, Any], memb
         values = _region_hh(hh, soma=soma)
         if membrane.get("replace_builtin_hh", False):
             values = {**values, "gnabar": 0.0, "gkbar": 0.0}
-        decor.paint(region_expression, arbor.density("hh", values))
+        decor.paint(region_expression, arbor.density("digifly_channels_classic_hh_table", values))
         for key in active:
             channel = dict(membrane["channels"][key])
             _validated_native_assignment(key, channel)
@@ -2656,6 +2662,22 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
                          "uses_degenerate_stub": length == 0, "is_target_soma": node_id == target,
                          "soma": soma, "ais_proxy": node_id in ais, "is_filler": node_id in filler_edges,
                          "hh": hh, "membrane": membrane})
+    root_junctions = []
+    for root in (row for row in rows if row[6] == -1):
+        outgoing = [row for row in edges if row[6] == root[0]]
+        if len(outgoing) < 2:
+            continue
+        # A root has no incoming edge/section. Its outgoing cables must still
+        # share one massless junction, rather than becoming independent cells.
+        # Prefer a real edge as the anchor so a new filler cannot own the site.
+        anchor = min(outgoing, key=lambda row: (row[0] in filler_edges, row[0]))[0]
+        for row in outgoing:
+            if row[0] != anchor:
+                sections[index[row[0]]]["parent_section_id"] = index[anchor]
+                sections[index[row[0]]]["parent_section_pos"] = 0.0
+        sites[root[0]] = {"section_id": index[anchor], "section_pos": 0.0}
+        root_junctions.append({"root_node_id": root[0], "anchor_edge_node_id": anchor,
+            "outgoing_edge_node_ids": sorted(row[0] for row in outgoing)})
     for row in rows:
         if row[0] not in sites:
             child = next((r[0] for r in edges if r[6] == row[0]), target)
@@ -2665,7 +2687,9 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
             "degenerate_stub_count": sum(s["uses_degenerate_stub"] for s in sections),
             "ais_policy": "Geometric preview proxy: nearest ceil(5%) type-2 edges, bounded 1..16; not anatomical AIS",
             "site_policy": "Midpoint of each incoming source SWC edge; shared odd CV grid",
-            "precedence": "default -> per-neuron -> per-SWC-edge"}
+            "precedence": "default -> per-neuron -> per-SWC-edge",
+            "root_junctions": root_junctions,
+            "root_junction_policy": "Outgoing root edges share their exact proximal point; no added cable, capacitance or membrane."}
     if contact_nodes:
         plan["electrical_mesh_policy"] = {"schema_version":1, "target_spacing_um":ELECTRICAL_CONTACT_TARGET_SEGMENT_UM,
             "baseline_spacing_um":NEURON_TARGET_SEGMENT_UM, "contact_run_node_ids":sorted(contact_nodes),
@@ -2726,7 +2750,7 @@ def _neuron_regional_cell(h: Any, swc_path: Path, neuron_id: str, cell: Mapping[
         _decorate_neuron_section(section, spec["hh"], spec["membrane"], soma=spec["soma"])
     for section, spec in zip(sections, plan["sections"]):
         if spec["parent_section_id"] is not None:
-            section.connect(sections[spec["parent_section_id"]](1), 0)
+            section.connect(sections[spec["parent_section_id"]](float(spec["parent_section_pos"])), 0)
     node_sites = {n:(sections[s["section_id"]],s["section_pos"]) for n,s in plan["node_sites"].items()}
     target = next(s for s in plan["sections"] if s["is_target_soma"])
     return {"sections": tuple(sections), "node_sites": node_sites,

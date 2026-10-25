@@ -7,6 +7,96 @@ from __future__ import annotations
 import re
 
 
+def classic_hh_source() -> str:
+    """NEURON9 HH's default 200-interval rate table, in Arbor dialect.
+
+    Arbor0.12.2's builtin hh evaluates rates directly. NEURON9.0.1's default
+    hh linearly interpolates inf/tau on -100..100mV, clamping outside it.
+    These are distinct numerical models even as dt tends to zero. Preserve
+    the native default without disabling its table or fitting a voltage trace.
+    Equations: neuronsimulator/nrn tag9.0.1, src/nrnoc/hh.mod (MIT).
+    """
+    names = ('minf', 'mtau', 'hinf', 'htau', 'ninf', 'ntau')
+    def equations(voltage):
+        return f'''
+        x = -({voltage}+40)
+        if (fabs(x/10) < 1e-6) {{ alpha = 1-x/20 }}
+        else {{ alpha = 0.1*x/(exp(x/10)-1) }}
+        beta = 4*exp(-({voltage}+65)/18)
+        total = alpha+beta
+        minf = alpha/total
+        mtau = 1/(thermal*total)
+        alpha = 0.07*exp(-({voltage}+65)/20)
+        beta = 1/(exp(-({voltage}+35)/10)+1)
+        total = alpha+beta
+        hinf = alpha/total
+        htau = 1/(thermal*total)
+        x = -({voltage}+55)
+        if (fabs(x/10) < 1e-6) {{ alpha = 0.1*(1-x/20) }}
+        else {{ alpha = 0.01*x/(exp(x/10)-1) }}
+        beta = 0.125*exp(-({voltage}+65)/80)
+        total = alpha+beta
+        ninf = alpha/total
+        ntau = 1/(thermal*total)
+        '''
+    body = ['thermal = 3^((celsius-6.3)/10)',
+            'grid = v+100', 'if (grid < 0) { grid = 0 }',
+            'if (grid > 200) { grid = 200 }', 'index = 0', 'remainder = grid']
+    for bit in (128, 64, 32, 16, 8, 4, 2, 1):
+        body.append(f'if (remainder >= {bit}) {{\n index = index+{bit}\n remainder = remainder-{bit}\n }}')
+    # Use the final interval at the upper bound, with fraction=1, so no
+    # out-of-range table endpoint is evaluated even transiently.
+    body += ['if (index >= 200) { index = 199 }', 'fraction = grid-index',
+             'sample_v = index-100', equations('sample_v')]
+    body += [f'low_{name} = {name}' for name in names]
+    body += ['sample_v = index-99', equations('sample_v')]
+    body += [f'{name} = low_{name}+fraction*({name}-low_{name})' for name in names]
+    locals_ = ', '.join(('thermal', 'grid', 'index', 'remainder', 'fraction',
+                          'sample_v', 'x', 'alpha', 'beta', 'total',
+                          *(f'low_{name}' for name in names)))
+    return '''TITLE Digifly native-default HH table translation
+NEURON {
+ SUFFIX classic_hh_table
+ USEION na READ ena WRITE ina
+ USEION k READ ek WRITE ik
+ NONSPECIFIC_CURRENT il
+ RANGE gnabar, gkbar, gl, el
+}
+UNITS {
+ (mV) = (millivolt)
+ (S) = (siemens)
+}
+PARAMETER {
+ gnabar = 0.12 (S/cm2)
+ gkbar = 0.036 (S/cm2)
+ gl = 0.0003 (S/cm2)
+ el = -54.3 (mV)
+ celsius
+}
+STATE { m h n }
+ASSIGNED { minf mtau hinf htau ninf ntau }
+BREAKPOINT {
+ SOLVE advance_gates METHOD cnexp
+ ina = gnabar*m*m*m*h*(v-ena)
+ ik = gkbar*n*n*n*n*(v-ek)
+ il = gl*(v-el)
+}
+INITIAL {
+ table_rates(v, celsius)
+ m = minf
+ h = hinf
+ n = ninf
+}
+DERIVATIVE advance_gates {
+ table_rates(v, celsius)
+ m' = (minf-m)/mtau
+ h' = (hinf-h)/htau
+ n' = (ninf-n)/ntau
+}
+PROCEDURE table_rates(v, celsius) {
+ LOCAL ''' + locals_ + '\n' + '\n'.join(body) + '\n}\n'
+
+
 def _block(text: str, opening: int) -> tuple[int, int]:
     start = text.index("{", opening)
     depth = 1
