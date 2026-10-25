@@ -68,10 +68,11 @@ class SwcQualityReport:
     warnings: tuple[str, ...] = ()
     manifest: str = ""
     instance: str = ""
+    component_count: int = 1
 
     @property
     def needs_review(self) -> bool:
-        return bool(self.findings or self.errors)
+        return bool(self.findings or self.errors or self.component_count > 1)
 
     @property
     def can_heal(self) -> bool:
@@ -363,6 +364,7 @@ def analyze_swc(
         warnings=tuple(warnings),
         manifest=str(Path(manifest).expanduser().resolve()) if manifest else "",
         instance=str(instance),
+        component_count=sum(node.parent_id < 0 for node in nodes),
     )
 
 
@@ -626,11 +628,26 @@ def reviewed_hashes(report: SwcQualityReport) -> set[str]:
     return hashes
 
 
+def fragments_reviewed(report: SwcQualityReport) -> bool:
+    """Old radius-only choices never silently approve a new topology repair."""
+    path = decision_path(report)
+    if path is None or not path.is_file():
+        return False
+    try:
+        records = json.loads(path.read_text(encoding="utf-8")).get("decisions", ())
+        return any(isinstance(row, Mapping) and row.get("source_sha256") == report.sha256
+                   and row.get("fragments_reviewed") is True for row in records)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def record_review_decision(
     report: SwcQualityReport,
     *,
     action: str,
     healing_result: HealingResult | None = None,
+    fragments_reviewed: bool = False,
+    joined_copy: str = "",
 ) -> Path | None:
     """Remember an explicit UI choice so the same immutable import is not nagged twice."""
 
@@ -663,6 +680,8 @@ def record_review_decision(
             "action": action,
             "finding_count": len(report.findings),
             "result": healing_result.to_dict() if healing_result is not None else None,
+            "fragments_reviewed": fragments_reviewed,
+            "joined_copy": joined_copy,
         }
     )
     payload["decisions"] = decisions

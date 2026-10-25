@@ -208,6 +208,7 @@ def _validate_contacts(
     contact_ids: set[str] = set()
     for raw in edge_manifest.get("chemical_edges") or ():
         contact = dict(raw or {})
+        _common._validate_aggregate_chemical_contact(contact, dict(edge_manifest.get("chemical_synapse_policy") or {}))
         contact_id = str(contact.get("contact_id") or "")
         if not contact_id or contact_id in contact_ids:
             raise ValueError("Chemical contact IDs must be present and unique")
@@ -283,13 +284,20 @@ def _validate_capabilities(
     required_policy = {
         "mechanism": "exp2syn",
         "source_mode": "soma_threshold",
-        "placement_policy": "imported_post_contact",
-        "aggregation_policy": "per_site_unchanged",
         "edge_scope": "all_chemical_edges",
     }
     for key, expected in required_policy.items():
         if chemical_policy.get(key) != expected:
             raise ValueError(f"Unsupported BioNet chemical policy {key}={chemical_policy.get(key)!r}")
+    aggregate = chemical_policy.get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
+    if aggregate:
+        if (chemical_policy.get("aggregation_policy") != "one_exp2syn_per_pair"
+                or chemical_policy.get("weight_policy") not in {"count_times_default", "per_pair_default"}):
+            raise ValueError("Unsupported BioNet aggregate chemical model")
+    elif (chemical_policy.get("placement_policy") != "imported_post_contact"
+            or chemical_policy.get("aggregation_policy") != "per_site_unchanged"
+            or chemical_policy.get("weight_policy") != "source_or_default_per_contact"):
+        raise ValueError("Unsupported BioNet located-contact chemical model")
 
     gap_policy = dict(circuit.get("gap_junction_policy") or {})
     if dict(edge_manifest.get("gap_junction_policy") or {}) != gap_policy:
@@ -898,6 +906,10 @@ def _resolve_edge_manifest(
                 f"Chemical contact {contact['contact_id']} maps to missing run SWC node {run_node_id}"
             )
         contact["post_run_node_id"] = int(run_node_id)
+        if "post_source_edge_fraction" in contact:
+            section_id, section_pos = _common._regional_contact_site(cell["section_plan"],
+                run_node_id, float(contact["post_source_edge_fraction"]))
+            site = {"section_id": section_id, "section_pos": section_pos}
         contact["bionet_section_id"] = int(site["section_id"])
         contact["bionet_section_pos"] = float(site["section_pos"])
     for edge in resolved.get("electrical_edges") or ():

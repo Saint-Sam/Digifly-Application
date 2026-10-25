@@ -743,6 +743,12 @@ def _normalize_swc(
             f"# coordinate_scale_to_um {scale:.17g}\n"
             f"# coordinate_rule {transform.get('rule', 'identity_um')}\n"
         )
+        filler_metadata = _read_filler_metadata(source)
+        if filler_metadata:
+            normalized_metadata = {**filler_metadata, "normalized": True}
+            for field in ("synthetic_node_ids", "filler_edge_child_ids", "original_root_ids"):
+                normalized_metadata[field] = [remap[n] for n in filler_metadata[field]]
+            handle.write("# digifly_filler " + json.dumps(normalized_metadata, separators=(",", ":")) + "\n")
         for old_id in ordered:
             swc_type, x, y, z, radius, old_parent = nodes[old_id]
             new_parent = -1 if old_parent == -1 else remap[old_parent]
@@ -761,6 +767,33 @@ def _normalize_swc(
             for old_id in ordered
         )
     return normalized_path, mapping_path, _sha256(normalized_path)
+
+
+class _SwcRows(tuple):
+    def __new__(cls, values, filler_metadata=None):
+        result = super().__new__(cls, values)
+        result.filler_metadata = dict(filler_metadata or {})
+        return result
+
+
+def _read_filler_metadata(path: Path) -> dict[str, Any]:
+    metadata = {}
+    with path.open(encoding="utf-8-sig") as stream:
+        for line in stream:
+            if line.startswith("# digifly_filler "):
+                if metadata:
+                    raise ValueError("SWC has duplicate filler declarations")
+                metadata = json.loads(line[len("# digifly_filler "):])
+    if metadata:
+        if metadata.get("schema") != "digifly-filler-v1":
+            raise ValueError("Unsupported SWC filler declaration")
+        for field in ("synthetic_node_ids", "filler_edge_child_ids", "original_root_ids"):
+            ids = metadata.get(field)
+            if not isinstance(ids, list) or any(type(n) is not int or n <= 0 for n in ids) or len(ids) != len(set(ids)):
+                raise ValueError("Invalid SWC filler node declaration")
+        if not set(metadata["synthetic_node_ids"]).issubset(metadata["filler_edge_child_ids"]):
+            raise ValueError("Every synthetic SWC node must have a declared filler edge")
+    return metadata
 
 
 def _swc_rows(
@@ -784,7 +817,10 @@ def _swc_rows(
                     int(fields[6]),
                 )
             )
-    return tuple(rows)
+    metadata = _read_filler_metadata(path)
+    if metadata and set(metadata["filler_edge_child_ids"]) - {row[0] for row in rows}:
+        raise ValueError("Filler declaration references missing SWC nodes")
+    return _SwcRows(rows, metadata)
 
 
 def _target_soma_node(
@@ -792,7 +828,8 @@ def _target_soma_node(
     *,
     prefer_rostral: bool,
 ) -> tuple[int, tuple[float, float, float]]:
-    non_root = [row for row in rows if row[6] != -1]
+    filler_edges = set(getattr(rows, "filler_metadata", {}).get("filler_edge_child_ids", ()))
+    non_root = [row for row in rows if row[6] != -1 and row[0] not in filler_edges]
     candidates = [row for row in non_root if row[1] == 1] or non_root
     if not candidates:
         raise ValueError("The morphology has no non-root cable segment for stimulation")
@@ -1483,6 +1520,37 @@ def _active_native_channels(membrane: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(active)
 
 
+def _validate_aggregate_chemical_contact(contact: Mapping[str, Any], policy: Mapping[str, Any]) -> None:
+    """Check the declared count model again inside every simulator worker."""
+    placement = policy.get("placement_policy", "imported_post_contact")
+    aggregate = placement in {"aggregate_post_soma", "aggregate_post_ais"}
+    if not aggregate:
+        if "source_connection_count" in contact or "post_source_edge_fraction" in contact:
+            raise ValueError("Located chemical contacts cannot silently acquire aggregate modeling assumptions")
+        return
+    basis = policy.get("weight_policy")
+    if basis not in {"count_times_default", "per_pair_default"} or policy.get("aggregation_policy") != "one_exp2syn_per_pair":
+        raise ValueError("Aggregate chemical execution requires the explicit count-to-strength policy")
+    count = contact.get("source_connection_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("Aggregate chemical execution requires a nonnegative source connection count")
+    assumption = dict(contact.get("placement_assumption") or {})
+    if assumption.get("policy") != placement or assumption.get("biological_contact") is not False:
+        raise ValueError("Aggregate chemical placement must be labeled as an assumed, non-anatomical site")
+    if assumption.get("source_count_is_location") is not False or assumption.get("source_count") != count:
+        raise ValueError("Aggregate placement must retain its source count without claiming a measured location")
+    strength = dict(contact.get("weight_assumption") or {})
+    if (strength.get("policy") != basis or strength.get("source_count_is_conductance") is not False
+            or strength.get("default_weight_uS") != policy.get("default_weight_uS")
+            or strength.get("weight_scale") != policy.get("weight_scale")):
+        raise ValueError("Aggregate chemical strength assumptions differ from the selected policy")
+    if float(contact.get("post_source_edge_fraction", -1)) != 0.5:
+        raise ValueError("Aggregate chemical placement requires the declared edge midpoint")
+    expected = float(policy["default_weight_uS"]) * float(policy["weight_scale"]) * (count if basis == "count_times_default" else 1)
+    if not math.isfinite(expected) or float(contact.get("weight_uS", -1)) != expected:
+        raise ValueError("Aggregate chemical strength differs from its declared count model")
+
+
 def _validate_request_capabilities(
     engine: str,
     circuit: Mapping[str, Any],
@@ -1510,6 +1578,7 @@ def _validate_request_capabilities(
         contact_ids: set[str] = set()
         for raw in manifest.get("chemical_edges") or ():
             edge = dict(raw or {})
+            _validate_aggregate_chemical_contact(edge, dict(circuit.get("chemical_synapse_policy") or {}))
             contact_id = str(edge.get("contact_id") or "")
             if not contact_id or contact_id in contact_ids:
                 raise ValueError("Chemical contact IDs must be present and unique")
@@ -2057,7 +2126,7 @@ def _arbor_network_traces(
                     )
                 synapse_label = str(contact["contact_id"])
                 decor.place(
-                    contact_locset_by_node[source_node],
+                    _arbor_gap_contact_locset(plan, contact_locset_by_node[source_node], source_node, contact, "post"),
                     arbor.synapse(
                         "exp2syn",
                         {
@@ -2466,6 +2535,7 @@ def _regional_execution(circuit: Mapping[str, Any], experiment: Mapping[str, Any
     membranes = [dict(circuit.get("membrane") or {}),
                  *[dict(x) for x in dict(circuit.get("neuron_mechanism_overrides") or {}).values()]]
     return bool(circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
+                or dict(circuit.get("chemical_synapse_policy") or {}).get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
                 or (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
                     and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair"})
                 or any(_active_native_channels(x) for x in membranes)
@@ -2541,7 +2611,8 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
         raise ValueError("A compartment override has no incoming SWC edge (root or absent node)")
     if target not in edge_ids:
         target = edges[0][0]
-    axon = [r for r in edges if r[1] == 2]
+    filler_edges = set(getattr(rows, "filler_metadata", {}).get("filler_edge_child_ids", ()))
+    axon = [r for r in edges if r[1] == 2 and r[0] not in filler_edges]
     axon.sort(key=lambda r: (min(math.dist(r[2:5], soma_point), math.dist(by_id.get(r[6], r)[2:5], soma_point)), r[0]))
     ais = {r[0] for r in axon[:max(1, min(16, (len(axon)+19)//20))]}
     base_hh = dict(cell["hh"])
@@ -2563,7 +2634,7 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
         if any(not math.isfinite(float(v)) for k,v in hh.items() if k != "active_scope") or float(hh["cm_uF_cm2"]) <= 0 or float(hh["ra_ohm_cm"]) <= 0:
             raise ValueError("Invalid per-compartment biophysics")
         membrane = dict(dict(cell.get("compartment_mechanism_overrides") or {}).get(str(node_id), cell.get("membrane") or {}))
-        soma = kind == 1 or node_id == target
+        soma = (kind == 1 or node_id == target) and node_id not in filler_edges
         scope = hh.get("active_scope", "all")
         if scope not in {"all", "soma", "soma_ais"}:
             raise ValueError("Unknown regional active scope")
@@ -2582,7 +2653,8 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
                          "length_um": max(length, .001), "nseg": _neuron_nseg_for_length(max(length, .001), target_spacing_um=ELECTRICAL_CONTACT_TARGET_SEGMENT_UM if node_id in contact_edges else None),
                          "parent_section_id": index.get(parent_id), "parent_section_pos": 1.0,
                          "uses_degenerate_stub": length == 0, "is_target_soma": node_id == target,
-                         "soma": soma, "ais_proxy": node_id in ais, "hh": hh, "membrane": membrane})
+                         "soma": soma, "ais_proxy": node_id in ais, "is_filler": node_id in filler_edges,
+                         "hh": hh, "membrane": membrane})
     for row in rows:
         if row[0] not in sites:
             child = next((r[0] for r in edges if r[6] == row[0]), target)
@@ -2951,6 +3023,12 @@ def _neuron_network_traces(
                     f"Chemical contact {contact['contact_id']} maps to missing run node {post_node}"
                 )
             post_section, post_x = post_site
+            if "post_source_edge_fraction" in contact:
+                if not built[post_id].get("regional_plan"):
+                    raise ValueError("Aggregate chemical placement requires the shared regional mesh")
+                section_id, post_x = _regional_contact_site(built[post_id]["regional_plan"],
+                    post_node, float(contact["post_source_edge_fraction"]))
+                post_section = built[post_id]["sections"][section_id]
             synapse = h.Exp2Syn(post_section(float(post_x)))
             synapse.e = float(contact["reversal_mV"])
             synapse.tau1 = float(contact["tau1_ms"])

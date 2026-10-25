@@ -95,6 +95,61 @@ def test_chemical_kinetics_choice_roundtrips_explicit_source_precedence(tmp_path
         application.processEvents()
 
 
+def test_explicit_downloaded_count_model_roundtrips_all_editable_choices(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        assert not page.chemical_aggregate_basis.isEnabled()
+        for placement in ("aggregate_post_soma", "aggregate_post_ais"):
+            page.chemical_placement.setCurrentIndex(page.chemical_placement.findData(placement))
+            for basis in ("count_times_default", "per_pair_default"):
+                page.chemical_aggregate_basis.setCurrentIndex(page.chemical_aggregate_basis.findData(basis))
+                page.chemical_default_weight.setValue(0.002)
+                page.apply_chemical_policy()
+                policy = page.spec.chemical_synapse_policy
+                assert policy.placement_policy == placement and policy.weight_policy == basis
+                assert policy.default_weight_uS == 0.002
+                assert policy.aggregation_policy == "one_exp2syn_per_pair"
+                assert page.chemical_aggregate_basis.isEnabled()
+                page._set_chemical_policy(type(policy).from_dict(policy.to_dict()))
+                assert page._read_chemical_policy() == policy
+        page.chemical_placement.setCurrentIndex(0)
+        assert page._read_chemical_policy().weight_policy == "source_or_default_per_contact"
+        assert not page.chemical_aggregate_basis.isEnabled()
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_fragment_preview_requires_separate_confirmation_and_keeps_original(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    path = tmp_path / "1.swc"
+    path.write_text("1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n")
+    original = path.read_bytes()
+    report = analyze_swc(path)
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    previews = []
+    def decline(message):
+        previews.append(message)
+        return module.QMessageBox.StandardButton.No
+    try:
+        monkeypatch.setattr(page, "_confirm_fragment_join", decline)
+        assert page._offer_fragment_join(report) == (True, "")
+        assert len(list(tmp_path.glob("*.swc"))) == 1
+        assert "total volume" in previews[0] and "change electrical conduction" in previews[0]
+        monkeypatch.setattr(page, "_confirm_fragment_join", lambda *args: module.QMessageBox.StandardButton.Yes)
+        reviewed, joined = page._offer_fragment_join(report)
+        assert reviewed and Path(joined).is_file()
+        assert path.read_bytes() == original
+        morphology = load_swc(NeuronRecord("1", "MN", "test", joined, "custom:test"))
+        assert sum(node.parent_id < 0 for node in morphology.nodes) == 1
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def test_same_size_table_refresh_retains_accessible_items_and_blocks_partial_selection(tmp_path):
     application = QApplication.instance() or QApplication([])
     path = tmp_path / "1.swc"

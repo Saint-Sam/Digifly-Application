@@ -204,8 +204,9 @@ def _effective_hh(circuit: CircuitSpec, neuron_id: str) -> HodgkinHuxleySpec:
 
 
 def _nearest_node_id(morphology: Morphology, point: tuple[float, float, float]) -> int:
+    synthetic = set((morphology.filler_metadata or {}).get("synthetic_node_ids", ()))
     return min(
-        morphology.nodes,
+        (node for node in morphology.nodes if node.node_id not in synthetic),
         key=lambda node: (
             (node.x - point[0]) ** 2
             + (node.y - point[1]) ** 2
@@ -956,7 +957,7 @@ class GenericExperimentAdapter:
                 neuron_id = morphology.record.neuron_id
                 try:
                     nodes = morphology.nodes
-                    rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes]
+                    rows = regional_worker._SwcRows([(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes], morphology.filler_metadata)
                     data = regional_worker._regional_cell_data(circuit.to_dict(), neuron_id, {n.node_id:n.node_id for n in nodes})
                     data["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
                     plan = regional_worker._regional_plan(rows, data)
@@ -1169,6 +1170,57 @@ class GenericExperimentAdapter:
             runtime_safe_fields=("experiment",),
         )
 
+    def _aggregate_chemical_rows(self, circuit, morphology_by_id):
+        """Materialize declared model sites, never anatomical contact locations."""
+        from digifly_app.core.pair_graph import selected_subgraph, sha
+        from digifly_app.workers import generic_experiment_worker as mapping
+
+        if not circuit.connectome.pair_graph_path:
+            raise ValueError("Aggregate placement requires a selected downloaded/imported pair graph")
+        manifest, pairs = selected_subgraph(circuit.connectome, circuit.neuron_ids)
+        if len(circuit.neuron_ids) == 1 and any(row['preId'] == row['postId'] for row in pairs):
+            raise ValueError("A single-cell aggregate autapse requires the network execution path; not supported yet")
+        policy = circuit.chemical_synapse_policy
+        sites = {}
+        rows = []
+        for pair in pairs:
+            post = str(pair['postId'])
+            if post not in sites:
+                morphology = morphology_by_id[post]
+                swc = mapping._SwcRows([(n.node_id, n.swc_type, n.x, n.y, n.z, n.radius, n.parent_id) for n in morphology.nodes], morphology.filler_metadata)
+                cell = mapping._regional_cell_data(circuit.to_dict(), post, {n.node_id:n.node_id for n in morphology.nodes})
+                cell['prefer_rostral_soma'] = morphology.record.family.upper().startswith('DN')
+                sites[post] = mapping._geometric_pair_site(swc, cell,
+                    'ais_pair' if policy.placement_policy == 'aggregate_post_ais' else 'soma_pair')
+            site = sites[post]
+            rows.append({
+                'source_edge_rowid': len(rows) + 1,
+                'source_edge_id': f"aggregate-pair-{pair['preId']}-{pair['postId']}",
+                'pre_id': str(pair['preId']), 'post_id': post,
+                **{f'post_{axis}': value for axis, value in zip('xyz', site['coordinate_um'])},
+                'model_post_source_node_id': site['source_node_id'],
+                'aggregate_connection_count': pair['total_weight'],
+                'neurotransmitter': pair.get('preNt'),
+                'placement_assumption': {
+                    'policy': policy.placement_policy, 'biological_contact': False,
+                    'selection': site['selection'], 'source_count_is_location': False,
+                    'source_count': pair['total_weight'],
+                    'note': 'One modeled Exp2Syn per directed pair at a geometric edge midpoint; transmitter labels do not override the declared reversal.',
+                },
+            })
+        index = Path(circuit.connectome.pair_graph_index).expanduser().resolve()
+        manifest_path = index.parent / 'manifest.json'
+        sources = []
+        for path, expected in ((Path(circuit.connectome.pair_graph_path).expanduser().resolve(), manifest['source_sha256']),
+                               (index, manifest['index_sha256'])):
+            if any(source['path'] == str(path) for source in sources):
+                continue
+            sources.append({'kind': 'sha256_files', 'path': str(path), 'sha256': expected,
+                'manifest_path': str(manifest_path), 'manifest_sha256': sha(manifest_path),
+                'source_scope': manifest.get('source_scope', 'Selected aggregate pair rows only'),
+                'electrical_data': 'not_supplied_by_chemical_count_graph'})
+        return tuple(rows), sources
+
     def _edge_manifest(
         self,
         circuit: CircuitSpec,
@@ -1194,7 +1246,10 @@ class GenericExperimentAdapter:
         exact_node_ids: dict[str, dict[tuple[float, float, float], int]] = {}
         for neuron_id, morphology in morphology_by_id.items():
             coordinates: dict[tuple[float, float, float], int] = {}
+            synthetic = set((morphology.filler_metadata or {}).get("synthetic_node_ids", ()))
             for node in morphology.nodes:
+                if node.node_id in synthetic:
+                    continue
                 point = (node.x, node.y, node.z)
                 previous = coordinates.get(point)
                 if previous is None or node.node_id < previous:
@@ -1223,8 +1278,12 @@ class GenericExperimentAdapter:
         edge_catalog = self._edge_catalog(circuit)
         sources: list[dict[str, Any]] = []
         chemical_rows: tuple[dict[str, Any], ...] = ()
+        chemical_policy = circuit.chemical_synapse_policy
         try:
-            if edge_catalog.is_male_cns and not circuit.connectome.pair_graph_path:
+            if chemical_policy.is_aggregate:
+                chemical_rows, aggregate_sources = self._aggregate_chemical_rows(circuit, morphology_by_id)
+                sources.extend(aggregate_sources)
+            elif edge_catalog.is_male_cns and not circuit.connectome.pair_graph_path:
                 chemical_rows = self._male_cns_chemical_contacts(
                     edge_catalog, neuron_ids
                 )
@@ -1241,10 +1300,9 @@ class GenericExperimentAdapter:
                 )
                 for first, second in selected_pairs
             )
-            if len(neuron_ids) > 1 and not all_pairs_disabled:
+            if chemical_policy.is_aggregate or (len(neuron_ids) > 1 and not all_pairs_disabled):
                 raise ValueError(str(exc)) from exc
 
-        chemical_policy = circuit.chemical_synapse_policy
         global_kinetics = chemical_policy.kinetics_policy == "global_override"
         chemical_edges: list[dict[str, Any]] = []
         for row in chemical_rows:
@@ -1266,6 +1324,13 @@ class GenericExperimentAdapter:
             source_tau1 = _optional_finite_float(row.get("tau1_ms"))
             source_tau2 = _optional_finite_float(row.get("tau2_ms"))
             source_reversal = _optional_finite_float(row.get("syn_e_rev_mV"))
+            count_factor = (
+                int(row["aggregate_connection_count"])
+                if chemical_policy.is_aggregate and chemical_policy.weight_policy == "count_times_default"
+                else 1
+            )
+            if chemical_policy.is_aggregate and not math.isfinite(chemical_policy.default_weight_uS * chemical_policy.weight_scale * count_factor):
+                raise ValueError("Aggregate synapse strength overflows; reduce the declared model weight or multiplier")
             effective_delay = (
                 chemical_policy.base_release_delay_ms
                 + math.dist(
@@ -1287,13 +1352,14 @@ class GenericExperimentAdapter:
                     "source_edge_id": str(row.get("source_edge_id") or ""),
                     "pre_id": pre_id,
                     "post_id": post_id,
-                    "post_source_node_id": nearest_node_id(
+                    "post_source_node_id": int(row["model_post_source_node_id"]) if chemical_policy.is_aggregate else nearest_node_id(
                         post_id, (post_point[0], post_point[1], post_point[2])
                     ),
                     "post_coordinate_um": list(post_point),
                     "weight_uS": float(
                         (source_weight if source_weight is not None else chemical_policy.default_weight_uS)
                         * chemical_policy.weight_scale
+                        * count_factor
                     ),
                     "delay_ms": float(effective_delay),
                     "tau1_ms": float(
@@ -1308,7 +1374,7 @@ class GenericExperimentAdapter:
                         else chemical_policy.reversal_mV
                     ),
                     "parameter_sources": {
-                        "weight": "connectome_row" if source_weight is not None else "circuit_policy",
+                        "weight": "declared_aggregate_policy" if chemical_policy.is_aggregate else "connectome_row" if source_weight is not None else "circuit_policy",
                         "delay": (
                             "circuit_policy_geometric"
                             if chemical_policy.use_geometric_delay
@@ -1330,11 +1396,24 @@ class GenericExperimentAdapter:
                             "neurotransmitter_probabilities"
                         ),
                     },
+                    **({
+                        "post_source_edge_fraction": 0.5,
+                        "source_connection_count": int(row["aggregate_connection_count"]),
+                        "placement_assumption": row["placement_assumption"],
+                        "weight_assumption": {
+                            "policy": chemical_policy.weight_policy,
+                            "default_weight_uS": chemical_policy.default_weight_uS,
+                            "weight_scale": chemical_policy.weight_scale,
+                            "source_count_is_conductance": False,
+                        },
+                    } if chemical_policy.is_aggregate else {}),
                 }
             )
 
         electrical_rows: tuple[dict[str, str], ...] = ()
         gap_policy = circuit.gap_junction_policy
+        if chemical_policy.is_aggregate and circuit.connectome.pair_graph_path and gap_policy.mode != "none":
+            raise ValueError("The selected aggregate chemical graph supplies no electrical contacts. Choose gap-junction mode None; a native or historical gap source will not be substituted.")
         if len(neuron_ids) > 1 and gap_policy.mode != "none":
             try:
                 electrical_rows = edge_catalog.selected_gap_contacts(neuron_ids)
@@ -1374,7 +1453,7 @@ class GenericExperimentAdapter:
                 for neuron_id in (neuron_a, neuron_b):
                     if neuron_id not in geometric_sites:
                         morphology = morphology_by_id[neuron_id]
-                        swc_rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes]
+                        swc_rows = shared_mapping._SwcRows([(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes], morphology.filler_metadata)
                         cell = shared_mapping._regional_cell_data(circuit.to_dict(),neuron_id,{n.node_id:n.node_id for n in morphology.nodes})
                         cell["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
                         geometric_sites[neuron_id] = shared_mapping._geometric_pair_site(swc_rows,cell,gap_policy.placement_policy)

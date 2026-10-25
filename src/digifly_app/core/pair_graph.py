@@ -80,6 +80,36 @@ def pair_rows(source: ConnectomeRef, first: str, second: str) -> tuple[dict, ...
             "SELECT * FROM pairs WHERE (preId=? AND postId=?) OR (preId=? AND postId=?) ORDER BY preId,postId", (a, b, b, a)))
 
 
+def selected_subgraph(source: ConnectomeRef, neuron_ids) -> tuple[dict, tuple[dict, ...]]:
+    """Read a bounded directed subgraph without changing counts or inferring gaps.
+
+    Return the verified source manifest as well as rows so execution can pin
+    both the original table and the lookup index without another full hash read.
+    Unknown query coverage is a refusal, never an empty/no-connection result.
+    """
+    manifest = validated_manifest(source)
+    selected = {int(value) for value in neuron_ids}
+    if not selected or any(not -(2**63) <= value < 2**63 for value in selected):
+        raise ValueError("Selected pair body IDs must fit signed 64-bit integers")
+    if 'covered_body_ids' in manifest and not selected.issubset(manifest['covered_body_ids']):
+        raise ValueError('Connectivity for these neurons has not been downloaded; it is unknown, not zero')
+    path = Path(source.pair_graph_index).expanduser().resolve()
+    rows = []
+    with sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        for pre in sorted(selected):
+            for raw in db.execute("SELECT * FROM pairs WHERE preId=? ORDER BY postId", (pre,)):
+                if raw["postId"] not in selected:
+                    continue
+                count = raw["total_weight"]
+                if not isinstance(count, int) or count < 0:
+                    raise ValueError("Aggregate connection counts must be nonnegative integers, not conductances")
+                rows.append(dict(raw))
+                if len(rows) > 250_000:
+                    raise ValueError("Selected aggregate subgraph exceeds the 250,000-pair execution budget")
+    return manifest, tuple(rows)
+
+
 def attach_registered_pair_graph(source: ConnectomeRef, profile: ResourceProfile | None) -> ConnectomeRef:
     if profile is None:
         return source

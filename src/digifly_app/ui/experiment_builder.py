@@ -927,12 +927,22 @@ class ExperimentBuilderPage(QWidget):
             compartments = sum(
                 len(values) for values in self._circuit.compartment_overrides.values()
             )
+            chemical = self._circuit.chemical_synapse_policy
+            aggregate_note = (
+                f"Explicit model: {chemical.placement_policy}; "
+                f"{chemical.default_weight_uS:g} µS {'per source count' if chemical.weight_policy == 'count_times_default' else 'per directed pair'} "
+                f"× {chemical.weight_scale:g}; delay {chemical.default_delay_ms:g} ms; "
+                f"rise/decay {chemical.tau1_ms:g}/{chemical.tau2_ms:g} ms; reversal {chemical.reversal_mV:g} mV. "
+                "Sites/strengths are assumed, not measured. Electrical data is not supplied by this count graph. "
+                if chemical.is_aggregate else
+                "Choose an explicit count-to-strength and placement model in Circuit Builder’s Chemical-synapse policy before running. "
+            )
             self.circuit_detail.setText(
                 f"Neuron IDs: {', '.join(self._circuit.neuron_ids[:12])}"
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
                 + (f"\nConnectivity: {Path(self._circuit.connectome.pair_graph_path).name} · aggregate pair table. "
-                   "Connected simulation requires a weight, kinetics and placement policy; not implemented yet. "
+                   + aggregate_note +
                    "No other contact source will be substituted."
                    if self._circuit.connectome.pair_graph_path else "")
             )

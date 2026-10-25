@@ -34,7 +34,7 @@ def test_changed_source_clears_geometry_and_downloaded_table_stays_explicit(tmp_
         assert page._morphologies == (morphology,)
         assert page._circuit.connectome == paired
         assert "downloaded.parquet" in page.circuit_detail.text()
-        assert "not implemented yet" in page.circuit_detail.text()
+        assert "Choose an explicit" in page.circuit_detail.text()
         assert "No other contact source" in page.circuit_detail.text()
         changed = replace(source, key="library:male-cns:v1.0", dataset="male-cns:v1.0")
         page.set_circuit_spec(replace(circuit, connectome=changed))

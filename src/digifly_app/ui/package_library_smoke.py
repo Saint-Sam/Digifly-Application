@@ -48,7 +48,7 @@ def run_library_review(destination: Path, workspace: Path) -> int:
 def run_library_smoke(destination: Path) -> int:
     from PySide6.QtCore import Qt, QTimer, QPoint
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
-    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea, QPushButton
     from PySide6.QtTest import QTest
     from digifly_app.core.resource_profile import PROFILE_PATH_ENV, ResourceProfile, ResourceKind, ResourceBinding, AccessMode, make_standalone_profile
     from digifly_app.core.neuprint import NeuPrintClient, NeuPrintDataset
@@ -1253,7 +1253,7 @@ def run_library_smoke(destination: Path) -> int:
                 if (attached.pair_graph_path != old.path or attached.pair_graph_index != old.metadata['index'] or
                         attached.pair_graph_sha256 != old.metadata['source_sha256'] or
                         Path(old.path).name not in window.experiment_page.circuit_detail.text() or
-                        'not implemented yet' not in window.experiment_page.circuit_detail.text()):
+                        'choose an explicit' not in window.experiment_page.circuit_detail.text().casefold()):
                     raise ValueError('Experiment Builder lost the selected downloaded table or hid its execution boundary')
                 record['experiment_downloaded_connectivity'] = True
                 dialog.grab().save(str(destination / 'connectivity-ready.png'))
@@ -1401,6 +1401,77 @@ def run_library_smoke(destination: Path) -> int:
             cumulative_builder_handoff=True, cumulative_release_isolation=True,
             cumulative_query_rectangles=growing_queries,
             cumulative_shared_file=str(cumulative_resources[-1].root / 'connectivity/connectivity.sqlite'))
+        journal('explicit_count_model_and_fragment_copy')
+        from digifly_app.engines.generic_experiment import GenericExperimentAdapter
+        # Exercise the new controls on the graph acquired by the actual app
+        # above. This is fixture engineering, not a numeric circuit experiment.
+        builder.chemical_placement.setCurrentIndex(builder.chemical_placement.findData('aggregate_post_soma'))
+        builder.chemical_default_weight.setValue(.002)
+        apply_model = next(button for button in builder.findChildren(QPushButton)
+                           if button.text() == 'Apply chemical connection model')
+        QTest.mouseClick(apply_model, Qt.MouseButton.LeftButton)
+        count_spec = builder.circuit_spec()
+        if count_spec.chemical_synapse_policy.placement_policy != 'aggregate_post_soma':
+            raise ValueError('Actual Apply did not select the explicit downloaded-count model')
+        edge_model = GenericExperimentAdapter({})._edge_manifest(count_spec, tuple(builder.loaded_morphologies.values()))
+        if (len(edge_model['chemical_edges']) != 5 or edge_model['electrical_edges']
+                or any(row['weight_uS'] != row['source_connection_count'] * .002 for row in edge_model['chemical_edges'])):
+            raise ValueError('Applied model lost directed source counts or inferred an electrical connection')
+        model_path = destination / 'count-model-circuit.json'
+        model_path.write_text(json.dumps(count_spec.to_dict(), indent=2) + '\n')
+        builder.set_circuit_spec(CircuitSpec.from_dict(json.loads(model_path.read_text())))
+        builder.load_saved_assets()
+        if (builder._read_chemical_policy() != count_spec.chemical_synapse_policy or
+                window.experiment_page._circuit.chemical_synapse_policy != count_spec.chemical_synapse_policy):
+            raise ValueError('Saved/reopened count model did not reach Experiment Builder')
+        window.grab().save(str(destination / 'count-model-circuit.png'))
+        from digifly_app.core.swc_quality import analyze_swc
+        from digifly_app.core.morphology import load_swc
+        from digifly_app.core.connectomes import NeuronRecord
+        fragment = destination / 'fragment-fixture.swc'
+        fragment.write_text('1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n')
+        original_fragment = fragment.read_bytes()
+        report = analyze_swc(fragment)
+        QMessageBox.question = saved_question
+        fragment_dialog_checks = []
+        def answer_fragment(accept):
+            deadline = time.monotonic() + 4
+            def answer():
+                candidates = builder.findChildren(QMessageBox, 'FragmentJoinPreview')
+                box = next((item for item in candidates if item.isVisible()), None)
+                observation = {'accept': accept, 'candidates': [
+                    {'title': item.windowTitle(), 'visible': item.isVisible()} for item in candidates]}
+                (destination / 'fragment-dialog-state.json').write_text(json.dumps(observation, indent=2))
+                if box is not None:
+                    text = box.text()
+                    if 'total volume' not in text or 'change electrical conduction' not in text:
+                        fragment_dialog_checks.append(False)
+                        box.reject()
+                        return
+                    box.grab().save(str(destination / f'fragment-preview-{accept}.png'))
+                    fragment_dialog_checks.append(True)
+                    QTest.mouseClick(box.button(QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No), Qt.MouseButton.LeftButton)
+                elif time.monotonic() < deadline:
+                    QTimer.singleShot(30, answer)
+                else:
+                    fragment_dialog_checks.append(False)
+                    for item in candidates:
+                        item.reject()
+            QTimer.singleShot(30, answer)
+        answer_fragment(False)
+        if builder._offer_fragment_join(report) != (True, '') or fragment.with_name('fragment-fixture_fragment_healed.swc').exists():
+            raise ValueError('Declining the fragment preview wrote a joined morphology')
+        answer_fragment(True)
+        reviewed, joined = builder._offer_fragment_join(report)
+        if fragment_dialog_checks != [True, True] or not reviewed or not joined or fragment.read_bytes() != original_fragment:
+            raise ValueError('Accepted fragment preview did not preserve its original')
+        joined_morph = load_swc(NeuronRecord('fixture', 'MN', 'fixture', joined, 'custom:fixture'))
+        if sum(n.parent_id < 0 for n in joined_morph.nodes) != 1 or not joined_morph.filler_metadata:
+            raise ValueError('Joined copy is not a tagged connected morphology')
+        record.update(aggregate_chemical_model_applied=True, aggregate_chemical_saved_handoff=True,
+            aggregate_model_directed_pairs=5, fragment_preview_decline_preserves_original=True,
+            fragment_preview_accept_saves_connected_copy=True,
+            fragment_original_geometry_preserved=True)
         builder.set_circuit_spec(CircuitSpec.from_dict(full_graph_spec))
         builder.load_saved_assets()
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,

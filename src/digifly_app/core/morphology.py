@@ -43,6 +43,7 @@ class Morphology:
     segments: tuple[SwcSegment, ...]
     bounds: tuple[float, float, float, float, float, float]
     coordinate_transform: dict[str, Any] | None = None
+    filler_metadata: dict[str, Any] | None = None
 
     @property
     def center(self) -> tuple[float, float, float]:
@@ -86,6 +87,17 @@ def locate_soma(morphology: Morphology) -> SomaLocation:
     geometry fall back to an endpoint or the morphology center.
     """
 
+    if morphology.filler_metadata:
+        from dataclasses import replace
+        metadata = morphology.filler_metadata
+        synthetic = set(metadata["synthetic_node_ids"])
+        roots = set(metadata["original_root_ids"])
+        filler_edges = set(metadata["filler_edge_child_ids"])
+        return locate_soma(replace(morphology,
+            nodes=tuple(replace(n, parent_id=-1) if n.node_id in roots else n
+                        for n in morphology.nodes if n.node_id not in synthetic),
+            segments=tuple(s for s in morphology.segments if s.child_id not in filler_edges),
+            filler_metadata=None))
     nodes = morphology.nodes
     family = str(morphology.record.family).strip().upper()
     connectome_key = unwrapped_connectome_key(morphology.record.connectome_key)
@@ -166,6 +178,7 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
     A separately opted-in point-only preview preserves a published skeleton
     with no branches; execution still requires drawable segments by default.
     """
+    from digifly_app.workers.generic_experiment_worker import _read_filler_metadata
     path = Path(record.swc_path).expanduser().resolve()
     coordinate_transform = source_coordinate_contract(path)
     scale = float(coordinate_transform["scale_to_um"])
@@ -259,6 +272,7 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
         segments=tuple(segments),
         bounds=(min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)),
         coordinate_transform=coordinate_transform,
+        filler_metadata=_read_filler_metadata(path) or None,
     )
 
 

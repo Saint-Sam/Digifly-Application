@@ -82,8 +82,9 @@
       "properties": {
         "mechanism": {"const": "exp2syn"},
         "source_mode": {"const": "soma_threshold"},
-        "placement_policy": {"const": "imported_post_contact"},
-        "weight_policy": {"const": "source_or_default_per_contact"},
+        "placement_policy": {"enum": ["imported_post_contact", "aggregate_post_soma", "aggregate_post_ais"]},
+        "weight_policy": {"enum": ["source_or_default_per_contact", "count_times_default", "per_pair_default"]},
+        "kinetics_policy": {"enum": ["source_or_default", "global_override"]},
         "default_weight_uS": {"type": "number", "minimum": 0},
         "weight_scale": {"type": "number", "minimum": 0},
         "default_delay_ms": {"type": "number", "exclusiveMinimum": 0},
@@ -94,10 +95,15 @@
         "tau2_ms": {"type": "number", "exclusiveMinimum": 0},
         "reversal_mV": {"type": "number"},
         "spike_threshold_mV": {"type": "number"},
-        "aggregation_policy": {"const": "per_site_unchanged"},
+        "aggregation_policy": {"enum": ["per_site_unchanged", "one_exp2syn_per_pair"]},
         "edge_scope": {"const": "all_chemical_edges"}
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [{
+        "if": {"properties": {"placement_policy": {"const": "imported_post_contact"}}},
+        "then": {"properties": {"weight_policy": {"const": "source_or_default_per_contact"}, "aggregation_policy": {"const": "per_site_unchanged"}}},
+        "else": {"properties": {"weight_policy": {"enum": ["count_times_default", "per_pair_default"]}, "aggregation_policy": {"const": "one_exp2syn_per_pair"}}}
+      }]
     }
   },
   "additionalProperties": false

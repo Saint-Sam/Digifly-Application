@@ -28,6 +28,16 @@ def _digest(path: Path) -> str:
 
 def source_coordinate_contract(path: Path) -> dict[str, Any]:
     path = path.resolve()
+    joined_path = path.with_suffix(path.suffix + ".quality.json")
+    if joined_path.is_file():
+        joined = json.loads(joined_path.read_text(encoding="utf-8"))
+        if joined.get("schema") == "digifly-fragment-join-v1":
+            result = dict(joined.get("coordinate_transform") or {})
+            if (joined.get("output_sha256") != _digest(path) or result.get("source_sha256") != _digest(path)
+                    or result.get("rule") not in RULE_SCALES
+                    or result.get("scale_to_um") != RULE_SCALES[result["rule"]]):
+                raise ValueError("Joined-copy coordinate details do not match this exact SWC")
+            return result
     # Custom saves retain original SWC bytes and their explicitly recorded unit
     # convention. Bind the contract to this exact copied file, not a label.
     for root in tuple(path.parents)[:8]:

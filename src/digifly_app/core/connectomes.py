@@ -761,7 +761,9 @@ def discover_connectomes(
 
 def _candidate_rank(path: Path, neuron_id: str) -> tuple[int, int, str]:
     name = path.name.casefold()
-    if name == f"{neuron_id}_axodendro_with_synapses.swc".casefold():
+    if "_fragment_healed" in name:
+        rank = -1  # An explicitly reviewed connected copy, never an automatic raw-data edit.
+    elif name == f"{neuron_id}_axodendro_with_synapses.swc".casefold():
         rank = 0
     elif "axodendro_with_synapses" in name and "old" not in name:
         rank = 1

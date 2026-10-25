@@ -573,14 +573,17 @@ class ChemicalSynapsePolicy:
             raise ValueError("The generic chemical lane currently supports exp2syn only.")
         if self.source_mode != "soma_threshold":
             raise ValueError("The generic chemical lane currently uses soma-threshold sources.")
-        if self.placement_policy != "imported_post_contact":
-            raise ValueError("Chemical synapses require imported postsynaptic contact placement.")
-        if self.weight_policy != "source_or_default_per_contact":
-            raise ValueError("Unsupported chemical-synapse weight policy.")
+        if self.placement_policy not in {"imported_post_contact", "aggregate_post_soma", "aggregate_post_ais"}:
+            raise ValueError("Unsupported chemical-synapse placement policy.")
+        if self.is_aggregate:
+            if self.weight_policy not in {"count_times_default", "per_pair_default"}:
+                raise ValueError("Aggregate connectivity requires an explicit count-to-strength policy.")
+            if self.aggregation_policy != "one_exp2syn_per_pair":
+                raise ValueError("Aggregate connectivity requires one declared model synapse per directed pair.")
+        elif self.weight_policy != "source_or_default_per_contact" or self.aggregation_policy != "per_site_unchanged":
+            raise ValueError("Located contacts require the original per-contact weight and aggregation policies.")
         if self.kinetics_policy not in {"source_or_default", "global_override"}:
             raise ValueError("Unsupported chemical-synapse kinetics policy.")
-        if self.aggregation_policy != "per_site_unchanged":
-            raise ValueError("Chemical contacts must remain unaggregated in the generic lane.")
         if self.edge_scope != "all_chemical_edges":
             raise ValueError(f"Unsupported chemical edge scope: {self.edge_scope}")
         self.use_geometric_delay = bool(self.use_geometric_delay)
@@ -607,6 +610,10 @@ class ChemicalSynapsePolicy:
             raise ValueError("Chemical conduction velocity must be positive.")
         if self.tau1_ms <= 0.0 or self.tau2_ms <= self.tau1_ms:
             raise ValueError("exp2syn requires 0 < tau1 < tau2.")
+
+    @property
+    def is_aggregate(self) -> bool:
+        return self.placement_policy in {"aggregate_post_soma", "aggregate_post_ais"}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

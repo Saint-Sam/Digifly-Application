@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import pytest
+
+from digifly_app.core.augustin_2019 import (
+    EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV,
+    MODELDB_SOURCE_SHA256,
+    PARAMETERS as AUGUSTIN_PARAMETERS,
+    profile_contract as augustin_profile_contract,
+    validate_profile_contract,
+    zero_current_equilibrium_mV,
+)
+from digifly_app.core.mechanisms import (
+    MEMBRANE_MECHANISMS,
+    ChannelAssignment,
+    GapJunctionPolicy,
+    MembraneMechanismSpec,
+    mechanism_capability_message,
+    membrane_profile,
+)
+
+
+def test_native_phase2_channel_catalog_keeps_exact_suffixes_and_portable_provenance():
+    assert [item.suffix for item in MEMBRANE_MECHANISMS] == [
+        "nat",
+        "nap",
+        "k",
+        "na16a",
+        "na14a",
+        "kv14sh",
+        "kv42shal",
+        "kv21shab",
+        "kv31shaw",
+        "cav21cac",
+        "cav31t",
+    ]
+    assert {item.family for item in MEMBRANE_MECHANISMS} == {
+        "sodium",
+        "potassium",
+        "calcium",
+    }
+    assert all(not item.source_relpath.startswith("/") for item in MEMBRANE_MECHANISMS)
+    assert all(len(item.source_sha256) == 64 for item in MEMBRANE_MECHANISMS)
+    assert all(item.catalog_id.startswith("digifly.") for item in MEMBRANE_MECHANISMS)
+
+
+def test_augustin_2019_gf_profile_keeps_reversals_initialization_and_rest_distinct():
+    profile = membrane_profile("augustin_2019_gf_exact")
+    assert profile.replace_builtin_hh is True
+    assert [item.suffix for item in profile.active_channels] == ["nat", "nap", "k"]
+    assert profile.channels["augustin_nat"].soma_gbar_s_cm2 == 0.3
+    assert profile.channels["augustin_nap"].branch_gbar_s_cm2 == 0.00011
+    assert profile.channels["augustin_k"].soma_gbar_s_cm2 == 0.01
+
+    contract = augustin_profile_contract()
+    assert contract["parameters"]["e_pas_mV"] == -85.0
+    assert contract["parameters"]["ena_mV"] == 65.0
+    assert contract["parameters"]["ek_mV"] == -74.0
+    assert contract["parameters"]["v_init_mV"] == -65.0
+    assert contract["source"]["modeldb_channel_source_sha256"] == MODELDB_SOURCE_SHA256
+    assert zero_current_equilibrium_mV() == pytest.approx(
+        EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV, abs=1e-12
+    )
+    assert all(validate_profile_contract().values())
+    assert AUGUSTIN_PARAMETERS["e_pas_mV"] != pytest.approx(
+        EXPECTED_ZERO_CURRENT_EQUILIBRIUM_MV
+    )
+
+
+def test_phase2_and_escape_siz_profiles_preserve_their_distinct_defaults():
+    phase2 = membrane_profile("phase2_para_shab")
+    assert phase2.replace_builtin_hh is True
+    assert phase2.channels["para"].soma_gbar_s_cm2 == 0.03
+    assert phase2.channels["shab"].branch_gbar_s_cm2 == 0.01
+
+    escape = membrane_profile("escape_siz_para_hh_k")
+    assert escape.replace_builtin_hh is False
+    assert [item.suffix for item in escape.active_channels] == ["na16a"]
+    assert escape.channels["para"].soma_gbar_s_cm2 == 0.03
+    assert escape.channels["para"].branch_gbar_s_cm2 == 0.005
+
+
+def test_custom_channel_assignment_round_trip_preserves_disabled_values_and_parameters():
+    spec = MembraneMechanismSpec(
+        profile_key="custom",
+        channels={
+            "cacophony": ChannelAssignment(
+                "cacophony",
+                "cav21cac",
+                enabled=True,
+                soma_gbar_s_cm2=0.00015,
+                branch_gbar_s_cm2=0.00005,
+                parameters={"q10": 1.5},
+            ),
+            "future_channel": ChannelAssignment(
+                "future_channel",
+                "future_suffix",
+                enabled=True,
+                soma_gbar_s_cm2=0.002,
+                branch_gbar_s_cm2=0.001,
+            ),
+        },
+    )
+    restored = MembraneMechanismSpec.from_dict(spec.to_dict())
+    assert restored.channels["cacophony"].parameters["q10"] == 1.5
+    assert restored.channels["cacophony"].catalog_id == (
+        "digifly.phase2.cacophony.cav21cac.v1"
+    )
+    assert restored.channels["cacophony"].enabled is True
+    assert restored.channels["para_alt"].enabled is False
+    assert restored.channels["future_channel"].suffix == "future_suffix"
+
+
+def test_gap_policy_validation_and_backend_messages_do_not_claim_false_arbor_parity():
+    hetero = GapJunctionPolicy(
+        mode="heterotypic_rectifying",
+        placement_policy="imported_contact_sites",
+        conductance_basis="per_site",
+    )
+    assert GapJunctionPolicy.from_dict(hetero.to_dict()).conductance_basis == "per_site"
+    message = mechanism_capability_message(
+        "arbor", membrane_profile("escape_siz_para_hh_k"), hetero
+    )
+    assert "Arbor 0.12.2 equation translations" in message
+    assert "not exact backend parity" in message
+    assert "digifly_hetero_rect_gap" in message
+    assert "generic Arbor lane" in message
+    assert "no static ohmic approximation" in message
+
+    ohmic_message = mechanism_capability_message(
+        "arbor", membrane_profile("classic_hh"), GapJunctionPolicy(mode="ohmic")
+    )
+    assert "app-owned digifly_gap" in ohmic_message
+    assert "versioned run-owned edge manifest" in ohmic_message
+    assert "per site" in ohmic_message
+
+    with pytest.raises(ValueError, match="Closed gap fraction"):
+        GapJunctionPolicy(mode="heterotypic_rectifying", g_closed_frac=1.1)
+    with pytest.raises(ValueError, match="time constants"):
+        GapJunctionPolicy(mode="heterotypic_rectifying", tau_open_ms=0.0)
+    with pytest.raises(ValueError, match="conductance basis"):
+        GapJunctionPolicy(mode="ohmic", conductance_basis="ambiguous")
+    with pytest.raises(ValueError, match="finite"):
+        GapJunctionPolicy(mode="ohmic", vslope_mV=float("nan"))
+
+
+def test_known_mechanism_identity_conflicts_are_rejected():
+    with pytest.raises(ValueError, match="conflicting suffix"):
+        ChannelAssignment("para", "kv21shab")
+    with pytest.raises(ValueError, match="Channel map key"):
+        MembraneMechanismSpec(
+            channels={"para": ChannelAssignment("shab", "kv21shab")}
+        )
+
+
+@pytest.mark.parametrize('mode', ('ohmic', 'rectifying', 'heterotypic_rectifying'))
+def test_bionet_electrical_capability_names_serial_extension_and_limits(mode):
+    message=mechanism_capability_message('bmtk', membrane_profile('classic_hh'), GapJunctionPolicy(mode=mode))
+    assert 'actual BioNetwork cells' in message
+    assert 'run-owned Digifly extension' in message
+    assert 'not portable standard SONATA' in message
+    assert 'MPI and PointNet are unsupported' in message
+
+
+def test_gap_provenance_and_pair_total_aggregation_are_explicit():
+    policy = GapJunctionPolicy(
+        mode="ohmic",
+        conductance_basis="pair_total",
+        aggregation_policy="equal_split_across_selected_sites",
+    )
+    assert policy.mechanism_name == "Gap"
+    assert policy.source_relpath.endswith("Gap.mod")
+    assert len(policy.source_sha256) == 64
+    with pytest.raises(ValueError, match="aggregation policy"):
+        GapJunctionPolicy(mode="ohmic", conductance_basis="pair_total")
