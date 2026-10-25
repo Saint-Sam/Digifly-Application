@@ -1,4 +1,4 @@
-"""Read-only aggregate pair lookup, kept separate from anatomical contacts."""
+"""Read-only directed pairs and actual contact sites, with separate coverage."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -49,7 +49,8 @@ def sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validated_manifest(source: ConnectomeRef) -> dict:
+def graph_manifest_metadata(source: ConnectomeRef) -> dict:
+    """Cheap UI description, NOT byte validation or an execution-readiness check."""
     index = Path(source.pair_graph_index).expanduser().resolve()
     manifest = json.loads((index.parent / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema") != "digifly-weighted-pair-graph-v1" or manifest.get("index") != index.name:
@@ -59,9 +60,17 @@ def validated_manifest(source: ConnectomeRef) -> dict:
                 manifest.get('server') != source.server.rstrip('/')):
             raise ValueError('Shared connectivity belongs to another server or connectome release')
     original = Path(source.pair_graph_path).expanduser().resolve()
-    if (str(original) != manifest["source_path"] or source.pair_graph_sha256 != manifest["source_sha256"]
-            or sha(original) != source.pair_graph_sha256 or sha(index) != manifest["index_sha256"]):
+    if str(original) != manifest['source_path'] or source.pair_graph_sha256 != manifest['source_sha256']:
         raise ValueError("Selected pair graph or lookup index has changed; reselect the exact file")
+    return manifest
+
+
+def validated_manifest(source: ConnectomeRef) -> dict:
+    manifest=graph_manifest_metadata(source)
+    original=Path(source.pair_graph_path).expanduser().resolve()
+    index=Path(source.pair_graph_index).expanduser().resolve()
+    if sha(original)!=source.pair_graph_sha256 or sha(index)!=manifest['index_sha256']:
+        raise ValueError('Selected pair graph or lookup index has changed; reselect the exact file')
     return manifest
 
 

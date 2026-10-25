@@ -80,8 +80,9 @@ def main() -> int:
         parser = argparse.ArgumentParser()
         parser.add_argument("--library-ui-review", type=Path, required=True)
         parser.add_argument("--workspace", type=Path, required=True)
+        parser.add_argument("--existing-profile", type=Path)
         args = parser.parse_args()
-        return run_library_review(args.library_ui_review, args.workspace)
+        return run_library_review(args.library_ui_review, args.workspace,args.existing_profile)
     if len(sys.argv) > 1 and sys.argv[1] == "--package-library-test":
         import argparse
         from digifly_app.ui.package_library_smoke import run_library_smoke

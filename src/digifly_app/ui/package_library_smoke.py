@@ -14,7 +14,29 @@ import traceback
 import faulthandler
 
 
-def run_library_review(destination: Path, workspace: Path) -> int:
+def prepare_library_review(destination: Path, workspace: Path, existing_profile: Path | None = None):
+    """Validate before writing; an explicit existing task profile is never reset."""
+    from digifly_app.core.resource_profile import ResourceProfile, make_default_profile
+    destination,workspace=destination.resolve(),workspace.resolve()
+    if not workspace.is_dir():
+        raise ValueError('The selected read-only Digifly workspace is missing')
+    if destination.exists():
+        raise FileExistsError('Manual app review needs a new evidence folder; do not relaunch an existing attempt')
+    if existing_profile is not None:
+        profile_path=existing_profile.resolve()
+        profile=ResourceProfile.load(profile_path)
+        if profile.workspace_root is None or profile.workspace_root.resolve()!=workspace:
+            raise ValueError('The explicit review profile belongs to another workspace')
+    else:
+        profile_path=destination/'config/resources.json'
+        profile=make_default_profile(workspace_root=workspace,output_root=destination/'runs',managed_data_root=destination/'data')
+    destination.mkdir(parents=True,exist_ok=False)
+    if existing_profile is None:
+        profile.save(profile_path)
+    return destination,workspace,profile_path,profile
+
+
+def run_library_review(destination: Path, workspace: Path, existing_profile: Path | None = None) -> int:
     """Open the real app with isolated settings/profile for manual GUI review.
 
     Unlike the fixture check, this uses the normal neuPrint dialog/client and
@@ -23,25 +45,26 @@ def run_library_review(destination: Path, workspace: Path) -> int:
     """
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
     from PySide6.QtWidgets import QApplication
-    from digifly_app.core.resource_profile import PROFILE_PATH_ENV, make_default_profile
-    destination = destination.resolve()
-    workspace = workspace.resolve()
-    if not workspace.is_dir():
-        raise ValueError("The selected read-only Digifly workspace is missing")
-    destination.mkdir(parents=True, exist_ok=False)
-    profile_path = destination / "config/resources.json"
-    make_default_profile(workspace_root=workspace, output_root=destination / "runs",
-                         managed_data_root=destination / "data").save(profile_path)
+    from digifly_app.core.resource_profile import PROFILE_PATH_ENV
+    from PySide6.QtCore import QTimer
+    destination,workspace,profile_path,profile=prepare_library_review(destination,workspace,existing_profile)
     os.environ[PROFILE_PATH_ENV] = str(profile_path)
     os.environ[SETTINGS_ROOT_ENV] = str(destination / "settings")
     app = QApplication.instance() or QApplication([])
     from digifly_app.ui.main_window import MainWindow, ORGANIZATION_NAME, APPLICATION_NAME
     settings = app_settings(ORGANIZATION_NAME, APPLICATION_NAME)
     settings.setValue("workspace_root", str(workspace))
-    settings.setValue("output_root", str(destination / "runs"))
+    settings.setValue("output_root", str(profile.output_root))
     window = MainWindow()
     window.pages.setCurrentWidget(window.data_library_page)
     window.show()
+    def ready():
+        with (destination/'window-ready.json').open('x') as stream:
+            json.dump({'window_visible':window.isVisible(),'pid':os.getpid(),
+                'profile':str(profile_path),'workspace':str(workspace),
+                'managed_data_root':str(profile.managed_data_root),
+                'automatic_download_or_simulation':False},stream,indent=2)
+    QTimer.singleShot(0,ready)
     return app.exec()
 
 
@@ -1418,6 +1441,10 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Both builders did not use the same latest cumulative connectivity revision')
         if library_sources(ResourceProfile.load(profile_path), ('male-cns:v0.9',))[0].pair_graph_path:
             raise ValueError('Cumulative connectivity leaked into another release')
+        if ('17 measured pre/post chemical sites' not in window.experiment_page.circuit_detail.text()
+                or 'Choose an explicit count-to-strength' in window.experiment_page.circuit_detail.text()
+                or '17 measured chemical sites' not in builder.pair_graph_note.text()):
+            raise ValueError('A builder still describes acquired real sites as an aggregate-only count graph')
         window.grab().save(str(destination / 'cumulative-circuit-handoff.png'))
         record.update(cumulative_connectivity_two_downloads=True, cumulative_cross_batch_directions=True,
             cumulative_unique_pairs=True, cumulative_frozen_circuit=True,
@@ -1533,6 +1560,49 @@ def run_library_smoke(destination: Path) -> int:
                 or window.experiment_page._circuit.neuron_ids != ('777',)):
             raise ValueError('Managed joined copy did not reach both builders on the next Load')
         window.grab().save(str(destination / 'fragment-managed-builder-handoff.png'))
+        # The actual failed MANC path: a reviewed derivative must not turn
+        # its raw neuron into an ambiguous download/replacement target.
+        fragment_copies = {p:p.read_bytes() for p in fragment.parent.glob('*.swc*')}
+        fragment_transfers = []
+        def fragment_transport(method,url,headers,payload,timeout,cancel,max_bytes,on_bytes):
+            if '/api/skeletons/' in url:
+                fragment_transfers.append(url)
+                raise ValueError('Keeping a reviewed source attempted a new skeleton transfer')
+            query=json.loads(payload)['cypher']
+            if 'MATCH (m:Meta)' in query:
+                data={'columns':['threshold'],'data':[[.5]]}
+            elif 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                data={'columns':list(COLUMNS),'data':[]}
+            elif 'ConnectsTo' in query:
+                data={'columns':['sourceBodyId','targetBodyId','weight'],'data':[]}
+            else:
+                data={'columns':['bodyId','type','instance'],'data':[[777,'fragment','fragment']]}
+            return json.dumps(data).encode()
+        class FragmentClient(NeuPrintClient):
+            def __init__(self,*args,**kwargs):
+                super().__init__(*args,**kwargs,transport=fragment_transport)
+            def validate_and_list_datasets(self,**kwargs):
+                return (NeuPrintDataset('male-cns:v1.0'),)
+        QMessageBox.question=lambda *a,**kw:QMessageBox.StandardButton.Yes
+        dialog=NeuPrintImportDialog(ResourceProfile.load(profile_path),profile_path,window,
+            client_factory=FragmentClient,credential_store=NoCredentialStore())
+        fragment_downloads=[]; dialog.resource_imported.connect(fragment_downloads.append)
+        dialog.show();dialog.server_edit.setText('https://fragments.example')
+        dialog.token_edit.setText('engineering-fixture-not-a-credential')
+        QTest.mouseClick(dialog.connect_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy refresh connect did not finish')
+        dialog.selection_edit.setText('777')
+        QTest.mouseClick(dialog.preview_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy refresh preview did not finish')
+        arm_review('keep','fragment-contact-refresh-keep.png')
+        QTest.mouseClick(dialog.download_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy contact refresh did not finish')
+        if (len(fragment_downloads)!=1 or fragment_transfers or
+                any(p.read_bytes()!=data for p,data in fragment_copies.items())):
+            raise ValueError('Contact refresh rejected or changed the reviewed raw/joined SWCs: '+dialog.status.text())
+        dialog.accept()
+        record['fragment_contact_refresh_keeps_copies']=True
         record.update(aggregate_chemical_model_applied=True, aggregate_chemical_saved_handoff=True,
             aggregate_model_directed_pairs=5, fragment_preview_decline_preserves_original=True,
             fragment_preview_accept_saves_connected_copy=True,

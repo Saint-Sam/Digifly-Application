@@ -778,7 +778,9 @@ class CircuitBuilderPage(QWidget):
         chemical_form.addRow("Mechanism", self.chemical_mechanism_label)
         self.chemical_placement = QComboBox()
         self.chemical_placement.setObjectName("ChemicalPlacementPolicy")
-        self.chemical_placement.addItem("Located contacts (keep imported positions)", "imported_post_contact")
+        self.chemical_placement.addItem("Measured contacts → original SWC cables", "imported_post_contact")
+        self.chemical_placement.setToolTip("Measured coordinates are retained. Cable projection and shared CV offsets "
+            "are reported; missing branches are not reconstructed. Release currently uses the declared soma threshold.")
         self.chemical_placement.addItem("Downloaded counts → soma proxy (assumed)", "aggregate_post_soma")
         self.chemical_placement.addItem("Downloaded counts → AIS proxy (assumed)", "aggregate_post_ais")
         chemical_form.addRow("Synapse placement", self.chemical_placement)
@@ -1507,9 +1509,12 @@ class CircuitBuilderPage(QWidget):
             self.pair_graph_note.setText("Connectivity: native contact source; no aggregate pair file selected")
             return
         try:
-            manifest = json.loads((Path(source.pair_graph_index).parent / "manifest.json").read_text(encoding="utf-8"))
+            from digifly_app.core.pair_graph import graph_manifest_metadata
+            manifest = graph_manifest_metadata(source)
             release_note = manifest.get('source_scope', 'release unconfirmed')
-            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; {release_note}")
+            locations=(f"{manifest['contact_rows']:,} measured chemical sites / {len(manifest['contact_covered_body_ids']):,} location-checked neurons"
+                       if manifest.get('contact_coordinates_in_file') is True else 'counts only; no measured contact locations')
+            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · {locations} · read-only; {release_note}")
         except (OSError, ValueError, KeyError):
             self.pair_graph_note.setText("Selected connectivity file is unavailable. Open Data Library to review it; no fallback source is used.")
 

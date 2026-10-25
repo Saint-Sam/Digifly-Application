@@ -184,6 +184,28 @@ def _joined_text(plan: FragmentJoinPlan):
     return text, metadata, before
 
 
+def _same_reviewed_plan(stored: dict, current: dict) -> bool:
+    """Geometry remains bit-exact; three derived summaries allow sum roundoff.
+
+    Compiled and interpreted accumulation over thousands of real edges can
+    differ by a few final bits. These report-only totals do not determine the
+    filler coordinates, radii, parent changes or local caps, which remain exact.
+    Full original and output hashes are independently required by the caller.
+    """
+    reports = {'original_length_um','original_volume_um3','added_volume_fraction'}
+    if set(stored)!=set(current):
+        return False
+    for name in reports:
+        a,b=stored[name],current[name]
+        if isinstance(a,bool) or isinstance(b,bool):return False
+        if a==b:continue
+        if (not isinstance(a,(int,float)) or not isinstance(b,(int,float))
+                or not math.isfinite(a) or not math.isfinite(b)
+                or not math.isclose(a,b,rel_tol=1e-12,abs_tol=0)):
+            return False
+    return {k:v for k,v in stored.items() if k not in reports}=={k:v for k,v in current.items() if k not in reports}
+
+
 def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Path | None:
     """Admit only the exact reviewed derivative of a committed library SWC.
 
@@ -205,7 +227,7 @@ def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Pa
             or sha256_file(source) != committed_hashes[key]):
         raise ValueError("Joined copy is not bound to this committed source")
     plan = plan_fragment_join(analyze_swc(source))
-    if record["plan"] != json.loads(json.dumps(plan.to_dict())):
+    if not _same_reviewed_plan(record["plan"],json.loads(json.dumps(plan.to_dict()))):
         raise ValueError("Joined copy's adaptive plan differs from its source")
     text, metadata, _before = _joined_text(plan)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()

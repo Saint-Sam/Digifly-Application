@@ -118,7 +118,28 @@ def test_count_only_refresh_invalidates_affected_contact_coverage(state):
         selected_contact_sites(graph_ref(path),(1,2))
 
 
-def test_downloaded_real_sites_feed_chemical_model_and_explicit_gf_ttmn_gaps(state):
+def test_experiment_input_describes_actual_sites_not_an_aggregate_only_graph(state,monkeypatch):
+    from digifly_app.core.circuit import CircuitSpec
+    from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+    from PySide6.QtWidgets import QApplication
+    monkeypatch.setenv('QT_QPA_PLATFORM','offscreen')
+    app=QApplication.instance() or QApplication([])
+    profile,path=state; client=LocatedGraphClient({(1,2):3})
+    grow_graph(profile,path,client,(1,2),'ui-sites',include_contact_sites=True)
+    source=graph_ref(path)
+    page=ExperimentBuilderPage(output_root=path.parent/'runs')
+    try:
+        page.set_circuit_spec(CircuitSpec(connectome=source,neuron_ids=('1','2')))
+        assert '3 measured pre/post chemical sites' in page.circuit_detail.text()
+        assert 'Choose an explicit count-to-strength' not in page.circuit_detail.text()
+        assert 'soma-threshold release' in page.circuit_detail.text()
+        page.set_circuit_spec(CircuitSpec(connectome=source,neuron_ids=('1','2','3')))
+        assert 'not checked for every selected neuron' in page.circuit_detail.text()
+    finally:
+        page.close();app.processEvents()
+
+
+def test_downloaded_real_sites_feed_chemical_model_and_explicit_gf_ttmn_gaps(state,monkeypatch):
     from digifly_app.core.circuit import CircuitSpec
     from digifly_app.core.connectomes import ConnectomeCatalog
     from digifly_app.core.morphology import load_swc
@@ -126,6 +147,8 @@ def test_downloaded_real_sites_feed_chemical_model_and_explicit_gf_ttmn_gaps(sta
     from digifly_app.engines.generic_experiment import GenericExperimentAdapter
     from digifly_app.workers import generic_experiment_worker as common
     from digifly_app.workers import bmtk_bionet_worker as bionet
+    import sys
+    monkeypatch.setattr(sys.modules[__name__],'SWC',b'1 1 0 0 0 5 -1\n2 3 0 0 10000 1 1\n')
     profile,path=state
     request=NeuPrintAcquisitionRequest(SERVER,'male-cns:v1.0','located','one',
         NeuPrintSelection('name_list','DNp01, TTMn'),
@@ -151,6 +174,16 @@ def test_downloaded_real_sites_feed_chemical_model_and_explicit_gf_ttmn_gaps(sta
     common._validate_request_capabilities('neuron',circuit.to_dict(),_experiment('neuron').to_dict(),edges)
     bionet._validate_contacts(edges,circuit.neuron_ids)
     common._validate_edge_source_identity(edges)
+    captured={}
+    report_budget=common._regional_report_budget
+    def observe_plans(plans,experiment):
+        captured.update(plans)
+        return report_budget(plans,experiment)
+    monkeypatch.setattr(common,'_regional_report_budget',observe_plans)
+    report=GenericExperimentAdapter({}).validate(circuit,_experiment('neuron'),cells,output_root=path.parent/'runs')
+    placement=next(check for check in report.checks if check.key=='located_contact_mapping')
+    assert '2 measured chemical sites' in placement.detail and 'soma-threshold' in placement.detail
+    assert all(plan['estimated_nseg']==33 for plan in captured.values())
     changed=json.loads(json.dumps(edges['chemical_edges'][0]))
     changed['post_coordinate_um'][0]+=1
     with pytest.raises(ValueError,match='coordinates were changed'):
@@ -608,6 +641,30 @@ def test_duplicate_files_in_tree_do_not_choose_an_arbitrary_replacement(state):
     extra.write_bytes(SWC)
     with pytest.raises(ValueError, match="multiple files"):
         inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+
+
+def test_contact_refresh_keeps_raw_swc_and_its_exact_reviewed_joined_copy(state):
+    from digifly_app.core.swc_fragments import plan_fragment_join,save_fragment_join
+    from digifly_app.core.swc_quality import analyze_swc
+    profile,path=state
+    forest=b'1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n'
+    result=_download(profile,path,data=forest)
+    before=inspect_existing_swcs(profile,SERVER,DATASET,(42,))
+    raw=result.root/before['42']['path']
+    joined=save_fragment_join(plan_fragment_join(analyze_swc(raw)))
+    original=raw.read_bytes(),joined.read_bytes(),joined.with_suffix('.swc.quality.json').read_bytes()
+    assert inspect_existing_swcs(profile,SERVER,DATASET,(42,))==before
+    client=LocatedGraphClient({})
+    request=NeuPrintAcquisitionRequest(SERVER,DATASET,'contact-refresh','two',
+        NeuPrintSelection('name_list','DNp01'),(NeuPrintNeuron(42,'DNp01'),),'fixture',
+        include_connectivity=True,include_contact_sites=True,library_review=before)
+    acquire_neuprint_bundle(profile,path,request,client=client,add_to_library=True)
+    assert client.skeletons==[]
+    assert (raw.read_bytes(),joined.read_bytes(),joined.with_suffix('.swc.quality.json').read_bytes())==original
+    assert inspect_existing_swcs(profile,SERVER,DATASET,(42,))==before
+    joined.write_bytes(joined.read_bytes()+b'# tampered\n')
+    with pytest.raises(ValueError,match='changed after review'):
+        inspect_existing_swcs(profile,SERVER,DATASET,(42,))
 
 
 @pytest.mark.parametrize('relative', ['/export_swc/42.swc', '../export_swc/42.swc',

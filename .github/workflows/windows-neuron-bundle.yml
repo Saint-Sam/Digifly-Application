@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261025.5
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261025.6
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           ./scripts/setup_dev.ps1
           if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
           if (Test-Path bundled_data/manc/unique_pairs_by_id.parquet) { $env:DIGIFLY_TEST_MANC_PARQUET = (Resolve-Path bundled_data/manc/unique_pairs_by_id.parquet).Path }
-          ./.venv/Scripts/python.exe -m pytest tests/test_neuprint_contacts.py tests/test_located_contact_execution.py tests/test_aggregate_chemical_execution.py tests/test_swc_fragments.py tests/test_swc_quality.py tests/test_swc_units.py tests/test_mechanisms.py tests/test_bmtk_bionet_worker.py tests/test_channel_execution.py tests/test_regional_execution.py tests/test_generic_experiment.py::test_classic_arbor_request_pins_hh_table_translator_without_native_channels --junitxml=connected-model-source-tests.xml
+          ./.venv/Scripts/python.exe -m pytest tests/test_library_review_launch.py tests/test_neuprint_contacts.py tests/test_located_contact_execution.py tests/test_aggregate_chemical_execution.py tests/test_swc_fragments.py tests/test_swc_quality.py tests/test_swc_units.py tests/test_mechanisms.py tests/test_bmtk_bionet_worker.py tests/test_channel_execution.py tests/test_regional_execution.py tests/test_generic_experiment.py::test_classic_arbor_request_pins_hh_table_translator_without_native_channels --junitxml=connected-model-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Connected-model/fragment source regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_connectivity_download.py tests/test_circuit_library.py tests/test_circuit_builder_ui.py tests/test_saved_neurons.py tests/test_linked_libraries.py tests/test_linked_libraries_ui.py tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_ui_wording.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py tests/test_connectome_picker.py tests/test_updates.py tests/test_update_installer.py tests/test_update_cleanup.py tests/test_updater_gate.py tests/test_updater_ui.py tests/test_project.py tests/test_morphology.py tests/test_experiment_builder_readiness.py tests/test_generic_experiment.py::test_downloaded_male_pair_graph_cannot_silently_use_native_contacts --junitxml=neuron-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }

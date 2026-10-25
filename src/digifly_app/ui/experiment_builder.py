@@ -937,14 +937,33 @@ class ExperimentBuilderPage(QWidget):
                 if chemical.is_aggregate else
                 "Choose an explicit count-to-strength and placement model in Circuit Builder’s Chemical-synapse policy before running. "
             )
+            connectivity_note=''
+            if self._circuit.connectome.pair_graph_path:
+                source=self._circuit.connectome
+                prefix=f'\nConnectivity: {Path(source.pair_graph_path).name} · '
+                try:
+                    from digifly_app.core.pair_graph import graph_manifest_metadata
+                    info=graph_manifest_metadata(source)
+                    if info.get('contact_coordinates_in_file') is True:
+                        complete={int(n) for n in self._circuit.neuron_ids}.issubset(info.get('contact_covered_body_ids',()))
+                        connectivity_note=prefix+f"{info['contact_rows']:,} measured pre/post chemical sites in the saved revision. "
+                        connectivity_note+=(('Current chemical policy still uses the explicitly assumed aggregate model. '+aggregate_note)
+                            if chemical.is_aggregate else
+                            'Use measured-contact placement; original points are retained with cable/CV mapping offsets. '
+                            'Strength, kinetics and soma-threshold release remain declared models. ')
+                        if not complete:
+                            connectivity_note+='Locations are not checked for every selected neuron; refresh connectivity in Data Library. '
+                        connectivity_note+='Modeled chemical-site gaps are not measured electrical anatomy. '
+                    else:
+                        connectivity_note=prefix+'counts only; no measured chemical sites. '+aggregate_note
+                    connectivity_note+='Run preflight checks file identity, selected coverage and units. No other contact source will be substituted.'
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    connectivity_note=prefix+'source details unavailable: '+str(exc)+'. No other contact source will be substituted.'
             self.circuit_detail.setText(
                 f"Neuron IDs: {', '.join(self._circuit.neuron_ids[:12])}"
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
-                + (f"\nConnectivity: {Path(self._circuit.connectome.pair_graph_path).name} · aggregate pair table. "
-                   + aggregate_note +
-                   "No other contact source will be substituted."
-                   if self._circuit.connectome.pair_graph_path else "")
+                + connectivity_note
             )
         else:
             self.circuit_state.set_state(CheckState.WARNING, text="NO CIRCUIT")

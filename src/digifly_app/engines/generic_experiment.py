@@ -765,6 +765,16 @@ class GenericExperimentAdapter:
                 blocking=True,
             )
         )
+        located = [row for row in (candidate_manifest or {}).get('chemical_edges',()) if row.get('located_contact')]
+        if located:
+            projection = max(row['located_contact']['mapping'][end]['projection_distance_um']
+                             for row in located for end in ('pre','post'))
+            checks.append(_check('located_contact_mapping','Measured contact placement',CheckState.INFO,
+                f'{len(located):,} measured chemical sites. Maximum distance to the original skeleton cable: '
+                f'{projection:.6g} µm. Source points stay unchanged; no contact is assigned to filler. '
+                'The shared local CV mesh adds its own reported discretization offset (target spacing2.5µm). '
+                'Missing branches are not reconstructed. Release uses the declared soma-threshold model, '
+                'not a locally measured terminal event. Inspect these assumptions before biological interpretation.'))
 
         if engine == "bmtk":
             electrical_count = (
@@ -959,6 +969,8 @@ class GenericExperimentAdapter:
                     nodes = morphology.nodes
                     rows = regional_worker._SwcRows([(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes], morphology.filler_metadata)
                     data = regional_worker._regional_cell_data(circuit.to_dict(), neuron_id, {n.node_id:n.node_id for n in nodes})
+                    data['electrical_contact_run_node_ids'] = regional_worker._electrical_contact_run_nodes(
+                        candidate_manifest or {},neuron_id,{n.node_id:n.node_id for n in nodes})
                     data["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
                     plan = regional_worker._regional_plan(rows, data)
                     regional_plans[neuron_id] = plan

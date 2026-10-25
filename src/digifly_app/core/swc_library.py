@@ -108,6 +108,18 @@ def inspect_existing_swcs(profile: ResourceProfile, server: str, dataset: str,
     export = root / "export_swc"
     if not export.exists():
         return found
+    committed = {}
+    manifest = root / MANIFEST_FILENAME
+    if manifest.is_file():
+        _plain_path(manifest, profile.managed_data_root)
+        saved = json.loads(manifest.read_text(encoding='utf-8'))
+        if (saved.get('library_schema'), saved.get('server'), saved.get('dataset')) != (LIBRARY_SCHEMA,server.rstrip('/'),dataset):
+            raise ValueError('Existing SWC inventory belongs to another server or release')
+        load_managed_resource(manifest)  # Validate listed path grammar before using the source inventory.
+        for record in saved['files']:
+            original = root / record['path']
+            _plain_path(original, profile.managed_data_root)
+            committed[os.path.normcase(os.path.abspath(original))] = record['sha256']
     from .connectomes import _infer_id
     for path in export.rglob("*"):
         if path.is_symlink():
@@ -118,6 +130,13 @@ def inspect_existing_swcs(profile: ResourceProfile, server: str, dataset: str,
         if body not in wanted:
             continue
         _plain_path(path, profile.managed_data_root)
+        if os.path.normcase(os.path.abspath(path)) not in committed:
+            from .swc_fragments import verified_fragment_source
+            original = verified_fragment_source(path, committed)
+            if original is not None:
+                if str(_infer_id(original.relative_to(export)) or '') != body:
+                    raise ValueError('Reviewed joined copy belongs to another body ID')
+                continue  # Reviewed derivative is preserved, never a second download/replacement target.
         if body in found:
             raise ValueError(f"Body {body} has multiple files in this dataset folder. Choose the intended copy before downloading")
         found[body] = {"path": path.relative_to(root).as_posix(),
