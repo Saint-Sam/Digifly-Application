@@ -359,12 +359,13 @@ class NeuPrintImportDialog(QDialog):
         self.name_edit.hide()
         self.snapshot_edit.hide()
         self.connectivity_check = QCheckBox(
-            "Update this dataset's shared connectivity file"
+            "Update connectivity and chemical contact locations"
         )
         self.connectivity_check.setChecked(True)
         self.connectivity_check.setToolTip(
             "Adds both directions between selected and earlier app-managed neurons. "
             "Counts replace earlier observations of the same directed pair; they are not added twice. "
+            "Downloads the actual pre/post synapse coordinates and checks their census against the counts. "
             "Linked external libraries are not automatically queried."
         )
         destination_form.addRow("Connectivity table", self.connectivity_check)
@@ -754,6 +755,7 @@ class NeuPrintImportDialog(QDialog):
             acquisition_entrypoint="workstation_neuprint_dialog",
             credential_source=self._token_source,
             include_connectivity=self.connectivity_check.isChecked(),
+            include_contact_sites=self.connectivity_check.isChecked(),
         )
 
     def _update_destination(self, *_args: Any) -> None:
@@ -840,7 +842,8 @@ class NeuPrintImportDialog(QDialog):
             bodies = tuple(neuron.body_id for neuron in request.neurons)
             existing = inspect_existing_swcs(self.profile, request.server, request.dataset, bodies)
             from digifly_app.core.selected_connectivity import review_connectivity
-            plan = review_connectivity(self.profile, request.server, request.dataset, bodies) if request.include_connectivity else None
+            plan = review_connectivity(self.profile, request.server, request.dataset, bodies,
+                include_contact_sites=request.include_contact_sites) if request.include_connectivity else None
             return existing, plan
         def ready(result):
             existing, plan = result
@@ -868,8 +871,10 @@ class NeuPrintImportDialog(QDialog):
             f"\n\nShared connectivity: {len(request.connectivity_review['participants']):,} app-managed neurons, "
             f"refreshing {len(request.connectivity_review['focus']):,} selected/new endpoints in both directions. "
             "Earlier directed pairs are retained or refreshed, never counted twice. "
+            "Actual pre/post chemical contact locations are included in this same file; "
+            "a site/count mismatch stops the update without replacing existing connectivity. "
             "This is not the whole connectome or the contents of linked external libraries. "
-            "Limit: 5,000 managed neurons / 250,000 pairs / 128 MiB per update.\n"
+            "Limit: 5,000 managed neurons / 250,000 pairs and contact sites / 128 MiB per update.\n"
             f"{library_root(self.profile, request.server, request.dataset) / 'connectivity/connectivity.sqlite'}"
             if request.include_connectivity
             else ""

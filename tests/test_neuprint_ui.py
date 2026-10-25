@@ -130,6 +130,7 @@ def test_neuprint_dialog_exposes_credentials_selection_naming_and_destination(tm
         assert dialog.snapshot_edit.text().casefold() not in dialog.destination_label.text().casefold()
         assert dialog.name_edit.isHidden() and dialog.snapshot_edit.isHidden()
         assert dialog._request().include_connectivity
+        assert dialog._request().include_contact_sites
     finally:
         dialog.close()
         application.processEvents()

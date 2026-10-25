@@ -51,7 +51,7 @@ def test_downloaded_male_pair_graph_cannot_silently_use_native_contacts(tmp_path
     assert ConnectomeEdgeCatalog(circuit.connectome).is_male_cns
     monkeypatch.setattr(adapter, "_male_cns_chemical_contacts",
         lambda *args: pytest.fail("Selected downloaded graph was bypassed for native contacts"))
-    with pytest.raises(ValueError, match="explicit aggregate-weight"):
+    with pytest.raises(ValueError, match="contact locations"):
         adapter._edge_manifest(circuit, (_morphology(tmp_path, "1"), _morphology(tmp_path, "2")))
 
 

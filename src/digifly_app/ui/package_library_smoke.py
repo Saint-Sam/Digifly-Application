@@ -61,6 +61,8 @@ def run_library_smoke(destination: Path) -> int:
     record = {"schema": "digifly-packaged-swc-library-check-v1", "ok": False,
               "scope": "actual packaged controls/worker/storage with tiny fixtures; fake neuPrint transport; no credential, network, simulator or scientific acceptance"}
     stack_output = (destination / 'thread-stacks.txt').open('w')
+    previous_fault_handler = faulthandler.is_enabled()
+    faulthandler.enable(file=stack_output)
     faulthandler.dump_traceback_later(45, file=stack_output)
     app = window = None
     saved_question = QMessageBox.question
@@ -267,6 +269,13 @@ def run_library_smoke(destination: Path) -> int:
                 raise ValueError("The query switched datasets")
             query = body["cypher"]
             queries.append(query)
+            if 'MATCH (m:Meta)' in query:
+                return json.dumps({'columns':['threshold'],'data':[[.5]]}).encode()
+            if 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                return json.dumps({'columns':list(COLUMNS),'data':[]}).encode()
+            if 'ConnectsTo' in query:
+                return json.dumps({'columns':['sourceBodyId','targetBodyId','weight'],'data':[]}).encode()
             literals = [json.loads(value) for value in re.findall(r'STARTS WITH ("(?:[^"\\]|\\.)*")', query)]
             if literals:
                 rows = [row for row in fixture_rows if any(
@@ -1321,7 +1330,7 @@ def run_library_smoke(destination: Path) -> int:
         growing_rows = ((51, 'DNp01', 'DNp01_R'), (52, 'TTMn', 'TTMn_R'), (53, 'PSI', 'PSI_L'),
                         (54, 'IN21A026', 'IN21A026_L'), (55, 'AN08B098', 'AN08B098_R'))
         growing_edges = {(51, 52): 3, (52, 53): 1, (53, 54): 7, (54, 51): 2, (55, 52): 4}
-        growing_queries, growing_skeletons = [], []
+        growing_queries, growing_skeletons, growing_site_queries = [], [], []
         def growing_transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
             if '/api/skeletons/skeleton/' in url:
                 growing_skeletons.append(int(url.split('?')[0].split('/')[-1]))
@@ -1330,6 +1339,15 @@ def run_library_smoke(destination: Path) -> int:
             if body['dataset'] != 'male-cns:v1.0':
                 raise ValueError('Cumulative query switched release')
             query = body['cypher']
+            if 'MATCH (m:Meta)' in query:
+                return json.dumps({'columns':['threshold'],'data':[[.5]]}).encode()
+            if 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                sources, targets = [set(map(int, group.split(','))) for group in re.findall(r'bodyId IN \[([^]]+)\]', query)]
+                growing_site_queries.append({'sources':sorted(sources),'targets':sorted(targets)})
+                rows = [[a,b,a*100000+b*100+j,a*100000+b*100+j+50000,.25,0,0,.75,0,0,.9,.8]
+                        for (a,b),w in growing_edges.items() if a in sources and b in targets for j in range(w)]
+                return json.dumps({'columns':list(COLUMNS),'data':rows}).encode()
             if 'ConnectsTo' in query:
                 sources, targets = [set(map(int, group.split(','))) for group in re.findall(r'bodyId IN \[([^]]+)\]', query)]
                 growing_queries.append({'sources': sorted(sources), 'targets': sorted(targets)})
@@ -1375,6 +1393,11 @@ def run_library_smoke(destination: Path) -> int:
                 validated_manifest(current_graph)['rows'] != 5 or
                 validated_manifest(frozen_graph)['rows'] != 2):
             raise ValueError('Cross-batch graph, duplicate count or frozen previous revision differs')
+        from digifly_app.core.pair_graph import selected_contact_sites
+        if (len(selected_contact_sites(current_graph,(51,52,53,54,55))[1])!=17 or
+                len(selected_contact_sites(frozen_graph,(51,52,53))[1])!=4 or
+                growing_site_queries!=growing_queries):
+            raise ValueError('Actual contact locations, cumulative census or frozen site revision differs')
         window.pages.setCurrentWidget(page)
         page.refresh()
         page.open_connectome('male-cns:v1.0')
@@ -1399,10 +1422,32 @@ def run_library_smoke(destination: Path) -> int:
         record.update(cumulative_connectivity_two_downloads=True, cumulative_cross_batch_directions=True,
             cumulative_unique_pairs=True, cumulative_frozen_circuit=True,
             cumulative_builder_handoff=True, cumulative_release_isolation=True,
+            cumulative_contact_locations=True,
             cumulative_query_rectangles=growing_queries,
             cumulative_shared_file=str(cumulative_resources[-1].root / 'connectivity/connectivity.sqlite'))
         journal('explicit_count_model_and_fragment_copy')
         from digifly_app.engines.generic_experiment import GenericExperimentAdapter
+        located_spec = builder.circuit_spec()
+        located_edges = GenericExperimentAdapter({})._edge_manifest(located_spec, tuple(builder.loaded_morphologies.values()))
+        if (len(located_edges['chemical_edges']) != 17 or
+                any(not row.get('located_contact') for row in located_edges['chemical_edges'])):
+            raise ValueError('Builder did not materialize every acquired chemical location')
+        builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('ohmic'))
+        builder.gap_placement_combo.setCurrentIndex(builder.gap_placement_combo.findData('gf_ttmn_chemical_sites'))
+        apply_gap = builder.findChild(QPushButton, 'ApplyGapPolicyButton')
+        QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
+        located_spec = builder.circuit_spec()
+        gap_edges = GenericExperimentAdapter({})._edge_manifest(located_spec, tuple(builder.loaded_morphologies.values()))
+        gap_sites = [row for pair in gap_edges['electrical_edges'] for row in pair['contacts']]
+        if (len(gap_sites) != 3 or any(row.get('modeled_electrical') is not True or
+                row['placement_assumption'].get('biological_electrical_contact') is not False for row in gap_sites) or
+                any(row['located_contact'] not in [c['located_contact'] for c in located_edges['chemical_edges']] for row in gap_sites)):
+            raise ValueError('Modeled GF–TTMn gaps did not retain only the exact chemical sites')
+        if window.experiment_page._circuit.gap_junction_policy.placement_policy != 'gf_ttmn_chemical_sites':
+            raise ValueError('Applied chemical-site gap policy did not reach Experiment Builder')
+        record.update(located_chemical_model_applied=True, modeled_gf_ttmn_chemical_sites=True)
+        builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
+        QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
         # Exercise the new controls on the graph acquired by the actual app
         # above. This is fixture engineering, not a numeric circuit experiment.
         builder.chemical_placement.setCurrentIndex(builder.chemical_placement.findData('aggregate_post_soma'))
@@ -1503,7 +1548,10 @@ def run_library_smoke(destination: Path) -> int:
         record["error"] = traceback.format_exc()
     finally:
         faulthandler.cancel_dump_traceback_later()
+        faulthandler.disable()
         stack_output.close()
+        if previous_fault_handler:
+            faulthandler.enable()
         QMessageBox.question = saved_question
         QInputDialog.getItem = saved_item
         QInputDialog.getText = saved_text

@@ -879,6 +879,9 @@ class CircuitBuilderPage(QWidget):
         gap_form.addRow("Preferred direction", self.gap_direction_combo)
         self.gap_placement_combo = QComboBox()
         self.gap_placement_combo.addItem("Imported contact sites", "imported_contact_sites")
+        self.gap_placement_combo.addItem("Modeled GF–TTMn gaps at chemical sites", "gf_ttmn_chemical_sites")
+        self.gap_placement_combo.setToolTip("Chemical-site gaps are an explicit model, not measured electrical anatomy. "
+            "Uses only downloaded GF/DNp01–TTMn pre/post chemical locations; never soma substitutes or filler links.")
         self.gap_placement_combo.addItem("One AIS site per pair", "ais_pair")
         self.gap_placement_combo.addItem("One soma site per pair", "soma_pair")
         self.gap_placement_combo.currentIndexChanged.connect(self._gap_controls_changed)

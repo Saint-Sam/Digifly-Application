@@ -9,7 +9,7 @@ circuits and experiments, and reviewing simulation results.
 
 ## Mac and Windows downloads
 
-This is local test build **20261025.4**, not a published release.
+This is local test build **20261025.5**, not a published release.
 
 The [current public release](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.1.0-alpha.20261023.6)
 contains build **20261023.6** for Mac Apple silicon and Windows x86-64.
@@ -40,6 +40,14 @@ be used with an explicit chemical model: choose strength per count or per pair,
 kinetics, delay, reversal and assumed soma/AIS placement. These are editable model
 assumptions, not measured contact locations or conductances. Chemical count tables
 do not supply gap-junction data.
+
+Selected-neuron downloads also retain the actual chemical pre/post synapse IDs,
+coordinates and confidence in that same database, checked against source counts.
+Located execution maps contacts onto original real SWC cables and reports the
+skeleton-projection and finite-volume placement error. Optional modeled GF–TTMn
+gaps use those chemical endpoints; they are not measured electrical anatomy.
+Synaptic strength, kinetics and soma-threshold release remain explicit model
+assumptions, not measurements. This candidate is still undergoing app testing.
 
 Disconnected skeleton pieces can be joined in a separately saved copy after
 reviewing the added length and volume. Short tapered filler compartments keep

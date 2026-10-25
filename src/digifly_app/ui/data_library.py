@@ -661,6 +661,12 @@ class DataLibraryPage(QWidget):
                         graph_text.append(f"Saved-neuron connectivity: {manifest['rows']:,} directed pairs / "
                             f"{len(manifest['covered_body_ids']):,} checked neurons. Grows with downloads; "
                             "other neurons' connections are unknown.\n" + str(binding.path))
+                        if manifest.get('contact_coordinates_in_file') is True:
+                            graph_text[-1] += (f"\nChemical sites: {manifest['contact_rows']:,} pre/post location pairs / "
+                                f"{len(manifest['contact_covered_body_ids']):,} location-checked neurons. "
+                                "No measured electrical contacts or conductances are implied.")
+                        else:
+                            graph_text[-1] += '\nCounts only; download chemical contact locations before located simulation.'
                     else:
                         graph_text.append(f"{Path(binding.path).name}: {manifest['rows']:,} pairs / {manifest['represented_neurons']:,} IDs; SWCs separate; read-only")
                 except (OSError, ValueError, KeyError):

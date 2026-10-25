@@ -43,7 +43,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_update_cleanup.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",
             "tests/test_app_settings.py", "tests/test_ui_wording.py",
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",
-            "tests/test_neuprint_ui.py", "tests/test_data_library.py", "tests/test_connectomes.py", "tests/test_connectome_picker.py",
+            "tests/test_neuprint_ui.py", "tests/test_neuprint_contacts.py", "tests/test_located_contact_execution.py", "tests/test_data_library.py", "tests/test_connectomes.py", "tests/test_connectome_picker.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
             "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh",
             "tests/test_aggregate_chemical_execution.py", "tests/test_swc_fragments.py", "tests/test_swc_quality.py", "tests/test_swc_units.py", "tests/test_mechanisms.py", "tests/test_bmtk_bionet_worker.py", "tests/test_channel_execution.py", "tests/test_regional_execution.py",

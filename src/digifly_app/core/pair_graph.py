@@ -110,6 +110,58 @@ def selected_subgraph(source: ConnectomeRef, neuron_ids) -> tuple[dict, tuple[di
     return manifest, tuple(rows)
 
 
+def selected_contact_sites(source: ConnectomeRef, neuron_ids) -> tuple[dict, tuple[dict, ...]]:
+    """Read actual sites from the exact immutable cumulative graph, never a cache fallback."""
+    from .neuprint_contacts import COLUMNS, _integer, _number, validate_method
+    from .swc_units import neuprint_raw_convention
+    if not source.pair_graph_index or not Path(source.pair_graph_index).is_file():
+        raise ValueError('Actual chemical contact locations are unavailable: the selected graph has no checked location index')
+    manifest, pairs = selected_subgraph(source, neuron_ids)
+    selected = {int(value) for value in neuron_ids}
+    if (manifest.get('storage_schema') != 'digifly-selected-connectivity-v1'
+            or manifest.get('contact_storage_schema') != 'digifly-selected-contact-sites-v1'
+            or manifest.get('contact_coordinates_in_file') is not True
+            or not selected.issubset(manifest.get('contact_covered_body_ids', []))):
+        raise ValueError('Actual chemical contact locations have not been downloaded for these neurons. '
+                         'Refresh their connectivity in Data Library; counts alone are not locations')
+    convention = neuprint_raw_convention(source.server.rstrip('/'), source.dataset)
+    if convention is None or manifest.get('contact_coordinate_convention') != convention:
+        raise ValueError('Chemical contact coordinate units are unavailable or differ from this exact release')
+    methods = manifest.get('contact_methods') or []
+    if not methods:
+        raise ValueError('Chemical contact acquisition rules are missing')
+    for method in methods:
+        validate_method(method)
+    counts = {(row['preId'], row['postId']): row['total_weight'] for row in pairs}
+    actual, result, seen = {}, [], set()
+    path = Path(source.pair_graph_index).expanduser().resolve()
+    from contextlib import closing
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True)) as db:
+        if [row[1] for row in db.execute('PRAGMA table_info(contacts)')] != list(COLUMNS):
+            raise ValueError('Chemical contact table schema is invalid')
+        for pre in sorted(selected):
+            for raw in db.execute('SELECT '+','.join(COLUMNS)+' FROM contacts WHERE source_body_id=? '
+                    'ORDER BY target_body_id,pre_synapse_id,post_synapse_id', (pre,)):
+                if raw[1] not in selected:
+                    continue
+                key = tuple(_integer(value) for value in raw[:4])
+                if key in seen:
+                    raise ValueError('Repeated chemical contact identity')
+                seen.add(key)
+                for value in raw[4:10]:
+                    _number(value)
+                if any(value is not None and not 0<=_number(value)<=1 for value in raw[10:]):
+                    raise ValueError('Invalid saved chemical contact confidence')
+                pair = key[:2]
+                actual[pair] = actual.get(pair, 0)+1
+                result.append(dict(zip(COLUMNS, raw)))
+                if len(result)>250_000:
+                    raise ValueError('Selected contact sites exceed the 250,000-site execution budget')
+    if actual != {pair:count for pair,count in counts.items() if count}:
+        raise ValueError('Actual chemical contact census differs from the saved pair counts')
+    return manifest, tuple(result)
+
+
 def attach_registered_pair_graph(source: ConnectomeRef, profile: ResourceProfile | None) -> ConnectomeRef:
     if profile is None:
         return source

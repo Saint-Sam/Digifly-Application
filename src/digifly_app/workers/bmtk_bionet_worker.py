@@ -310,7 +310,7 @@ def _validate_capabilities(
         if (gap_policy.get("mechanism_name") != name
                 or gap_policy.get("source_sha256") != _common.NEURON_GAP_SOURCE_HASHES[name]):
             raise ValueError("BioNet gap-junction source identity is invalid")
-        if gap_policy.get("placement_policy") not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
+        if gap_policy.get("placement_policy") not in {"imported_contact_sites", "soma_pair", "ais_pair", "gf_ttmn_chemical_sites"}:
             raise ValueError("BioNet electrical contacts require a supported explicit site policy")
     if edge_manifest.get("electrical_edges") and gap_policy.get("mode") == "none":
         raise ValueError("Electrical contacts have no active gap-junction policy")
@@ -891,6 +891,13 @@ def _resolve_edge_manifest(
     edge_manifest: Mapping[str, Any], cells: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, Any]:
     resolved = json.loads(json.dumps(edge_manifest))
+    for contact in [*(resolved.get('chemical_edges') or ()),
+                    *(c for edge in resolved.get('electrical_edges') or () for c in edge['contacts'])]:
+        if contact.get('located_contact'):
+            for end in ('pre','post'):
+                cell = cells[str(contact[end+'_id'])]
+                contact.setdefault('contact_cv',{})[end] = _common._contact_cv_details(contact,end,
+                    cell['section_plan'],_common._swc_rows(Path(cell['normalized_path'])),cell['source_to_run'])
     for contact in resolved.get("chemical_edges") or ():
         post_id = str(contact["post_id"])
         cell = dict(cells[post_id])

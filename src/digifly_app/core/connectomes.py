@@ -331,6 +331,16 @@ class ConnectomeEdgeCatalog:
                 forward = [row for row in rows if str(row["preId"]) == neuron_a]
                 reverse = [row for row in rows if str(row["preId"]) == neuron_b]
                 manifest = validated_manifest(self.source)
+                if manifest.get('contact_coordinates_in_file') is True and {int(neuron_a),int(neuron_b)}.issubset(manifest.get('contact_covered_body_ids', [])):
+                    from .pair_graph import selected_contact_sites
+                    _, sites = selected_contact_sites(self.source,(neuron_a,neuron_b))
+                    return ConnectionClassSummary(True,
+                        sum(str(row['source_body_id'])==neuron_a for row in sites),
+                        sum(str(row['source_body_id'])==neuron_b for row in sites),
+                        source_path=self.source.pair_graph_path,source_label='Downloaded chemical contact sites',
+                        scope_note='Actual pre/post synapse locations for these saved neurons; source counts checked. '
+                                   'Strength, timing and modeled colocated gaps remain explicit simulation assumptions.',
+                        connection_kind='chemical')
                 return ConnectionClassSummary(True, len(forward), len(reverse),
                     source_path=self.source.pair_graph_path, source_label="Selected aggregate pair graph",
                     scope_note=(manifest.get('source_scope', '') + ' Missing pairs are absent only among the covered saved neurons; other pairs are unknown. Counts are not conductances or located contacts.'

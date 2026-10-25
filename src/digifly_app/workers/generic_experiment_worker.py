@@ -144,6 +144,15 @@ def _condition_edges(edge_manifest: Mapping[str, Any], active_ids: Sequence[str]
 
 def _validate_gap_contact_placement(contact: Mapping[str, Any], policy: Mapping[str, Any]) -> None:
     placement = str(policy.get("placement_policy") or "imported_contact_sites")
+    if placement == 'gf_ttmn_chemical_sites':
+        assumption = dict(contact.get('placement_assumption') or {})
+        if (contact.get('modeled_electrical') is not True
+                or assumption.get('policy') != placement
+                or assumption.get('biological_electrical_contact') is not False
+                or not assumption.get('chemical_site_id')):
+            raise ValueError('Chemical-site gaps must explicitly retain their modeled electrical assumption')
+        _validate_located_contact(contact)
+        return
     if placement not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
         raise ValueError("Unknown electrical contact placement policy")
     for end in ("pre", "post"):
@@ -179,12 +188,70 @@ def _geometric_pair_site(rows: Sequence[Any], cell: Mapping[str, Any], placement
 
 
 def _regional_contact_site(plan: Mapping[str, Any], run_node_id: int, fraction: float) -> tuple[int, float]:
-    if not math.isfinite(float(fraction)) or float(fraction) != .5:
-        raise ValueError("Synthetic contacts require the declared central CV")
+    if not math.isfinite(float(fraction)) or not 0 <= float(fraction) <= 1:
+        raise ValueError("Contact fraction must be finite and within its real incoming edge")
     spec = next((s for s in plan["sections"] if int(s["node_id"]) == run_node_id), None)
     if spec is None:
-        raise ValueError("Synthetic contact has no mapped incoming SWC edge")
-    return int(spec["section_id"]), float(fraction)
+        raise ValueError("Contact has no mapped incoming SWC edge")
+    # NEURON point processes select a discrete CV. Select that same center
+    # explicitly in Arbor/BioNet; never pretend the measured coordinate moved.
+    count = int(spec['nseg'])
+    center = (min(count-1, int(float(fraction)*count))+.5)/count
+    return int(spec["section_id"]), center
+
+
+def _validate_located_contact(contact):
+    located = dict(contact.get('located_contact') or {})
+    if located.get('schema') != 'digifly-neuprint-located-contact-v1' or located.get('electrical_anatomy') is not False:
+        raise ValueError('Measured contact source identity is missing')
+    native = dict(located.get('native_site') or {})
+    convention = dict(located.get('coordinate_convention') or {})
+    scale = float(convention.get('scale_to_um', math.nan))
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError('Measured contact coordinate conversion is invalid')
+    for end, body in (('pre','source_body_id'), ('post','target_body_id')):
+        if str(native.get(body)) != str(contact.get(end+'_id')):
+            raise ValueError('Measured contact body identity differs from the selected connection')
+        synapse = native.get(end+'_synapse_id')
+        if isinstance(synapse,bool) or not isinstance(synapse,int) or not 0<=synapse<2**63:
+            raise ValueError('Measured contact synapse identity is invalid')
+        mapping = dict(dict(located.get('mapping') or {}).get(end) or {})
+        if (mapping.get('schema') != 'digifly-real-cable-contact-map-v1'
+                or mapping.get('filler_target') is not False
+                or mapping.get('source_node_id') != contact.get(end+'_source_node_id')
+                or mapping.get('source_edge_fraction') != contact.get(end+'_source_edge_fraction')):
+            raise ValueError('Measured contact cable mapping differs from its source details')
+        point = [float(native.get(f'{end}_{axis}', math.nan))*scale for axis in 'xyz']
+        if not all(math.isfinite(v) for v in point) or point != contact.get(end+'_coordinate_um') or point != mapping.get('measured_coordinate_um'):
+            raise ValueError('Measured contact coordinates were changed or guessed')
+        if not 0<=float(mapping.get('source_edge_fraction', math.nan))<=1:
+            raise ValueError('Measured contact fraction lies outside its real cable')
+
+
+def _contact_cv_details(contact, endpoint, plan, rows, source_to_run):
+    """Quantify projection and CV error without rewriting measured coordinates."""
+    _validate_located_contact(contact)
+    mapping = contact['located_contact']['mapping'][endpoint]
+    child = source_to_run.get(mapping['source_node_id'])
+    parent = source_to_run.get(mapping['source_parent_id'])
+    by_id = {r[0]:r for r in rows}
+    excluded = set(getattr(rows,'filler_metadata',{}).get('filler_edge_child_ids',()))
+    if child not in by_id or parent not in by_id or by_id[child][6]!=parent or child in excluded:
+        raise ValueError('Measured contact no longer maps to its original real SWC edge')
+    start, stop = by_id[parent][2:5], by_id[child][2:5]
+    fraction = float(mapping['source_edge_fraction'])
+    projection = [a+fraction*(b-a) for a,b in zip(start,stop)]
+    measured = mapping['measured_coordinate_um']
+    if (math.dist(projection,mapping.get('projected_coordinate_um',()))>1e-8
+            or not math.isclose(math.dist(measured,projection),float(mapping['projection_distance_um']),abs_tol=1e-8)):
+        raise ValueError('Measured contact projection changed during source normalization')
+    section, center = _regional_contact_site(plan,child,fraction)
+    cv_point = [a+center*(b-a) for a,b in zip(start,stop)]
+    return {'section_id':section,'section_pos':center,'requested_edge_fraction':fraction,
+        'cv_coordinate_um':cv_point,'projection_to_cv_distance_um':math.dist(projection,cv_point),
+        'measured_to_cv_distance_um':math.dist(measured,cv_point),
+        'mesh_policy':'Nearest shared edge CV center; requested chemical coordinates remain unchanged',
+        'target_spacing_um':ELECTRICAL_CONTACT_TARGET_SEGMENT_UM}
 
 
 def _arbor_gap_contact_locset(plan: Mapping[str, Any] | None, node_locset: str, run_node_id: int,
@@ -1532,7 +1599,11 @@ def _validate_aggregate_chemical_contact(contact: Mapping[str, Any], policy: Map
     placement = policy.get("placement_policy", "imported_post_contact")
     aggregate = placement in {"aggregate_post_soma", "aggregate_post_ais"}
     if not aggregate:
-        if "source_connection_count" in contact or "post_source_edge_fraction" in contact:
+        if contact.get('located_contact'):
+            if 'source_connection_count' in contact:
+                raise ValueError('Measured chemical contacts cannot acquire aggregate counts as individual strength')
+            _validate_located_contact(contact)
+        elif "source_connection_count" in contact or "post_source_edge_fraction" in contact:
             raise ValueError("Located chemical contacts cannot silently acquire aggregate modeling assumptions")
         return
     basis = policy.get("weight_policy")
@@ -2542,9 +2613,10 @@ def _regional_execution(circuit: Mapping[str, Any], experiment: Mapping[str, Any
     membranes = [dict(circuit.get("membrane") or {}),
                  *[dict(x) for x in dict(circuit.get("neuron_mechanism_overrides") or {}).values()]]
     return bool(circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
+                or dict(circuit.get('connectome') or {}).get('pair_graph_path')
                 or dict(circuit.get("chemical_synapse_policy") or {}).get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
                 or (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
-                    and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair"})
+                    and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair", "gf_ttmn_chemical_sites"})
                 or any(_active_native_channels(x) for x in membranes)
                 or any(x.get("active_scope") == "soma_ais" for x in scopes)
                 or dict(experiment.get("recording") or {}).get("target_region", "soma") != "soma"
@@ -2581,6 +2653,15 @@ def _electrical_contact_run_nodes(edge_manifest: Mapping[str, Any], neuron_id: s
                                   node_map: Mapping[int, int]) -> list[int]:
     """Map hash-validated source contacts, never infer nodes from coordinates."""
     nodes = set()
+    for contact in edge_manifest.get('chemical_edges') or ():
+        if not contact.get('located_contact'):
+            continue
+        for end in ('pre','post'):
+            if str(contact[end+'_id']) == neuron_id:
+                source = int(contact[end+'_source_node_id'])
+                if source not in node_map:
+                    raise ValueError('Chemical contact targets a missing original SWC edge')
+                nodes.add(node_map[source])
     for edge in edge_manifest.get("electrical_edges") or ():
         for contact in edge.get("contacts") or ():
             for end in ("pre", "post"):
@@ -3291,9 +3372,9 @@ def _validate_independent_contact_manifest(
         raise ValueError("Independent trial active neuron identities are invalid")
     expected = _condition_edges(source, active)
     projected = json.loads(json.dumps(materialized))
-    chemical_fields = {"post_run_node_id", "bionet_section_id", "bionet_section_pos"}
+    chemical_fields = {"pre_run_node_id", "post_run_node_id", "bionet_section_id", "bionet_section_pos", "contact_cv"}
     electrical_fields = {f"{end}_{suffix}" for end in ("pre", "post")
-        for suffix in ("run_node_id", "bionet_node_id", "bionet_section_id", "bionet_section_pos")}
+        for suffix in ("run_node_id", "bionet_node_id", "bionet_section_id", "bionet_section_pos")} | {'contact_cv'}
     for manifest, remove in ((expected, False), (projected, True)):
         groups = [(manifest.get("chemical_edges") or (), chemical_fields),
             ([contact for edge in manifest.get("electrical_edges") or () for contact in edge.get("contacts") or ()], electrical_fields)]
@@ -3461,6 +3542,8 @@ def run(request_path: Path) -> Path:
         for contact in chemical_contacts:
             if str(contact["post_id"]) == neuron_id:
                 contact["post_run_node_id"] = node_map[int(contact["post_source_node_id"])]
+            if contact.get('located_contact') and str(contact['pre_id']) == neuron_id:
+                contact['pre_run_node_id'] = node_map[int(contact['pre_source_node_id'])]
         prefer_rostral_soma = str(
             morphology_record.get("family") or ""
         ).upper().startswith("DN")
@@ -3496,6 +3579,12 @@ def run(request_path: Path) -> Path:
             simulation_cells[neuron_id]["regional"] = True
             regional_plan = _regional_plan(_swc_rows(normalized_swc_path), simulation_cells[neuron_id])
             simulation_cells[neuron_id]["regional_plan"] = regional_plan
+            for contact in [*chemical_contacts, *electrical_contacts]:
+                if contact.get('located_contact'):
+                    for end in ('pre','post'):
+                        if str(contact[end+'_id']) == neuron_id:
+                            contact.setdefault('contact_cv',{})[end] = _contact_cv_details(contact,end,regional_plan,
+                                _swc_rows(normalized_swc_path),node_map)
             _atomic_json(cell_dir / "regional_map.json", regional_plan)
         morphology_metadata[neuron_id] = {
             "run_path_component": path_component,

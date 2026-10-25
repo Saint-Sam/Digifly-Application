@@ -675,7 +675,7 @@ class GapJunctionPolicy:
             raise ValueError("Gap-junction source SHA-256 must be 64 lowercase hex characters.")
         if self.preferred_direction not in {"a_to_b", "b_to_a"}:
             raise ValueError(f"Unsupported preferred gap direction: {self.preferred_direction}")
-        if self.placement_policy not in {"imported_contact_sites", "ais_pair", "soma_pair"}:
+        if self.placement_policy not in {"imported_contact_sites", "ais_pair", "soma_pair", "gf_ttmn_chemical_sites"}:
             raise ValueError(f"Unsupported gap-junction placement policy: {self.placement_policy}")
         if self.conductance_basis not in {"per_site", "pair_total"}:
             raise ValueError(f"Unsupported gap-junction conductance basis: {self.conductance_basis}")

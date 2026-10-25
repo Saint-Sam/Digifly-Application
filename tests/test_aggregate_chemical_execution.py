@@ -50,7 +50,7 @@ def explicit_policy(**kwargs):
 
 def test_count_model_requires_explicit_opt_in(aggregate):
     circuit, cells = aggregate
-    with pytest.raises(ValueError, match="explicit aggregate-weight"):
+    with pytest.raises(ValueError, match="contact locations have not been downloaded"):
         GenericExperimentAdapter({})._edge_manifest(circuit, cells)
 
 
