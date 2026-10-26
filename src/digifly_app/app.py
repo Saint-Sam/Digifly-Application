@@ -89,7 +89,23 @@ def main() -> int:
         parser = argparse.ArgumentParser()
         parser.add_argument("--package-library-test", type=Path, required=True)
         args = parser.parse_args()
-        return run_library_smoke(args.package_library_test)
+        result=run_library_smoke(args.package_library_test)
+        if result:
+            return result
+        import json
+        import traceback
+        from digifly_app.ui.fragment_review_check import check_fragment_record_roundoff
+        receipt_path=args.package_library_test/'receipt.json'
+        receipt=json.loads(receipt_path.read_text())
+        try:
+            check_fragment_record_roundoff(args.package_library_test)
+            receipt['fragment_derived_roundoff_guard']=True
+        except Exception:
+            receipt['ok']=False
+            receipt['error']=traceback.format_exc()
+            result=1
+        receipt_path.write_text(json.dumps(receipt,indent=2)+'\n')
+        return result
     if len(sys.argv) > 1 and sys.argv[1] == "--package-neuron-test":
         import argparse
         from digifly_app.ui.package_neuron_smoke import run_neuron_package_smoke

@@ -278,8 +278,8 @@
       "bytes": 80
     },
     "src/digifly_app/app.py": {
-      "sha256": "84fce3b82363d7d64b115a9d09157e6a4f7c9fba3470c4290efbaffa21293d2b",
-      "bytes": 6189
+      "sha256": "c9302804086e236eaa822392e616883404e55bf1221a85b901aee50f1add33ae",
+      "bytes": 6845
     },
     "src/digifly_app/assets/BRANDING.md": {
       "sha256": "e0548e2021dd88a2617d3cbee27e1edac61f327647c65e4be924bf3d2d9eed88",
@@ -510,8 +510,8 @@
       "bytes": 13060
     },
     "src/digifly_app/core/swc_fragments.py": {
-      "sha256": "59ef26542e648651492a2911d2978ea664ea15a76cab4444034d461c6ee69ea6",
-      "bytes": 20155
+      "sha256": "2213f496bc9b56a356d9caa6d9a941a1c2afa41016ec392511989d476e771b5b",
+      "bytes": 20983
     },
     "src/digifly_app/core/swc_library.py": {
       "sha256": "8d066c83d029c80d88a1aa4abca3112dd9493c5deb8619520b29f61cf6242e1c",
@@ -733,6 +733,10 @@
       "sha256": "0930aac45f4334aec833a69ba766cedfef825c24082ca95648c19a2ad4ae5b6f",
       "bytes": 19146
     },
+    "src/digifly_app/ui/fragment_review_check.py": {
+      "sha256": "c06439c8f3a199a3dca712887279d52f5df00e43a7b22050c3706b955d5e0a8a",
+      "bytes": 2694
+    },
     "src/digifly_app/ui/main_window.py": {
       "sha256": "8cb7cd4ddff00aa007621ec00b5ef4ca69558a3d801ade3b01393c8fbe0d4a52",
       "bytes": 176880
@@ -910,7 +914,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "6538ae67bfb163880a7690ece9e04dc233c05de6e6b42c5041a9ba781868ef27",
+      "sha256": "617fa3e92c23a35436bb6cf460ba8cf07387b7fe7114f2eb8f4a2fc070acf3fa",
       "bytes": 12822
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -1118,8 +1122,8 @@
       "bytes": 8684
     },
     "tests/test_swc_fragments.py": {
-      "sha256": "95133e78efccbeb7755655a22140c5266a433717aeb09aea5017366ee4e40f27",
-      "bytes": 13217
+      "sha256": "bef6110f5273108fbd175e43b7c6d524977326b2db0b877212c1552dda11c672",
+      "bytes": 15223
     },
     "tests/test_swc_quality.py": {
       "sha256": "81d78fe072124fae36b59060366248c07d335901fc58ffdd06ebb5cd1d606c93",

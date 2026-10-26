@@ -267,7 +267,7 @@ def _joined_text(plan: FragmentJoinPlan):
 
 
 def _same_reviewed_plan(stored: dict, current: dict) -> bool:
-    """Geometry remains bit-exact; three derived summaries allow sum roundoff.
+    """Geometry remains bit-exact; specified display summaries allow roundoff.
 
     Compiled and interpreted accumulation over thousands of real edges can
     differ by a few final bits. These report-only totals do not determine the
@@ -275,16 +275,29 @@ def _same_reviewed_plan(stored: dict, current: dict) -> bool:
     Full original and output hashes are independently required by the caller.
     """
     reports = {'original_length_um','original_volume_um3','added_volume_fraction'}
+    local_profile = current.get('policy') == AXON_AWARE_POLICY
+    if local_profile:
+        reports.add('added_volume_um3')
     if set(stored)!=set(current):
         return False
-    for name in reports:
-        a,b=stored[name],current[name]
+    def close_report(a,b):
         if isinstance(a,bool) or isinstance(b,bool):return False
-        if a==b:continue
-        if (not isinstance(a,(int,float)) or not isinstance(b,(int,float))
+        if a==b:return True
+        return not (not isinstance(a,(int,float)) or not isinstance(b,(int,float))
                 or not math.isfinite(a) or not math.isfinite(b)
-                or not math.isclose(a,b,rel_tol=1e-12,abs_tol=0)):
+                or not math.isclose(a,b,rel_tol=1e-12,abs_tol=0))
+    for name in reports:
+        if not close_report(stored[name],current[name]):
             return False
+    if local_profile:
+        a,b=stored['bridges'],current['bridges']
+        if not isinstance(a,(list,tuple)) or not isinstance(b,(list,tuple)) or len(a)!=len(b):return False
+        bridge_reports={'volume_um3','axial_resistance_MOhm_at_100_ohm_cm'}
+        for left,right in zip(a,b):
+            if set(left)!=set(right) or not bridge_reports<=left.keys():return False
+            if any(not close_report(left[key],right[key]) for key in bridge_reports):return False
+            if {k:v for k,v in left.items() if k not in bridge_reports}!={k:v for k,v in right.items() if k not in bridge_reports}:return False
+        reports.add('bridges')
     return {k:v for k,v in stored.items() if k not in reports}=={k:v for k,v in current.items() if k not in reports}
 
 

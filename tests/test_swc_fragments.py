@@ -251,3 +251,41 @@ def test_unknown_or_tampered_bridge_policy_refuses_without_replacing(fragments):
     with pytest.raises(ValueError, match='policy'):
         verified_fragment_source(joined, {os.path.normcase(os.path.abspath(source)):sha256_file(source)})
     assert joined.read_bytes() == kept
+
+
+def test_axon_aware_report_roundoff_is_portable_but_geometry_remains_exact(fragments):
+    import copy
+    import math
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source,_=fragments
+    committed={os.path.normcase(os.path.abspath(source)):sha256_file(source)}
+    joined=save_fragment_join(plan_fragment_join(analyze_swc(source),policy='adjoining_cable_profile_v1'))
+    sidecar=joined.with_suffix('.swc.quality.json')
+    record=json.loads(sidecar.read_text())
+    for key in ('original_length_um','original_volume_um3','added_volume_fraction','added_volume_um3'):
+        record['plan'][key]=math.nextafter(record['plan'][key],math.inf)
+    for bridge in record['plan']['bridges']:
+        for key in ('volume_um3','axial_resistance_MOhm_at_100_ohm_cm'):
+            bridge[key]=math.nextafter(bridge[key],math.inf)
+    sidecar.write_text(json.dumps(record))
+    assert verified_fragment_source(joined,committed)==source
+    changed=copy.deepcopy(record)
+    changed['plan']['filler_nodes'][0][2]=math.nextafter(changed['plan']['filler_nodes'][0][2],math.inf)
+    sidecar.write_text(json.dumps(changed))
+    with pytest.raises(ValueError,match='plan differs'):
+        verified_fragment_source(joined,committed)
+    changed=copy.deepcopy(record)
+    changed['plan']['bridges'][0]['volume_um3']*=1+1e-8
+    sidecar.write_text(json.dumps(changed))
+    with pytest.raises(ValueError,match='plan differs'):
+        verified_fragment_source(joined,committed)
+
+
+def test_native_roundoff_fixture_uses_production_guard_and_preserves_geometry(tmp_path):
+    from digifly_app.ui.fragment_review_check import check_fragment_record_roundoff
+    result=check_fragment_record_roundoff(tmp_path)
+    assert result['ok'] and result['report_only_roundoff_accepted']
+    assert result['one_bit_filler_geometry_change_refused']
+    assert result['material_summary_change_refused'] and result['unknown_policy_refused']
