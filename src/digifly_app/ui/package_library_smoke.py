@@ -1462,7 +1462,13 @@ def run_library_smoke(destination: Path) -> int:
         builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('ohmic'))
         builder.gap_placement_combo.setCurrentIndex(builder.gap_placement_combo.findData('gf_ttmn_chemical_sites'))
         apply_gap = builder.findChild(QPushButton, 'ApplyGapPolicyButton')
+        gap_status=[]
+        builder.status_message.connect(gap_status.append)
         QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
+        if (not gap_status or 'modeled GF–TTMn' not in gap_status[-1]
+                or 'chemical endpoints' not in gap_status[-1] or 'no measured electrical anatomy' not in gap_status[-1]
+                or 'connectivity is not loaded' in gap_status[-1]):
+            raise ValueError('Chemical-site gap status incorrectly describes the saved policy or data')
         located_spec = builder.circuit_spec()
         gap_edges = GenericExperimentAdapter({})._edge_manifest(located_spec, tuple(builder.loaded_morphologies.values()))
         gap_sites = [row for pair in gap_edges['electrical_edges'] for row in pair['contacts']]
@@ -1472,7 +1478,8 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Modeled GF–TTMn gaps did not retain only the exact chemical sites')
         if window.experiment_page._circuit.gap_junction_policy.placement_policy != 'gf_ttmn_chemical_sites':
             raise ValueError('Applied chemical-site gap policy did not reach Experiment Builder')
-        record.update(located_chemical_model_applied=True, modeled_gf_ttmn_chemical_sites=True)
+        record.update(located_chemical_model_applied=True, modeled_gf_ttmn_chemical_sites=True,
+                      chemical_site_gap_status=True)
         builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
         QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
         # Exercise the new controls on the graph acquired by the actual app

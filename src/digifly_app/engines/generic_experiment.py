@@ -791,7 +791,8 @@ class GenericExperimentAdapter:
                     "bmtk_connectivity",
                     "BMTK BioNet connectivity subset",
                     CheckState.PASS if bmtk_connectivity_ok else CheckState.FAIL,
-                    "BioNet preserves chemical SONATA edges and exact imported electrical sites through a run-owned Digifly serial extension; no electrical contacts are omitted."
+                    f"BioNet preserves chemical SONATA edges and {electrical_count:,} electrical contact(s) through a run-owned Digifly serial extension; no contacts are omitted. "
+                    "Placement follows the declared source or model. Chemical-site gaps are explicit model additions, not measured electrical anatomy."
                     if bmtk_connectivity_ok
                     else "This electrical policy is unsupported. Choose none, ohmic, rectifying or heterotypic rectifying; contacts are never silently dropped or approximated.",
                     blocking=True,

@@ -498,6 +498,9 @@ def test_generic_adapter_retains_bmtk_single_cell_gap_policy_without_inventing_c
     )
     assert connectivity.state == CheckState.PASS
     assert "serial extension" in connectivity.detail
+    assert "0 electrical contact(s)" in connectivity.detail
+    assert "explicit model additions, not measured electrical anatomy" in connectivity.detail
+    assert "exact imported electrical sites" not in connectivity.detail
     assert not adapter.needs_gap_catalogue(circuit, _experiment("bmtk"))
     assert not any(
         check.key in {"arbor_gap_catalogue", "neuron_gap_mechanisms"}

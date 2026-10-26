@@ -854,8 +854,9 @@ class CircuitBuilderPage(QWidget):
 
         gap_layout = add_hh_section("gap_junctions", "Gap-junction policy")
         gap_help = QLabel(
-            "GJs join two electrical-edge endpoints, so they cannot be attached to a neuron alone. "
-            "This saves a mass-apply policy for all electrical edges once connectivity is loaded."
+            "Gap junctions connect two neurons. Choose imported electrical sites or explicitly modeled "
+            "GF–TTMn gaps at downloaded chemical sites. Apply saves the policy; Run checks the endpoints. "
+            "Modeled gaps are not measured electrical anatomy."
         )
         gap_help.setObjectName("Muted")
         gap_help.setWordWrap(True)
@@ -2878,10 +2879,16 @@ class CircuitBuilderPage(QWidget):
         policy = self.spec.gap_junction_policy
         if policy.mode == "none":
             self.status_message.emit("Cleared the all-electrical-edge gap-junction policy")
+        elif policy.placement_policy == 'gf_ttmn_chemical_sites':
+            self.status_message.emit(
+                f"Stored modeled GF–TTMn {policy.mechanism_label} policy. Run will validate "
+                "the selected chemical endpoints and place modeled gaps there; "
+                "no measured electrical anatomy is implied."
+            )
         else:
             self.status_message.emit(
-                f"Stored {policy.mechanism_label} as the future all-electrical-edge policy; "
-                "no GJ was attached because connectivity is not loaded"
+                f"Stored {policy.mechanism_label} policy for imported electrical contacts. "
+                "Run checks the selected contact source before attaching gaps."
             )
         self._update_override_summary()
         self._update_mechanism_capability()

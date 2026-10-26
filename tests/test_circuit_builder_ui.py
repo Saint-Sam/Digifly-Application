@@ -65,6 +65,30 @@ class _OverviewStub:
         self.workspace_edit = QLineEdit(str(root))
 
 
+def test_gap_policy_status_distinguishes_modeled_chemical_sites_from_imported_electrical(tmp_path):
+    application=QApplication.instance() or QApplication([])
+    page=CircuitBuilderPage(_OverviewStub(tmp_path))
+    messages=[]
+    page.status_message.connect(messages.append)
+    try:
+        page.gap_mode_combo.setCurrentIndex(page.gap_mode_combo.findData('ohmic'))
+        page.gap_placement_combo.setCurrentIndex(page.gap_placement_combo.findData('gf_ttmn_chemical_sites'))
+        page.apply_gap_policy()
+        assert page.spec.gap_junction_policy.placement_policy=='gf_ttmn_chemical_sites'
+        assert 'modeled GF–TTMn' in messages[-1] and 'chemical endpoints' in messages[-1]
+        assert 'Run will validate' in messages[-1] and 'no measured electrical anatomy' in messages[-1]
+        assert 'connectivity is not loaded' not in messages[-1]
+        page.gap_placement_combo.setCurrentIndex(page.gap_placement_combo.findData('imported_contact_sites'))
+        page.apply_gap_policy()
+        assert 'imported electrical contacts' in messages[-1] and 'before attaching gaps' in messages[-1]
+        page.gap_mode_combo.setCurrentIndex(page.gap_mode_combo.findData('none'))
+        page.apply_gap_policy()
+        assert messages[-1]=='Cleared the all-electrical-edge gap-junction policy'
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def _await_saved_inventory(page):
     # New connectome-wide indexing is deliberately asynchronous; a disabled
     # Load button cannot be bypassed by calling its slot in a unit fixture.
