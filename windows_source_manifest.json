@@ -510,8 +510,8 @@
       "bytes": 13060
     },
     "src/digifly_app/core/swc_fragments.py": {
-      "sha256": "4fd33ee76fb0a7f3a9c1a82bcec16a417cc4c00c35ac54546be91810ed1bf30b",
-      "bytes": 15070
+      "sha256": "59ef26542e648651492a2911d2978ea664ea15a76cab4444034d461c6ee69ea6",
+      "bytes": 20155
     },
     "src/digifly_app/core/swc_library.py": {
       "sha256": "8d066c83d029c80d88a1aa4abca3112dd9493c5deb8619520b29f61cf6242e1c",
@@ -706,8 +706,8 @@
       "bytes": 49
     },
     "src/digifly_app/ui/circuit_builder.py": {
-      "sha256": "6ad78c2031a91e7a732d580b8befe073f41e5c54c623e2b814e358fe8e06bee1",
-      "bytes": 147591
+      "sha256": "c2c8cbcf0720f4d48526fb5ab6b45cd20365db58b23506503be09153b2b541a7",
+      "bytes": 152065
     },
     "src/digifly_app/ui/circuit_viewport.py": {
       "sha256": "3fd1f358b54d049abcf835d07ce40f4635ce1bb66bbf2770c488cafe4b0d2478",
@@ -750,8 +750,8 @@
       "bytes": 48977
     },
     "src/digifly_app/ui/package_library_smoke.py": {
-      "sha256": "e316daf0f8af83020031966b958912afa25464267767189cb21382db9cb81d86",
-      "bytes": 117388
+      "sha256": "aec19d7a8d861546bee960b299b30301c16a2082eb89a1a4959045e6333f2d8c",
+      "bytes": 119455
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
       "sha256": "57e83539ed974e006df35608ab213d5a1db6dcbd7dcbb9448fd2e95113f24776",
@@ -910,7 +910,7 @@
       "bytes": 17199
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "sha256": "795e224b3e9d5a91b749a0ef1dd99997bd7bb797425572a66811d09ac01a7056",
+      "sha256": "6538ae67bfb163880a7690ece9e04dc233c05de6e6b42c5041a9ba781868ef27",
       "bytes": 12822
     },
     "scripts/build_windows_neuron_payload.py": {
@@ -958,8 +958,8 @@
       "bytes": 15411
     },
     "tests/test_circuit_builder_ui.py": {
-      "sha256": "ba65c00a860c17871f2b53b26abed63c84afe434843cf8151f0154934aef1ce3",
-      "bytes": 46913
+      "sha256": "c0e227170eb3c59ba9d8c79951dca0ed3fad5f0148b0798aa7d5e8f29848f61b",
+      "bytes": 50821
     },
     "tests/test_connectivity_download.py": {
       "sha256": "aa0523e786cc2ccf4075a9f9dc8bffe89cc94e9e5f45ec6aa2b9732152d44997",
@@ -1118,8 +1118,8 @@
       "bytes": 8684
     },
     "tests/test_swc_fragments.py": {
-      "sha256": "942f8c56926560a010b0b012e984ab9c410308f4f6bfaddfddeb5ac1fdecd40e",
-      "bytes": 9894
+      "sha256": "95133e78efccbeb7755655a22140c5266a433717aeb09aea5017366ee4e40f27",
+      "bytes": 13217
     },
     "tests/test_swc_quality.py": {
       "sha256": "81d78fe072124fae36b59060366248c07d335901fc58ffdd06ebb5cd1d606c93",

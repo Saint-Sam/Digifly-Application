@@ -17,6 +17,37 @@ from .swc_units import source_coordinate_contract
 
 FILLER_HEADER = "# digifly_filler "
 MAX_FILLER_COMPARTMENTS = 25_000
+ENDPOINT_POLICY = "adaptive_taper_local_length_and_volume_cap"
+AXON_AWARE_POLICY = "adjoining_cable_profile_v1"
+
+
+def _check_policy(policy):
+    if policy not in (ENDPOINT_POLICY, AXON_AWARE_POLICY):
+        raise ValueError("Unknown fragment bridge policy")
+
+
+def _joined_path(source: Path, policy: str) -> Path:
+    _check_policy(policy)
+    suffix = "_axon_aware_fragment_healed.swc" if policy == AXON_AWARE_POLICY else "_fragment_healed.swc"
+    return source.with_name(source.stem + suffix)
+
+
+def _local_cable_support(endpoint, by_id, adjacency):
+    """Three contiguous original edges, taking the thickest continuation.
+
+    This is a deterministic local caliber estimate, not axon identification.
+    Never search synthetic cable or optimize against a simulation outcome.
+    """
+    visited, support, current = {endpoint}, [], endpoint
+    for _ in range(3):
+        choices = [other for other in adjacency[current] if other not in visited]
+        if not choices:
+            break
+        current = min(choices, key=lambda other: (-by_id[other].radius, other))
+        visited.add(current)
+        support.append(current)
+    radius = statistics.median(by_id[node_id].radius for node_id in support) if support else by_id[endpoint].radius
+    return support, radius
 
 
 def _volume(length, first_radius, last_radius):
@@ -40,6 +71,7 @@ class FragmentJoinPlan:
     bridges: tuple[dict, ...]
     original_length_um: float
     original_volume_um3: float
+    policy: str = ENDPOINT_POLICY
 
     @property
     def added_compartments(self):
@@ -47,17 +79,20 @@ class FragmentJoinPlan:
 
     def to_dict(self):
         volume = sum(b["volume_um3"] for b in self.bridges)
-        return {**asdict(self), "added_compartments": self.added_compartments,
+        fields = asdict(self)
+        fields.pop("policy")  # Keep historical default-plan serialization exact.
+        return {**fields, "added_compartments": self.added_compartments,
                 "added_length_um": sum(b["length_um"] for b in self.bridges),
                 "added_volume_um3": volume,
                 "added_volume_fraction": volume / self.original_volume_um3 if self.original_volume_um3 else None,
-                "policy": "adaptive_taper_local_length_and_volume_cap",
+                "policy": self.policy,
                 "biological_reconstruction": False,
                 "original_coordinates_radii_and_real_edges_unchanged": True,
                 "filler_biophysics": "Uses the circuit's branch membrane settings; synthetic added cable changes electrical conduction."}
 
 
-def plan_fragment_join(report: SwcQualityReport) -> FragmentJoinPlan:
+def plan_fragment_join(report: SwcQualityReport, *, policy: str = ENDPOINT_POLICY) -> FragmentJoinPlan:
+    _check_policy(policy)
     path = Path(report.path).resolve()
     if sha256_file(path) != report.sha256:
         raise ValueError("SWC changed after review; audit it again")
@@ -113,40 +148,85 @@ def plan_fragment_join(report: SwcQualityReport) -> FragmentJoinPlan:
                     reference.append((length, _volume(length, endpoint.radius, other.radius)))
         if not reference:
             raise ValueError("No adjoining real cable is available to size this fragment's filler")
+        profile = None
+        radius_limit = max(first.radius, last.radius)
+        if policy == AXON_AWARE_POLICY:
+            first_support, first_estimate = _local_cable_support(anchor, by_id, adjacency)
+            last_support, last_estimate = _local_cable_support(root, by_id, adjacency)
+            # Size and caliber must use the same bounded local support. Using
+            # an intact shaft radius with only a collapsed tip's tiny volume
+            # cap would manufacture thousands of sub-nanometer subdivisions.
+            for endpoint, support in ((anchor, first_support), (root, last_support)):
+                previous = endpoint
+                for other_id in support:
+                    a, b = by_id[previous], by_id[other_id]
+                    length = math.dist(point(a), point(b))
+                    if length > 0:
+                        reference.append((length, _volume(length, a.radius, b.radius)))
+                    previous = other_id
         target_length = statistics.median(length for length, _ in reference)
         max_length = max(length for length, _ in reference)
         max_volume = max(volume for _, volume in reference)
+        if policy == AXON_AWARE_POLICY:
+            transition = min(.25, target_length / distance)
+            if transition <= 0 or not math.isfinite(1 / transition):
+                raise ValueError("SWC dimensions exceed the finite filler sizing range")
+            knots = ((0., first.radius), (transition, first_estimate),
+                     (1 - transition, last_estimate), (1., last.radius))
+            radius_limit = max(radius for _, radius in knots)
+            profile = {"support_node_ids": [first_support, last_support],
+                "estimated_radii_um": [first_estimate * scale, last_estimate * scale],
+                "transition_length_um": transition * distance * scale,
+                "sizing_reference": "Original endpoint edges and the same up-to-three-edge intact support used for caliber; no synthetic reference cable.",
+                "rule": "Median radii along up to three original edges, following the thickest continuation; short endpoint transitions. Not recovered axon anatomy."}
+        def radius_at(fraction):
+            if profile is None:
+                return first.radius + fraction * (last.radius - first.radius)
+            for (left, a), (right, b) in zip(knots, knots[1:]):
+                if fraction <= right:
+                    return a + (fraction - left) / (right - left) * (b - a)
+            return last.radius
         # A conservative cylinder bound covers every frustum in the taper.
-        size_ratio = _volume(distance, max(first.radius, last.radius), max(first.radius, last.radius)) / max_volume
+        size_ratio = _volume(distance, radius_limit, radius_limit) / max_volume
         if not all(math.isfinite(value) for value in (distance / target_length, size_ratio)):
             raise ValueError("SWC dimensions exceed the finite filler sizing range")
         count = max(1, math.ceil(distance / target_length), math.ceil(distance / max_length), math.ceil(size_ratio))
+        if profile is not None:
+            count = max(count, 4, math.ceil(1 / transition))
         if len(added) + len(changes) + count > MAX_FILLER_COMPARTMENTS:
             raise ValueError("The adaptive filler exceeds the 25,000-compartment repair budget; no copy was written")
         parent = anchor
         for ordinal in range(1, count):
             fraction = ordinal / count
             xyz = tuple(a + fraction * (b - a) for a, b in zip(point(first), point(last)))
-            radius = first.radius + fraction * (last.radius - first.radius)
+            radius = radius_at(fraction)
             added.append((next_id, 3, *xyz, radius, parent))
             parent = next_id
             next_id += 1
         changes[root] = parent
-        bridges.append({"anchor_node_id": anchor, "fragment_root_id": root,
+        bridge = {"anchor_node_id": anchor, "fragment_root_id": root,
             "compartments": count, "length_um": distance * scale,
             "volume_um3": _volume(distance, first.radius, last.radius) * scale**3,
             "maximum_compartment_length_um": distance / count * scale,
             "reference_maximum_length_um": max_length * scale,
-            "maximum_compartment_volume_bound_um3": math.pi * distance / count * max(first.radius, last.radius)**2 * scale**3,
+            "maximum_compartment_volume_bound_um3": math.pi * distance / count * radius_limit**2 * scale**3,
             "reference_maximum_volume_um3": max_volume * scale**3,
-            "endpoint_radii_um": [first.radius * scale, last.radius * scale]})
+            "endpoint_radii_um": [first.radius * scale, last.radius * scale]}
+        if profile is not None:
+            radii = [first.radius] + [radius_at(i / count) for i in range(1, count)] + [last.radius]
+            bridge.update(local_profile=profile,
+                volume_um3=sum(_volume(distance / count, a, b) for a, b in zip(radii, radii[1:])) * scale**3,
+                axial_resistance_MOhm_at_100_ohm_cm=sum(
+                    100 * .01 * (distance / count * scale) / (math.pi * a * b * scale**2)
+                    for a, b in zip(radii, radii[1:])))
+        bridges.append(bridge)
         connected.update(components[root])
         pending.remove(root)
     real_edges = [(n, by_id[n.parent_id]) for n in nodes if n.parent_id >= 0]
     length = sum(math.dist(point(n), point(p)) for n, p in real_edges) * scale
     volume = sum(_volume(math.dist(point(n), point(p)), n.radius, p.radius)
                  for n, p in real_edges) * scale**3
-    return FragmentJoinPlan(str(path), report.sha256, contract, roots, changes, tuple(added), tuple(bridges), length, volume)
+    return FragmentJoinPlan(str(path), report.sha256, contract, roots, changes, tuple(added), tuple(bridges), length, volume, policy)
 
 
 def _publish_new_text(path: Path, text: str) -> None:
@@ -172,6 +252,8 @@ def _joined_text(plan: FragmentJoinPlan):
         "synthetic_node_ids": [int(row[0]) for row in plan.filler_nodes],
         "filler_edge_child_ids": [int(row[0]) for row in plan.filler_nodes] + list(plan.parent_changes),
         "original_root_ids": list(plan.original_roots), "original_source_sha256": plan.source_sha256}
+    if plan.policy != ENDPOINT_POLICY:
+        metadata["bridge_policy"] = plan.policy
     text = FILLER_HEADER + json.dumps(metadata, separators=(",", ":")) + "\n"
     for line in original_lines:
         fields = line.split()
@@ -220,13 +302,14 @@ def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Pa
         raise ValueError("Joined copy lacks its regular review record")
     record = json.loads(sidecar.read_text(encoding="utf-8"))
     source = Path(record["plan"]["source_path"])
-    expected = source.with_name(f"{source.stem}_fragment_healed.swc")
+    policy = record["plan"].get("policy", ENDPOINT_POLICY)
+    expected = _joined_path(source, policy)
     key = os.path.normcase(os.path.abspath(source))
     if (record.get("schema") != "digifly-fragment-join-v1" or path != expected
             or source.is_symlink() or key not in committed_hashes
             or sha256_file(source) != committed_hashes[key]):
         raise ValueError("Joined copy is not bound to this committed source")
-    plan = plan_fragment_join(analyze_swc(source))
+    plan = plan_fragment_join(analyze_swc(source), policy=policy)
     if not _same_reviewed_plan(record["plan"],json.loads(json.dumps(plan.to_dict()))):
         raise ValueError("Joined copy's adaptive plan differs from its source")
     text, metadata, _before = _joined_text(plan)
@@ -240,13 +323,27 @@ def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Pa
     return source
 
 
+def original_for_bridge_review(path: Path) -> Path:
+    """Resolve a loaded reviewed copy without treating its filler as anatomy."""
+    path = path.resolve()
+    if not path.name.endswith("_fragment_healed.swc"):
+        return path
+    record = json.loads(path.with_suffix(".swc.quality.json").read_text(encoding="utf-8"))
+    source = Path(record["plan"]["source_path"])
+    key = os.path.normcase(os.path.abspath(source))
+    verified = verified_fragment_source(path, {key: record["plan"]["source_sha256"]})
+    if verified is None:
+        raise ValueError("The loaded bridge copy has no verified original")
+    return verified
+
+
 def save_fragment_join(plan: FragmentJoinPlan) -> Path:
     source = Path(plan.source_path)
     if sha256_file(source) != plan.source_sha256:
         raise ValueError("SWC changed after the filler preview; review it again")
-    if plan != plan_fragment_join(analyze_swc(source)):
+    if plan != plan_fragment_join(analyze_swc(source), policy=plan.policy):
         raise ValueError("Filler plan differs from the verified adaptive sizing policy; preview it again")
-    output = source.with_name(f"{source.stem}_fragment_healed.swc")
+    output = _joined_path(source, plan.policy)
     sidecar = output.with_suffix(".swc.quality.json")
     if os.path.lexists(output) or os.path.lexists(sidecar):
         raise FileExistsError("A joined copy already exists; the original or prior copy will not be replaced")

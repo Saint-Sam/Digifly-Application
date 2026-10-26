@@ -75,7 +75,8 @@ from digifly_app.core.swc_quality import (
     reviewed_hashes,
     scan_recent_imports,
 )
-from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+from digifly_app.core.swc_fragments import (AXON_AWARE_POLICY, ENDPOINT_POLICY,
+    original_for_bridge_review, plan_fragment_join, save_fragment_join)
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
@@ -388,6 +389,10 @@ class CircuitBuilderPage(QWidget):
         )
         quality_check.clicked.connect(self.review_recent_imports)
         tools.addWidget(quality_check)
+        self.bridge_review_button = QPushButton("Review bridge copies…")
+        self.bridge_review_button.setToolTip("Create a separate local-caliber bridge model for explicitly selected loaded neuron IDs; keep original and earlier copies.")
+        self.bridge_review_button.clicked.connect(self.review_bridge_copies)
+        tools.addWidget(self.bridge_review_button)
         tools.addStretch()
         options.addLayout(tools)
 
@@ -1421,26 +1426,77 @@ class CircuitBuilderPage(QWidget):
         if completed:
             self.refresh_connectomes()
 
-    def _offer_fragment_join(self, report) -> tuple[bool, str]:
+    def review_bridge_copies(self) -> None:
+        """Explicit model comparison, never a silent change to reviewed anatomy."""
+        if not self.loaded_records:
+            self.status_message.emit("Load neurons before reviewing a separate bridge copy.")
+            return
+        text, accepted = QInputDialog.getText(self, "Review axon-aware bridge copies",
+            "Enter loaded neuron IDs, separated by commas. Only their added cable will change; originals and earlier copies stay.",
+            text=", ".join(self.viewport.selected_neuron_ids))
+        if not accepted:
+            return
+        ids = tuple(dict.fromkeys(item.strip() for item in re.split(r"[,;\n]+", text) if item.strip()))
+        if not ids or any(body not in self.loaded_records for body in ids):
+            self.status_message.emit("Bridge review requires explicit IDs from the currently loaded neurons; nothing changed.")
+            return
+        paths = {body: record.swc_path for body, record in self.loaded_records.items()}
+        hashes = dict(self.spec.morphology_sha256)
+        changed = []
+        for body in ids:
+            try:
+                loaded = Path(paths[body])
+                if sha256_file(loaded) != hashes.get(body):
+                    raise ValueError("Loaded morphology changed; reload and review it first")
+                fillers = set(self.loaded_morphologies[body].filler_metadata.get("filler_edge_child_ids", ()))
+                edited = set(self.spec.compartment_overrides.get(body, ())) | set(self.spec.compartment_mechanism_overrides.get(body, ()))
+                if fillers & {int(item) for item in edited}:
+                    raise ValueError("This neuron has per-compartment settings on earlier filler cable. Save the current draft and remove those filler overrides before comparing another bridge policy")
+                source = original_for_bridge_review(loaded)
+                report = analyze_swc(source, dataset=self.spec.connectome.dataset, body_id=body)
+                reviewed, joined = self._offer_fragment_join(report, policy=AXON_AWARE_POLICY, force_review=True)
+                if reviewed and joined:
+                    paths[body] = joined
+                    hashes[body] = sha256_file(Path(joined))
+                    changed.append(body)
+            except (OSError, ValueError, KeyError) as exc:
+                self.status_message.emit(f"Could not review bridge copy for {body}: {exc}")
+        if changed:
+            source = replace(self.spec.connectome, swc_paths=paths)
+            spec = replace(self.spec, connectome=source, morphology_sha256=hashes)
+            self._catalog_cache.clear()
+            self.set_circuit_spec(spec)
+            self.status_message.emit("Separate bridge copies selected for " + ", ".join(changed) + "; click Load neurons after indexing. Save as a separate draft to retain the comparison.")
+
+    def _offer_fragment_join(self, report, *, policy=ENDPOINT_POLICY, force_review=False) -> tuple[bool, str]:
         """A topology change is always a separate, size-reviewed copy choice."""
-        if report.component_count < 2 or fragments_reviewed(report):
+        if report.component_count < 2 or (fragments_reviewed(report) and not force_review):
             return True, ""
         if report.errors:
             self.status_message.emit("Fragment joining refused: resolve the SWC's structural errors first.")
             return False, ""
         try:
-            plan = plan_fragment_join(report)
+            plan = plan_fragment_join(report, policy=policy)
             details = plan.to_dict()
             fraction = details["added_volume_fraction"]
             ratio = f" ({100 * fraction:.3g}% of the real cable volume)" if fraction is not None else ""
+            profile_note = "Its radius tapers between the endpoint radii. "
+            if policy == AXON_AWARE_POLICY:
+                estimates = [radius for bridge in plan.bridges for radius in bridge['local_profile']['estimated_radii_um']]
+                resistances = [bridge['axial_resistance_MOhm_at_100_ohm_cm'] for bridge in plan.bridges]
+                profile_note = ("Axon-aware comparison: interior filler radii use median diameters along up to three adjoining original edges, following the thickest continuation, with short endpoint transitions. "
+                    "This estimates local cable caliber; it does not identify or reconstruct a real axon. "
+                    "Original endpoint radii are retained. "
+                    + f"{len(plan.bridges)} bridge(s): estimated interior radius range {min(estimates):.4g}–{max(estimates):.4g} µm; calculated axial resistance range {min(resistances):.4g}–{max(resistances):.4g} MΩ at 100 Ω·cm. "
+                    "The complete support-node and per-bridge breakdown will be saved beside the copy. ")
             answer = self._confirm_fragment_join(
                 f"{report.dataset or 'Imported SWC'} · {report.body_id or Path(report.path).stem}\n"
                 f"{report.component_count} pieces → 1 connected copy\n"
                 f"Add {plan.added_compartments:,} short tapered compartments; "
                 f"total length {details['added_length_um']:.6g} µm; "
                 f"total volume {details['added_volume_um3']:.6g} µm³{ratio}.\n\n"
-                "Each filler is no longer or larger in volume than the largest adjoining real compartment. "
-                "Its radius tapers between the endpoint radii. Existing points, radii, real edges and "
+                "Each filler is no longer or larger in volume than the largest sampled adjoining real compartment. "
+                + profile_note + "Existing points, radii, real edges and "
                 "connection locations stay unchanged. Fillers cannot become soma, AIS or synapse targets.\n\n"
                 "These are synthetic cables, not recovered anatomy. They use branch membrane settings "
                 "and change electrical conduction; a long gap can add substantial total membrane. "

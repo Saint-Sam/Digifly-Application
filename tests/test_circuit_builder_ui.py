@@ -174,6 +174,73 @@ def test_fragment_preview_requires_separate_confirmation_and_keeps_original(tmp_
         application.processEvents()
 
 
+def test_explicit_axon_bridge_review_keeps_original_and_selects_only_requested_copy(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc, record_review_decision
+    from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    raw = tmp_path / 'DN/test/1/1.swc'
+    raw.parent.mkdir(parents=True)
+    raw.write_text('# units: um\n1 2 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n')
+    report = analyze_swc(raw)
+    old = save_fragment_join(plan_fragment_join(report))
+    record_review_decision(report, action='keep', fragments_reviewed=True, joined_copy=str(old))
+    kept = {path: path.read_bytes() for path in (raw, old)}
+    record = NeuronRecord('1','DN','test',str(old),'library:fixture')
+    morphology = load_swc(record)
+    source = ConnectomeRef(key='library:fixture', label='fixture', root=str(tmp_path), dataset='fixture:v1',
+        server='https://fixture.example', swc_paths={'1':str(old)})
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        page.spec = CircuitSpec(connectome=source, neuron_ids=('1',), morphology_sha256={'1':hashlib.sha256(old.read_bytes()).hexdigest()})
+        page.loaded_records = {'1':record}
+        page.loaded_morphologies = {'1':morphology}
+        previews=[]
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('1',True))
+        monkeypatch.setattr(page,'_confirm_fragment_join',lambda message:(previews.append(message) or module.QMessageBox.StandardButton.Yes))
+        page.bridge_review_button.click()
+        assert len(previews)==1 and 'Axon-aware comparison' in previews[0]
+        assert 'calculated axial resistance' in previews[0]
+        chosen = Path(page.spec.connectome.swc_paths['1'])
+        assert chosen.name == '1_axon_aware_fragment_healed.swc' and chosen.is_file()
+        assert page.spec.morphology_sha256['1'] == hashlib.sha256(chosen.read_bytes()).hexdigest()
+        assert all(path.read_bytes()==data for path,data in kept.items())
+        assert page.spec.hh == CircuitSpec().hh and page.spec.neuron_ids == ('1',)
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_axon_bridge_review_rejects_unknown_ids_and_existing_filler_edits(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc
+    from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    raw = tmp_path/'1.swc'
+    raw.write_text('# units: um\n1 2 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n')
+    old = save_fragment_join(plan_fragment_join(analyze_swc(raw)))
+    record = NeuronRecord('1','DN','test',str(old),'custom:fixture')
+    morph = load_swc(record)
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    messages=[]
+    page.status_message.connect(messages.append)
+    try:
+        page.spec = CircuitSpec(neuron_ids=('1',), morphology_sha256={'1':hashlib.sha256(old.read_bytes()).hexdigest()})
+        page.loaded_records={'1':record};page.loaded_morphologies={'1':morph}
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('missing',True))
+        page.bridge_review_button.click()
+        assert 'explicit IDs' in messages[-1]
+        filler = morph.filler_metadata['filler_edge_child_ids'][0]
+        page.spec.compartment_overrides={'1':{str(filler):{}}}
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('1',True))
+        page.bridge_review_button.click()
+        assert 'earlier filler' in messages[-1]
+        assert not raw.with_name('1_axon_aware_fragment_healed.swc').exists()
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def test_same_size_table_refresh_retains_accessible_items_and_blocks_partial_selection(tmp_path):
     application = QApplication.instance() or QApplication([])
     path = tmp_path / "1.swc"

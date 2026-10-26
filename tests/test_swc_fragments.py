@@ -194,3 +194,60 @@ def test_reviewed_plan_accepts_only_report_sum_roundoff_not_geometry_or_material
     joined.write_bytes(joined.read_bytes()+b'# changed\n')
     with pytest.raises(ValueError,match='bytes.*changed'):
         verified_fragment_source(joined,committed)
+
+
+def test_axon_aware_copy_uses_bounded_intact_support_and_keeps_previous_copy(tmp_path):
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source = tmp_path / '1.swc'
+    source.write_text('# units: um\n1 2 0 0 0 2 -1\n2 2 2 0 0 2 1\n3 2 4 0 0 2 2\n4 2 6 0 0 .25 3\n'
+                      '20 2 26 0 0 .25 -1\n21 2 28 0 0 2 20\n22 2 30 0 0 2 21\n23 2 32 0 0 2 22\n')
+    original = source.read_bytes()
+    report = analyze_swc(source)
+    baseline = plan_fragment_join(report)
+    kept = save_fragment_join(baseline)
+    kept_bytes = kept.read_bytes()
+    candidate = plan_fragment_join(report, policy='adjoining_cable_profile_v1')
+    assert candidate.to_dict()['policy'] == 'adjoining_cable_profile_v1'
+    bridge = candidate.bridges[0]
+    assert bridge['endpoint_radii_um'] == [.25, .25]
+    assert bridge['local_profile']['support_node_ids'] == [[3, 2, 1], [21, 22, 23]]
+    assert bridge['local_profile']['estimated_radii_um'] == [2, 2]
+    assert max(row[5] for row in candidate.filler_nodes) == 2
+    assert bridge['axial_resistance_MOhm_at_100_ohm_cm'] < 0.3 * (
+        100 * bridge['length_um'] * .01 / (3.141592653589793 * .25**2))
+    assert bridge['maximum_compartment_length_um'] <= bridge['reference_maximum_length_um']
+    assert bridge['maximum_compartment_volume_bound_um3'] <= bridge['reference_maximum_volume_um3']
+    joined = save_fragment_join(candidate)
+    assert joined.name == '1_axon_aware_fragment_healed.swc'
+    assert source.read_bytes() == original and kept.read_bytes() == kept_bytes
+    assert verified_fragment_source(joined, {os.path.normcase(os.path.abspath(source)):sha256_file(source)}) == source
+    before = load_swc(NeuronRecord('1','DN','fixture',str(source),'custom:test'), allow_forest_preview=True)
+    after = load_swc(NeuronRecord('1','DN','fixture',str(joined),'custom:test'))
+    indexed = {n.node_id:n for n in after.nodes}
+    for node in before.nodes:
+        new = indexed[node.node_id]
+        assert (node.x,node.y,node.z,node.radius,node.swc_type) == (new.x,new.y,new.z,new.radius,new.swc_type)
+        assert new.parent_id == candidate.parent_changes.get(node.node_id,node.parent_id)
+    assert _nearest_node_id(after, (16,0,0)) in {n.node_id for n in before.nodes}
+    with pytest.raises(FileExistsError):
+        save_fragment_join(candidate)
+
+
+def test_unknown_or_tampered_bridge_policy_refuses_without_replacing(fragments):
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source, _ = fragments
+    with pytest.raises(ValueError, match='policy'):
+        plan_fragment_join(analyze_swc(source), policy='guess_until_it_spikes')
+    joined = save_fragment_join(plan_fragment_join(analyze_swc(source), policy='adjoining_cable_profile_v1'))
+    kept = joined.read_bytes()
+    sidecar = joined.with_suffix('.swc.quality.json')
+    record = json.loads(sidecar.read_text())
+    record['plan']['policy'] = 'guess_until_it_spikes'
+    sidecar.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match='policy'):
+        verified_fragment_source(joined, {os.path.normcase(os.path.abspath(source)):sha256_file(source)})
+    assert joined.read_bytes() == kept

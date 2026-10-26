@@ -1558,7 +1558,7 @@ def run_library_smoke(destination: Path) -> int:
         report = analyze_swc(fragment)
         QMessageBox.question = saved_question
         fragment_dialog_checks = []
-        def answer_fragment(accept):
+        def answer_fragment(accept, prefix='fragment'):
             deadline = time.monotonic() + 4
             def answer():
                 candidates = builder.findChildren(QMessageBox, 'FragmentJoinPreview')
@@ -1572,7 +1572,7 @@ def run_library_smoke(destination: Path) -> int:
                         fragment_dialog_checks.append(False)
                         box.reject()
                         return
-                    box.grab().save(str(destination / f'fragment-preview-{accept}.png'))
+                    box.grab().save(str(destination / f'{prefix}-preview-{accept}.png'))
                     fragment_dialog_checks.append(True)
                     QTest.mouseClick(box.button(QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No), Qt.MouseButton.LeftButton)
                 elif time.monotonic() < deadline:
@@ -1603,6 +1603,34 @@ def run_library_smoke(destination: Path) -> int:
                 or window.experiment_page._circuit.neuron_ids != ('777',)):
             raise ValueError('Managed joined copy did not reach both builders on the next Load')
         window.grab().save(str(destination / 'fragment-managed-builder-handoff.png'))
+        # Exercise the separate, opt-in local-caliber policy through the actual
+        # action. Keep the existing default copy and never reinterpret filler
+        # as real support or a contact target.
+        old_joined_bytes = Path(joined).read_bytes()
+        bridge_text = QInputDialog.getText
+        QInputDialog.getText = lambda *args, **kwargs: ('777', True)
+        answer_fragment(False, 'axon-aware')
+        QTest.mouseClick(builder.bridge_review_button, Qt.MouseButton.LeftButton)
+        axon_path = fragment.with_name('777_axon_aware_fragment_healed.swc')
+        if axon_path.exists() or Path(joined).read_bytes() != old_joined_bytes:
+            raise ValueError('Declining the explicit axon-aware action changed existing files')
+        answer_fragment(True, 'axon-aware')
+        QTest.mouseClick(builder.bridge_review_button, Qt.MouseButton.LeftButton)
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 any(axon_path in neuron.paths for neuron in builder.saved_browser.inventory.neurons),
+                 'Separate axon-aware copy did not reach the shared inventory')
+        builder.load_saved_assets()
+        axon_morph = builder.loaded_morphologies['777']
+        if (fragment_dialog_checks != [True, True, True, True]
+                or builder.loaded_records['777'].swc_path != str(axon_path)
+                or axon_morph.filler_metadata.get('bridge_policy') != 'adjoining_cable_profile_v1'
+                or window.experiment_page._circuit.connectome.swc_paths.get('777') != str(axon_path)
+                or fragment.read_bytes() != original_fragment or Path(joined).read_bytes() != old_joined_bytes):
+            raise ValueError('Explicit axon-aware copy did not preserve prior files and reach both builders')
+        window.grab().save(str(destination / 'axon-aware-managed-builder-handoff.png'))
+        record.update(axon_aware_preview_decline_preserves_copies=True,
+            axon_aware_separate_copy_builder_handoff=True)
+        QInputDialog.getText = bridge_text
         # The actual failed MANC path: a reviewed derivative must not turn
         # its raw neuron into an ambiguous download/replacement target.
         fragment_copies = {p:p.read_bytes() for p in fragment.parent.glob('*.swc*')}
