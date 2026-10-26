@@ -123,6 +123,18 @@ def test_report_budget_valid_case_and_meaningful_failure():
         worker._regional_report_budget(plans,experiment)
 
 
+def test_all_compartment_recording_cannot_finish_beyond_playback_budget():
+    plans = {'a': {'estimated_nseg': 1000, 'sections': [{}] * 1000}}
+    experiment = {'duration_ms': 6, 'integration_dt_ms': .001, 'repetitions': 1,
+        'recording': {'target_region': 'all', 'sample_dt_ms': .001, 'record_voltage': True}}
+    with pytest.raises(ValueError, match='playback'):
+        worker._regional_report_budget(plans, experiment)
+    experiment['recording']['sample_dt_ms'] = .01
+    assert worker._regional_report_budget(plans, experiment) == 6_001_000
+    experiment['recording'].update(sample_dt_ms=.001, record_voltage=False)
+    assert worker._regional_report_budget(plans, experiment) == 6_001_000
+
+
 def test_contact_mesh_refines_all_incident_edges_without_moving_sites():
     data=cell(); baseline=worker._regional_plan(ROWS,data)
     data['electrical_contact_run_node_ids']=[3,4]

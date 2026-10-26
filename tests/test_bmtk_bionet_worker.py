@@ -447,6 +447,89 @@ def test_native_soma_arrays_convert_to_canonical_long_rows():
     assert rows[-1]["time_ms"] == pytest.approx(0.125)
 
 
+def _regional_report_fixture(tmp_path, monkeypatch, *, duplicate_midpoint=False):
+    h5py = pytest.importorskip("h5py")
+    import numpy as np
+    from types import SimpleNamespace
+
+    path = tmp_path / "compressed-voltage.h5"
+    values = np.arange(18, dtype="float64").reshape(3, 6) - 65
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("report/digifly")
+        group.create_dataset("data", data=values, chunks=(3, 6), compression="gzip", shuffle=True)
+        mapping = group.create_group("mapping")
+        mapping["node_ids"] = [7, 2]
+        mapping["index_pointer"] = [0, 3, 6]
+        mapping["element_ids"] = [10, 10 if duplicate_midpoint else 11, 12, 20, 21, 22]
+        mapping["element_pos"] = [.5] * 6
+        mapping["time"] = [0, .15, .05]
+    specs = {
+        "A": [{"section_id": 12, "source_node_id": 103}, {"section_id": 10, "source_node_id": 101}],
+        "B": [{"section_id": 21, "source_node_id": 202}, {"section_id": 20, "source_node_id": 201}],
+    }
+    cells = {body: {"section_plan": body, "regional_data": {}} for body in specs}
+    monkeypatch.setattr(worker._common, "_regional_sites", lambda plan, region, _data: specs[plan])
+    reads = []
+
+    class Dataset:
+        def __init__(self, value): self.value = value
+        @property
+        def shape(self): return self.value.shape
+        def __getitem__(self, index):
+            reads.append(index)
+            return self.value[index]
+
+    class Population:
+        def __init__(self, group): self.group = group
+        def get(self, key):
+            return Dataset(self.group[key]) if key == "data" else self.group.get(key)
+
+    class Report:
+        def __init__(self, group): self.group = group
+        def __contains__(self, key): return key in self.group
+        def __getitem__(self, key): return Population(self.group[key])
+
+    class File:
+        def __enter__(self):
+            self.handle = h5py.File(path, "r")
+            return self
+        def __exit__(self, *args): return self.handle.__exit__(*args)
+        def get(self, key): return Report(self.handle[key])
+
+    tracked = SimpleNamespace(File=lambda *_args: File())
+    kwargs = dict(integration_dt_ms=.025, expected_duration_ms=.15, expected_sample_dt_ms=.05,
+                  condition="Control", repetition=1, regional_cells=cells, recording_region="all")
+    return tracked, path, {7: "A", 2: "B"}, kwargs, reads, values
+
+
+def test_compressed_regional_report_reads_one_block_per_cell(tmp_path, monkeypatch):
+    h5py, path, ids, kwargs, reads, values = _regional_report_fixture(tmp_path, monkeypatch)
+    rows = worker._native_voltage_rows(h5py, path, ids, **kwargs)
+    assert len(reads) == 2, "Compressed HDF must not be reread separately for every source edge"
+    expected = []
+    for body, source_id, column in (("A", 103, 2), ("A", 101, 0), ("B", 202, 4), ("B", 201, 3)):
+        expected.extend((body, source_id, .025 + index * .05, float(values[index, column])) for index in range(3))
+    assert [(r["neuron_id"], r["compartment_id"], r["time_ms"], r["voltage_mV"]) for r in rows] == expected
+
+
+def test_compressed_regional_report_stream_preserves_rows_and_cancellation(tmp_path, monkeypatch):
+    h5py, path, ids, kwargs, reads, _ = _regional_report_fixture(tmp_path, monkeypatch)
+    expected = worker._native_voltage_rows(h5py, path, ids, **kwargs)
+    reads.clear()
+    streamed = worker._native_voltage_rows(h5py, path, ids, stream=True, **kwargs)
+    assert not isinstance(streamed, list) and reads == []
+    assert list(streamed) == expected and len(reads) == 2
+    def cancel(): raise RuntimeError("task cancelled")
+    with pytest.raises(RuntimeError, match="task cancelled"):
+        list(worker._native_voltage_rows(h5py, path, ids, stream=True, check_cancel=cancel, **kwargs))
+
+
+def test_compressed_regional_report_still_refuses_ambiguous_midpoint(tmp_path, monkeypatch):
+    h5py, path, ids, kwargs, _, _ = _regional_report_fixture(tmp_path, monkeypatch, duplicate_midpoint=True)
+    with pytest.raises(ValueError, match="exactly one SONATA element"):
+        worker._native_voltage_rows(h5py, path, ids, **kwargs)
+
+
 @pytest.mark.parametrize(
     ("time_spec", "sample_count", "message"),
     (

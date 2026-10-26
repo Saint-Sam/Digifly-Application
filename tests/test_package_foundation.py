@@ -306,6 +306,18 @@ def test_macos_build_audits_candidate_before_promoting_it():
     assert build_script.index(audit) < build_script.index(promote)
 
 
+def test_macos_local_candidate_clone_keeps_signature_and_boundary_gates():
+    script = (Path(__file__).resolve().parents[1] / 'scripts/build_macos.sh').read_text()
+    clone = '/bin/cp -cR "$stage_bundle" "$candidate_bundle"'
+    sign = 'codesign --force --deep --sign - "$candidate_bundle"'
+    verify = 'codesign --verify --deep --strict "$candidate_bundle"'
+    audit = '"$stage_python" -m digifly_app.packaging.audit "$candidate_bundle"'
+    promote = 'mv "$candidate_bundle" "$release_bundle"'
+    assert script.index(clone) < script.index(sign) < script.index(verify, script.index(sign))
+    assert script.index(verify, script.index(sign)) < script.index(audit) < script.index(promote)
+    assert 'if [[ -e "$candidate_root" ]]' in script
+
+
 def test_macos_private_build_declares_and_archives_supported_target():
     root = Path(__file__).resolve().parents[1]
     build_script = (root / "scripts" / "build_macos.sh").read_text(encoding="utf-8")

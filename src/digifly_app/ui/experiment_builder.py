@@ -164,7 +164,12 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Cell-type names such as TTMn are not IDs; use Circuit Builder to select a type. "
         "Leave blank to record every circuit neuron."
     ),
-    "recording_region": "Morphological region from which signals will be sampled.",
+    "recording_region": (
+        "Morphological region from which signals will be sampled. All compartments "
+        "records each mapped SWC edge midpoint, not a copy of soma voltage. Large "
+        "recordings and maps are saved with lossless compression; sample interval "
+        "and numeric precision are unchanged."
+    ),
     "signals": "Choose which simulator signals and events are saved for analysis.",
     "record_voltage": "Record membrane voltage traces from the selected neurons and region.",
     "detect_spikes": "Detect and save spike-event times using the configured voltage threshold.",
@@ -465,7 +470,9 @@ class ExperimentBuilderPage(QWidget):
         self.pulse_width = _double_spin(
             0.000001, 10_000_000.0, 0.4, decimals=6, suffix=" ms"
         )
-        self.frequency = _double_spin(0.000001, 1_000_000.0, 100.0, suffix=" Hz")
+        self.frequency = _double_spin(
+            0.000001, 1_000_000.0, 100.0, decimals=6, suffix=" Hz"
+        )
         self.pulse_count = QSpinBox()
         self.pulse_count.setRange(1, 1_000_000)
         self.pulse_count.setValue(10)
@@ -849,6 +856,11 @@ class ExperimentBuilderPage(QWidget):
             make_label_copyable(label)
 
     def _connect_change(self, control: QWidget) -> None:
+        if isinstance(control, QLineEdit):
+            # Accessibility clients also edit through setText, which does not
+            # emit textEdited. Bulk restore is already guarded by _restoring.
+            control.textChanged.connect(self._invalidate)
+            return
         for signal_name in (
             "textEdited",
             "valueChanged",
@@ -1099,10 +1111,6 @@ class ExperimentBuilderPage(QWidget):
         return CircuitSpec.from_dict(self._circuit.to_dict())
 
     def config(self) -> ExperimentSpec:
-        raw_scales = self.mechanism_scales.text().strip() or "{}"
-        parsed_scales = json.loads(raw_scales)
-        if not isinstance(parsed_scales, dict):
-            raise ValueError("Mechanism scales must be a JSON object.")
         conditions: list[ConditionSpec] = []
         if self.control_enabled.isChecked():
             conditions.append(
@@ -1113,6 +1121,15 @@ class ExperimentBuilderPage(QWidget):
                 )
             )
         if self.manipulation_enabled.isChecked():
+            if self.manipulation_name.text().strip().casefold() == "control":
+                raise ValueError(
+                    "The comparison name 'Control' is reserved for the reference condition. "
+                    "Choose another comparison name."
+                )
+            raw_scales = self.mechanism_scales.text().strip() or "{}"
+            parsed_scales = json.loads(raw_scales)
+            if not isinstance(parsed_scales, dict):
+                raise ValueError("Mechanism scales must be a JSON object.")
             conditions.append(
                 ConditionSpec(
                     name=self.manipulation_name.text().strip(),
@@ -1194,7 +1211,7 @@ class ExperimentBuilderPage(QWidget):
             self.frequency.setValue(stimulus.frequency_hz)
             self.pulse_count.setValue(stimulus.pulse_count)
             control = next(
-                (item for item in config.conditions if item.name.casefold() == "control"),
+                (item for item in config.conditions if item.name.strip().casefold() == "control"),
                 None,
             )
             manipulation = next(
@@ -1791,6 +1808,7 @@ class ExperimentBuilderPage(QWidget):
     def _invalidate(self, *_args: Any) -> None:
         if self._restoring:
             return
+        self._sync_setting_availability()
         self._update_stimulus_preview()
         self._update_target_region_preview()
         if self._process is not None:
@@ -1801,3 +1819,18 @@ class ExperimentBuilderPage(QWidget):
             self.experiment_changed.emit(self.config())
         except Exception:
             pass
+
+    def _sync_setting_availability(self) -> None:
+        """Inactive choices keep their editing values but cannot affect a run."""
+        for control in (self.control_gap_enabled, self.control_chemical_enabled):
+            control.setEnabled(self.control_enabled.isChecked())
+        for control in (
+            self.manipulation_name, self.manip_gap_enabled,
+            self.manip_chemical_enabled, self.disabled_neurons,
+            self.stimulus_scale, self.mechanism_scales,
+        ):
+            control.setEnabled(self.manipulation_enabled.isChecked())
+        pulse_train = self.waveform_combo.currentData() == "pulse_train"
+        self.frequency.setEnabled(pulse_train)
+        self.pulse_count.setEnabled(pulse_train)
+        self.spike_threshold.setEnabled(self.detect_spikes.isChecked())

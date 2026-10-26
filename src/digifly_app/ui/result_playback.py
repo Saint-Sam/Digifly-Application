@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from digifly_app.core.morphology import Morphology, locate_soma
+from digifly_app.workers.result_storage import result_path, open_result_text, read_result_json, result_maps
+from digifly_app.workers.result_storage import MAX_PLAYBACK_VOLTAGE_SAMPLES
 
 
 FLOW_SPEED_UM_PER_MS = 25.0
@@ -66,7 +68,7 @@ def load_morphology_voltage_tracks(
     morphologies: Iterable[Morphology],
     *,
     maximum_frames: int = 240,
-    maximum_samples: int = 5_000_000,
+    maximum_samples: int = MAX_PLAYBACK_VOLTAGE_SAMPLES,
 ) -> tuple[MorphologyVoltageTrack, ...]:
     """Bind source-edge CSV IDs to displayed run edges; never spread soma data.
 
@@ -74,13 +76,13 @@ def load_morphology_voltage_tracks(
     CSVs deliberately remain available only as traces/inferred flow.
     """
     run_root = Path(run_root)
-    voltage_path = run_root / "voltage_traces.csv"
+    voltage_path = result_path(run_root / "voltage_traces.csv")
     if not voltage_path.is_file():
         return ()
     items = tuple(morphologies)
     visible = {m.record.neuron_id: {s.child_id for s in m.segments} for m in items}
     displayed_paths = {m.record.neuron_id: Path(m.record.swc_path).resolve() for m in items}
-    map_paths = tuple((run_root / "morphologies").rglob("regional_map.json"))
+    map_paths = result_maps(run_root / "morphologies")
     if not map_paths:
         return ()
     manifest = json.loads((run_root / "run_manifest.json").read_text(encoding="utf-8"))
@@ -89,7 +91,7 @@ def load_morphology_voltage_tracks(
     morphology_metadata = manifest.get("morphologies") or {}
     edge_maps: dict[str, dict[int, int]] = {}
     for path in map_paths:
-        plan = json.loads(path.read_text(encoding="utf-8"))
+        plan = read_result_json(path)
         if not isinstance(plan, dict):
             raise ValueError("Recorded regional map must be an object")
         neuron = str(plan.get("neuron_id") or "")
@@ -122,7 +124,7 @@ def load_morphology_voltage_tracks(
     if not edge_maps:
         return ()
     grouped: dict[tuple[str, int], dict[tuple[str, int], dict[float, float]]] = {}
-    with voltage_path.open(encoding="utf-8", newline="") as handle:
+    with open_result_text(voltage_path) as handle:
         reader = csv.DictReader(handle)
         if "compartment_id" not in (reader.fieldnames or ()):
             return ()
@@ -198,7 +200,7 @@ def load_activity_flow_tracks(
 ) -> tuple[ActivityFlowTrack, ...]:
     """Load playback tracks from generic experiment voltage/spike CSV artifacts."""
 
-    voltage_path = Path(run_root) / "voltage_traces.csv"
+    voltage_path = result_path(Path(run_root) / "voltage_traces.csv")
     try:
         experiment = json.loads((Path(run_root) / "experiment.json").read_text())
         recording = experiment.get("recording", {})
@@ -213,9 +215,9 @@ def load_activity_flow_tracks(
     # Regional recordings identify edges, not whole-cell soma voltage. Use
     # only the explicit soma-edge map for the older inferred-soma-flow view.
     soma_edges = {}
-    for map_path in (Path(run_root)/"morphologies").rglob("regional_map.json"):
+    for map_path in result_maps(Path(run_root)/"morphologies"):
         try:
-            plan = json.loads(map_path.read_text())
+            plan = read_result_json(map_path)
             source_id = str(next(s["source_node_id"] for s in plan["sections"] if s["is_target_soma"]))
             if plan.get("neuron_id"):
                 soma_edges[str(plan["neuron_id"])] = source_id
@@ -232,7 +234,7 @@ def load_activity_flow_tracks(
         except (OSError, ValueError, KeyError, StopIteration):
             continue  # Unknown mapping must not be treated as soma.
     if voltage_path.is_file():
-        with voltage_path.open("r", encoding="utf-8", newline="") as handle:
+        with open_result_text(voltage_path) as handle:
             for row in csv.DictReader(handle):
                 try:
                     time_ms = float(row.get("time_ms", ""))
@@ -254,9 +256,9 @@ def load_activity_flow_tracks(
                 )
 
     spikes: dict[tuple[str, int], dict[str, list[float]]] = {}
-    spike_path = Path(run_root) / "spikes.csv"
+    spike_path = result_path(Path(run_root) / "spikes.csv")
     if spike_path.is_file() and not (explicit_spike_policy and recording["detect_spikes"] is False):
-        with spike_path.open("r", encoding="utf-8", newline="") as handle:
+        with open_result_text(spike_path) as handle:
             for row in csv.DictReader(handle):
                 try:
                     spike_time = float(row.get("spike_time_ms", ""))

@@ -2049,10 +2049,13 @@ class ResultsPage(QWidget):
             neuron_id: f"{morphology.record.neuron_type} · body {neuron_id}"
             for neuron_id, morphology in self.result_viewport.morphologies.items()
         }
-        traces = load_voltage_traces(
-            run_root / "voltage_traces.csv",
-            neuron_labels=neuron_labels,
-        )
+        try:
+            traces = load_voltage_traces(
+                run_root / "voltage_traces.csv", neuron_labels=neuron_labels,
+            )
+        except (OSError, EOFError, ValueError) as exc:
+            traces = ()
+            self.status_message.emit(f"Saved voltage could not be read: {exc}")
         self.voltage_plot.set_traces(traces)
         interactive = bool(traces)
         self.voltage_2d_button.setEnabled(interactive)
@@ -2335,11 +2338,15 @@ class ResultsPage(QWidget):
         stimulus_ids: set[str],
     ) -> None:
         self._stop_activity_playback()
-        self._flow_tracks = load_activity_flow_tracks(run_root)
+        try:
+            self._flow_tracks = load_activity_flow_tracks(run_root)
+        except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
+            self._flow_tracks = ()
+            self.status_message.emit(f"Saved activity could not be read: {exc}")
         self._morphology_voltage_active = False
         try:
             self._morphology_voltage_tracks = load_morphology_voltage_tracks(run_root, morphologies)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
             self._morphology_voltage_tracks = ()
             self.status_message.emit(f"Morphology voltage unavailable: {exc}")
         self.voltage_morphology_button.setEnabled(bool(self._morphology_voltage_tracks))
@@ -2381,6 +2388,7 @@ class ResultsPage(QWidget):
             self.activity_method.setText(
                 "Activity playback unavailable · no readable saved soma spikes"
             )
+            self.activity_method.setToolTip(self.activity_method.text())
 
     def _reset_activity_playback(self) -> None:
         self._stop_activity_playback()
@@ -2401,6 +2409,7 @@ class ResultsPage(QWidget):
         self.activity_method.setText(
             "Activity playback unavailable · load a run with saved soma spikes"
         )
+        self.activity_method.setToolTip(self.activity_method.text())
         self.save_result_visualization_button.setEnabled(False)
         self.result_soma_points_button.setEnabled(False)
         self.result_full_skeletons_button.setEnabled(False)

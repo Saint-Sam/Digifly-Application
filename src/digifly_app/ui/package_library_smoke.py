@@ -192,8 +192,11 @@ def run_library_smoke(destination: Path) -> int:
             QTest.mouseClick(page.release_buttons[dataset], Qt.MouseButton.LeftButton)
             QTest.qWait(60)
         before_choice = profile_path.read_bytes()
-        if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
-            raise ValueError('Initial connectome choices or bundled pictures are missing')
+        if picker.selected_dataset:
+            raise ValueError(f'Initial connectome chooser unexpectedly selected {picker.selected_dataset}')
+        missing_pictures = [key for key,image in picker.pictures.items() if image.pixmap().isNull()]
+        if missing_pictures:
+            raise ValueError(f'Bundled connectome pictures are missing: {missing_pictures}')
         if any(button.isCheckable() for button in picker.buttons.values()):
             raise ValueError('Connectome navigation must use ordinary accessible push buttons')
         if page.view_stack.currentWidget() is not page.picker_scroll or page.add_data_button.isVisible():
@@ -1510,6 +1513,9 @@ def run_library_smoke(destination: Path) -> int:
         record['job_history_duplicate_readiness'] = True
         from digifly_app.ui.package_results_smoke import check_results_review
         record.update(check_results_review(window,destination))
+        journal('experiment_setting_inventory_and_interactions')
+        from digifly_app.ui.experiment_settings_check import check_settings_interactions
+        record.update(check_settings_interactions(destination/'experiment-settings', parent=window))
         builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
         QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
         # Exercise the new controls on the graph acquired by the actual app

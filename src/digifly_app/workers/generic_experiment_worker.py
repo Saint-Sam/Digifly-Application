@@ -40,6 +40,14 @@ except ImportError:
     _trials = importlib.util.module_from_spec(_trials_spec)
     _trials_spec.loader.exec_module(_trials)
 
+try:
+    from . import result_storage as _storage
+except ImportError:
+    _storage_spec = importlib.util.spec_from_file_location("digifly_result_storage", Path(__file__).with_name("result_storage.py"))
+    if _storage_spec is None or _storage_spec.loader is None:
+        raise ImportError("The app-owned result storage helper is missing")
+    _storage = importlib.util.module_from_spec(_storage_spec)
+    _storage_spec.loader.exec_module(_storage)
 
 REQUEST_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
@@ -2805,6 +2813,18 @@ def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, A
     values = columns*samples*trials
     if values > 25_000_000:
         raise ValueError(f"Regional native recording would require {values:,} values; the local safety limit is 25,000,000. Reduce the circuit, duration or recording targets.")
+    if recording.get("record_voltage", True) and recording.get("target_region") == "all":
+        interval = float(recording.get("sample_dt_ms", experiment["integration_dt_ms"]))
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("Recording sample interval must be finite and positive")
+        edges = sum(len(plans[n].get("sections") or ()) or int(plans[n]["estimated_nseg"])
+                    for n in targets)
+        recorded = edges * (math.ceil(float(experiment["duration_ms"]) / interval) + 1) * trials
+        if recorded > _storage.MAX_PLAYBACK_VOLTAGE_SAMPLES:
+            raise ValueError(f"All-compartment recording would exceed the local playback memory budget "
+                f"({recorded:,} samples versus {_storage.MAX_PLAYBACK_VOLTAGE_SAMPLES:,}). "
+                "Select fewer recording targets, a shorter duration or a larger recording sample interval; "
+                "the app will not silently discard samples.")
     return values
 
 
@@ -3272,6 +3292,14 @@ def _neuron_network_traces(
     return traces, str(getattr(neuron, "__version__", "unknown"))
 
 
+def _plot_trace_selection(keys, maximum=24):
+    """Bound a static overview, never the recorded data or interactive traces."""
+    ordered = sorted(keys)
+    if len(ordered) <= maximum:
+        return ordered
+    return [ordered[round(i * (len(ordered) - 1) / (maximum - 1))] for i in range(maximum)]
+
+
 def _write_plot(
     path: Path,
     rows: Sequence[Mapping[str, Any]],
@@ -3294,7 +3322,9 @@ def _write_plot(
         times.append(float(row["time_ms"]))
         voltages.append(float(row["voltage_mV"]))
     figure, axis = plt.subplots(figsize=(11.0, 5.9), constrained_layout=True)
-    for (condition, repetition, neuron_id, compartment_id), (times, voltages) in grouped.items():
+    selected = _plot_trace_selection(grouped)
+    for condition, repetition, neuron_id, compartment_id in selected:
+        times, voltages = grouped[(condition, repetition, neuron_id, compartment_id)]
         label = f"{condition} · {neuron_id}" + (f" · SWC {compartment_id}" if compartment_id else "")
         if int(experiment.get("repetitions", 1)) != 1:
             label += f" · rep {repetition}"
@@ -3307,7 +3337,11 @@ def _write_plot(
     axis.set_ylabel("Membrane voltage (mV)", fontsize=13)
     axis.tick_params(axis="both", labelsize=11)
     axis.grid(True, alpha=0.25)
-    axis.legend(loc="best", fontsize=11)
+    axis.legend(loc="upper right", fontsize=7 if len(selected)>12 else 11,
+                ncol=2 if len(selected)>12 else 1)
+    if len(selected) < len(grouped):
+        figure.suptitle(f"Overview: {len(selected)} of {len(grouped):,} recorded traces shown. "
+                       "All samples remain saved and available in Results.", fontsize=9)
     # Preserve enough source pixels for a crisp fit-to-frame preview on Retina
     # displays while keeping the portable PNG comfortably below dataset scale.
     figure.savefig(path, dpi=260)
@@ -3879,6 +3913,7 @@ def run(request_path: Path) -> Path:
         artifacts.append(
             {"kind": "image", "path": plot_path.name, "label": "Voltage comparison" if voltage_enabled else "Spike raster"}
         )
+    storage = _storage.compact_outputs(output_dir, artifacts)
     completed_at = _now()
     neuron_types = {
         neuron_id: str(record.get("neuron_type") or "Unknown")
@@ -3901,6 +3936,9 @@ def run(request_path: Path) -> Path:
         "Chemical contacts": len(chemical_contacts),
         "Electrical contacts": len(electrical_contacts),
         "Edge manifest SHA-256": str(request["edge_manifest_sha256"]),
+        "Recording storage": "Lossless compression; original samples and precision retained",
+        "Supporting files before compression (bytes)": storage["original_bytes"],
+        "Supporting files stored (bytes)": storage["stored_bytes"],
     }
     if engine == "neuron":
         metadata["Requested independent trial workers"]=int(experiment.get("workers",1))

@@ -74,11 +74,12 @@ def load_voltage_traces(
 ) -> tuple[VoltageTrace, ...]:
     """Load long-form Digifly voltage CSV data without adding a NumPy dependency."""
 
-    source = Path(path).expanduser().resolve()
+    from digifly_app.workers.result_storage import result_path, open_result_text
+    source = result_path(Path(path).expanduser().resolve())
     if not source.is_file():
         return ()
     grouped: dict[tuple[str, int, str, str], list[tuple[float, float]]] = {}
-    with source.open("r", encoding="utf-8", newline="") as handle:
+    with open_result_text(source) as handle:
         for row in csv.DictReader(handle):
             try:
                 time_ms = float(row.get("time_ms", ""))

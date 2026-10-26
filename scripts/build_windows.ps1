@@ -59,7 +59,7 @@ try {
     Copy-Item "src\digifly_app\core\pdcm_campaign_results.py" (Join-Path $bundle "digifly_app\workers\pdcm_campaign_results.py")
     Get-ChildItem "scripts\*.py", "scripts\*.sh" | Copy-Item -Destination (Join-Path $bundle "scripts")
     Copy-Item "docs\WINDOWS_TESTER.md" (Join-Path $bundle "START HERE.md")
-    $requiredWorkers = @("generic_experiment_worker.py", "arbor_escape_siz_worker.py", "bmtk_bionet_worker.py", "escape_siz_worker.py", "pdcm_netpyne_worker.py", "pdcm_netpyne_mpi_worker.py", "pair_graph_import_worker.py")
+    $requiredWorkers = @("result_storage.py", "generic_experiment_worker.py", "arbor_escape_siz_worker.py", "bmtk_bionet_worker.py", "escape_siz_worker.py", "pdcm_netpyne_worker.py", "pdcm_netpyne_mpi_worker.py", "pair_graph_import_worker.py")
     foreach ($worker in $requiredWorkers) {
         if (-not (Test-Path (Join-Path $bundle "digifly_app\workers\$worker"))) { throw "Packaged simulator worker is missing: $worker" }
     }

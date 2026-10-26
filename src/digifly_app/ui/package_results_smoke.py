@@ -114,6 +114,7 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
     swc = folder/'normalized_input.swc'
     swc.write_text('1 1 0 0 0 1 -1\n2 3 5 0 0 .5 1\n')
     (folder/'regional_map.json').write_text(json.dumps({'neuron_id':'10068',
+        'site_policy':'Source SWC edge midpoint; recorded values map to source SWC edge midpoint without spreading to unrecorded edges',
         'sections':[{'node_id':2,'source_node_id':2,'is_target_soma':True}]}))
     (folder/'morphology_node_map.csv').write_text('source_node_id,run_node_id\n1,1\n2,2\n')
     (spike_root/'run_manifest.json').write_text(json.dumps({'morphologies':{
@@ -155,8 +156,35 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
     if (page.voltage_plot.trace_count!=1 or page.activity_slider.isEnabled()
             or any(any(t.spikes_by_neuron.values()) for t in page._flow_tracks)):
         raise ValueError('Voltage-only Results invents events or retains previous spike playback')
+    page.voltage_morphology_button.setChecked(True)
+    if 'Measured' not in page.activity_method.toolTip():
+        raise ValueError('Measured Results lacks its current playback help')
+    page.voltage_2d_button.setChecked(True)
+    if page.activity_method.toolTip()!=page.activity_method.text():
+        raise ValueError('Leaving measured playback retains stale help')
+    page.voltage_morphology_button.setChecked(True)
+    page.display_result(spike_result)
+    if (page.activity_slider.isEnabled()
+            or page.activity_method.toolTip()!=page.activity_method.text()):
+        raise ValueError('Loading voltage-only Results retains stale measured help')
+    page._reset_activity_playback()
+    if page.activity_method.toolTip()!=page.activity_method.text():
+        raise ValueError('Resetting Results retains stale playback help')
+    from digifly_app.workers.result_storage import compress_file
+    expected = page.voltage_plot.traces
+    for path in (folder/'regional_map.json', spike_root/'voltage_traces.csv'):
+        if not compress_file(path, minimum_bytes=0):
+            raise ValueError('Native compressed-results fixture failed to compress')
+    page.display_result(spike_result)
+    page.voltage_morphology_button.setChecked(True)
+    page.activity_slider.setValue(1)
+    if (page.voltage_plot.traces!=expected or not page.activity_slider.isEnabled()
+            or page.activity_time_label.text()!='1.00 ms'
+            or page.result_viewport.activity_segment_count!=1):
+        raise ValueError('Compressed recording/map cannot drive exact measured playback')
     QTest.mouseClick(window.nav_buttons[previous],Qt.MouseButton.LeftButton)
     QApplication.processEvents()
     return {'dense_results_legend_paged':True,'results_recording_scope':True,
             'regional_voltage_axis_label':True,'results_state_actions':True,
-            'spike_output_selection':True}
+            'spike_output_selection':True,'results_activity_help_resets':True,
+            'compressed_compartment_playback':True}

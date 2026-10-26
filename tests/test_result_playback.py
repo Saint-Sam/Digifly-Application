@@ -165,6 +165,22 @@ def test_measured_voltage_binds_original_ids_to_run_edges_without_extrapolation(
     assert measured_segment_voltages(track, 5.) == {}
 
 
+def test_compressed_all_edge_playback_is_identical_to_legacy_files(tmp_path):
+    from digifly_app.workers.result_storage import compress_file
+    from digifly_app.ui.voltage_plot import load_voltage_traces
+    folder = _measured_run(tmp_path)
+    morphologies = [_recorded_morphology(tmp_path)]
+    expected = load_morphology_voltage_tracks(tmp_path, morphologies)
+    expected_traces = load_voltage_traces(tmp_path / "voltage_traces.csv")
+    for path in (folder / "regional_map.json", tmp_path / "voltage_traces.csv"):
+        assert compress_file(path, minimum_bytes=0)
+    actual = load_morphology_voltage_tracks(tmp_path, morphologies)
+    assert actual == expected
+    assert load_voltage_traces(tmp_path / "voltage_traces.csv") == expected_traces
+    for t in (1., 2., 2.5, 3., 4.):
+        assert measured_segment_voltages(actual[0], t) == measured_segment_voltages(expected[0], t)
+
+
 @pytest.mark.parametrize("fault", ["missing", "unknown", "changed", "geometry", "duplicate", "nonfinite", "negative", "budget"])
 def test_measured_voltage_rejects_invalid_map_or_samples(tmp_path, fault):
     folder = _measured_run(tmp_path)

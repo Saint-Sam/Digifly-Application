@@ -84,8 +84,10 @@ def test_results_measured_playback_needs_no_spikes_and_switches_back(tmp_path, m
         assert not page._morphology_voltage_active
         assert page.voltage_plot.mode == MODE_2D
         assert page.result_viewport.activity_segment_count == 0
+        assert page.activity_method.toolTip() == page.activity_method.text()
         page._reset_activity_playback()
         assert not page.voltage_morphology_button.isEnabled()
+        assert page.activity_method.toolTip() == page.activity_method.text()
     finally:
         window.close()
         QSettings.setDefaultFormat(old_format)
