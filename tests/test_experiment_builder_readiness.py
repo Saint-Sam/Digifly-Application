@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,6 +12,37 @@ from digifly_app.core.circuit import CircuitSpec
 from digifly_app.core.experiment import ConditionSpec, ExperimentSpec
 from digifly_app.core.models import CheckState, PreflightCheck, PreflightReport
 from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+
+
+def test_readiness_rejects_job_history_name_without_raw_run_folder(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    saved = tmp_path / 'jobs' / 'completed-experiment'
+    saved.mkdir(parents=True)
+    request = saved / 'request.json'
+    request.write_text(json.dumps({'experiment': {'name': 'Previously completed test'}}))
+    before = request.read_bytes()
+    page = ExperimentBuilderPage(output_root=tmp_path)
+    page.set_circuit_spec(CircuitSpec(neuron_ids=('1', '2')))
+    calls = []
+    monkeypatch.setattr('digifly_app.ui.experiment_builder.GenericExperimentAdapter.validate',
+                        lambda *args, **kwargs: calls.append(True) or PreflightReport(()))
+    try:
+        page.name_edit.setText('  previously   COMPLETED test  ')
+        page.validate_draft()
+        assert 'Name already used' in page.validation_state.text()
+        assert str(saved.resolve()) in page.validation_state.toolTip()
+        assert 'Preflight passed' not in page.validation_state.text()
+        assert not calls and page._process is None
+        assert request.read_bytes() == before and not (tmp_path / 'experiments').exists()
+        page.name_edit.setText('Fresh unique test')
+        page.validate_draft()
+        assert 'Preflight passed' in page.validation_state.text()
+        assert page.name_availability.text() == '✓ Available'
+        assert calls == [True] and request.read_bytes() == before
+        assert not (tmp_path / 'experiments').exists()
+    finally:
+        page.close()
+        app.processEvents()
 
 
 def test_changed_source_clears_geometry_and_downloaded_table_stays_explicit(tmp_path):

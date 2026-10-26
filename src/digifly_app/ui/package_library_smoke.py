@@ -1480,6 +1480,34 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Applied chemical-site gap policy did not reach Experiment Builder')
         record.update(located_chemical_model_applied=True, modeled_gf_ttmn_chemical_sites=True,
                       chemical_site_gap_status=True)
+        experiment_page = window.experiment_page
+        original_experiment = experiment_page.config()
+        previous_page_index = window.pages.currentIndex()
+        experiment_nav = next(button for button in window.nav_buttons if 'Experiment Builder' in button.text())
+        QTest.mouseClick(experiment_nav, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        saved_job = experiment_page._output_root() / 'jobs' / 'readiness-history-only'
+        saved_job.mkdir(parents=True, exist_ok=False)
+        saved_job_request = saved_job / 'request.json'
+        saved_job_request.write_text(json.dumps({'experiment': {'name': 'Already completed contact test'}}))
+        saved_job_bytes = saved_job_request.read_bytes()
+        experiment_page.name_edit.setText('  already   COMPLETED contact test  ')
+        experiment_page.findChild(QScrollArea).ensureWidgetVisible(experiment_page.validate_button)
+        QTest.qWait(80)
+        QTest.mouseClick(experiment_page.validate_button, Qt.MouseButton.LeftButton)
+        if ('Name already used' not in experiment_page.validation_state.text()
+                or str(saved_job) not in experiment_page.validation_state.toolTip()
+                or experiment_page._process is not None
+                or saved_job_request.read_bytes() != saved_job_bytes):
+            raise ValueError('Readiness disagrees with the saved-job duplicate-name launch guard')
+        window.grab().save(str(destination / 'duplicate-name-readiness.png'))
+        experiment_page.name_edit.setText('Fresh contact readiness check')
+        if experiment_page._update_name_availability() or experiment_page.name_availability.text() != '✓ Available':
+            raise ValueError('A new experiment name remains incorrectly unavailable')
+        experiment_page.set_config(original_experiment)
+        QTest.mouseClick(window.nav_buttons[previous_page_index], Qt.MouseButton.LeftButton)
+        app.processEvents()
+        record['job_history_duplicate_readiness'] = True
         builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
         QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
         # Exercise the new controls on the graph acquired by the actual app

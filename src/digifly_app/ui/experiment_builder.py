@@ -1254,6 +1254,16 @@ class ExperimentBuilderPage(QWidget):
             self.validation_state.setText(f"{len(errors)} issue(s) · {errors[0]}")
             self.status_message.emit(self.validation_state.text())
             return
+        matches = self._update_name_availability()
+        if matches:
+            self.validation_state.setText(
+                f"Name already used · rename {config.name!r} before running"
+            )
+            self.validation_state.setToolTip(
+                f"A saved job already uses this name: {matches[0]}. No files were changed."
+            )
+            self.status_message.emit(self.validation_state.text())
+            return
         self.validation_state.setText("Checking simulator readiness…")
         adapter = GenericExperimentAdapter(
             self._runtime_paths,
