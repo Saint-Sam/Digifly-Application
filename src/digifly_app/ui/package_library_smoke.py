@@ -1508,6 +1508,8 @@ def run_library_smoke(destination: Path) -> int:
         QTest.mouseClick(window.nav_buttons[previous_page_index], Qt.MouseButton.LeftButton)
         app.processEvents()
         record['job_history_duplicate_readiness'] = True
+        from digifly_app.ui.package_results_smoke import check_results_review
+        record.update(check_results_review(window,destination))
         builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
         QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
         # Exercise the new controls on the graph acquired by the actual app

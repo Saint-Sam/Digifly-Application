@@ -199,8 +199,14 @@ def load_activity_flow_tracks(
     """Load playback tracks from generic experiment voltage/spike CSV artifacts."""
 
     voltage_path = Path(run_root) / "voltage_traces.csv"
-    if not voltage_path.is_file():
-        return ()
+    try:
+        experiment = json.loads((Path(run_root) / "experiment.json").read_text())
+        recording = experiment.get("recording", {})
+        explicit_spike_policy = isinstance(recording, dict) and isinstance(recording.get("detect_spikes"), bool)
+        duration = float(experiment.get("duration_ms", 0))
+        duration = duration if isfinite(duration) and duration > 0 else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        recording, explicit_spike_policy, duration = {}, False, None
 
     times: dict[tuple[str, int], list[float]] = {}
     traces: dict[tuple[str, int, str], list[tuple[float, float]]] = {}
@@ -225,35 +231,38 @@ def load_activity_flow_tracks(
                 soma_edges[str(request["circuit"]["neuron_ids"][0])] = source_id
         except (OSError, ValueError, KeyError, StopIteration):
             continue  # Unknown mapping must not be treated as soma.
-    with voltage_path.open("r", encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            try:
-                time_ms = float(row.get("time_ms", ""))
-                voltage_mV = float(row.get("voltage_mV", ""))
-            except (TypeError, ValueError):
-                continue
-            condition = str(row.get("condition") or "Recorded run").strip()
-            repetition = _repetition(row.get("repetition"))
-            neuron_id = str(row.get("neuron_id") or "").strip()
-            if not neuron_id:
-                continue
-            key = (condition, repetition)
-            times.setdefault(key, []).append(time_ms)
-            compartment_id = str(row.get("compartment_id") or "")
-            if compartment_id and compartment_id != soma_edges.get(neuron_id):
-                continue
-            traces.setdefault((condition, repetition, neuron_id), []).append(
-                (time_ms, voltage_mV)
-            )
+    if voltage_path.is_file():
+        with voltage_path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    time_ms = float(row.get("time_ms", ""))
+                    voltage_mV = float(row.get("voltage_mV", ""))
+                except (TypeError, ValueError):
+                    continue
+                condition = str(row.get("condition") or "Recorded run").strip()
+                repetition = _repetition(row.get("repetition"))
+                neuron_id = str(row.get("neuron_id") or "").strip()
+                if not neuron_id or not isfinite(time_ms) or not isfinite(voltage_mV) or time_ms < 0:
+                    continue
+                key = (condition, repetition)
+                times.setdefault(key, []).append(time_ms)
+                compartment_id = str(row.get("compartment_id") or "")
+                if compartment_id and compartment_id != soma_edges.get(neuron_id):
+                    continue
+                traces.setdefault((condition, repetition, neuron_id), []).append(
+                    (time_ms, voltage_mV)
+                )
 
     spikes: dict[tuple[str, int], dict[str, list[float]]] = {}
     spike_path = Path(run_root) / "spikes.csv"
-    if spike_path.is_file():
+    if spike_path.is_file() and not (explicit_spike_policy and recording["detect_spikes"] is False):
         with spike_path.open("r", encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle):
                 try:
                     spike_time = float(row.get("spike_time_ms", ""))
                 except (TypeError, ValueError):
+                    continue
+                if not isfinite(spike_time) or spike_time < 0 or (duration is not None and spike_time > duration):
                     continue
                 condition = str(row.get("condition") or "Recorded run").strip()
                 repetition = _repetition(row.get("repetition"))
@@ -269,6 +278,8 @@ def load_activity_flow_tracks(
     # Older compatible runs may have voltage traces but no separate spike table.
     # Recover the same upward 0 mV crossings used by Digifly's former viewer.
     for (condition, repetition, neuron_id), samples in traces.items():
+        if explicit_spike_policy:
+            continue  # An explicit disabled/zero-event export is authoritative.
         neuron_spikes = spikes.setdefault((condition, repetition), {}).setdefault(
             neuron_id, []
         )
@@ -281,6 +292,20 @@ def load_activity_flow_tracks(
                 neuron_spikes.append(
                     t1 if abs(denominator) < 1e-12 else t0 + (-v0 / denominator) * (t1 - t0)
                 )
+
+    for key, neuron_events in spikes.items():
+        if times.get(key):
+            continue
+        # This is a display clock for real saved soma events, not voltage
+        # samples or a measured propagation velocity. No voltage is invented.
+        event_times = sorted({t for values in neuron_events.values() for t in values})
+        if not event_times:
+            continue
+        frames = max(2, int(maximum_frames))
+        grid_count = max(2, frames - len(event_times))
+        display_clock = ([duration * i / (grid_count - 1) for i in range(grid_count)]
+                         if duration is not None else [])
+        times[key] = event_times + display_clock
 
     repetitions_per_condition: dict[str, set[int]] = {}
     for condition, repetition in times:

@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261025.8
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261026.1
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +66,8 @@ jobs:
           if (Test-Path bundled_data/manc/unique_pairs_by_id.parquet) { $env:DIGIFLY_TEST_MANC_PARQUET = (Resolve-Path bundled_data/manc/unique_pairs_by_id.parquet).Path }
           ./.venv/Scripts/python.exe -m pytest tests/test_library_review_launch.py tests/test_neuprint_contacts.py tests/test_located_contact_execution.py tests/test_aggregate_chemical_execution.py tests/test_swc_fragments.py tests/test_swc_quality.py tests/test_swc_units.py tests/test_mechanisms.py tests/test_bmtk_bionet_worker.py tests/test_channel_execution.py tests/test_regional_execution.py tests/test_generic_experiment.py::test_classic_arbor_request_pins_hh_table_translator_without_native_channels tests/test_generic_experiment.py::test_generic_adapter_retains_bmtk_single_cell_gap_policy_without_inventing_contacts tests/test_generic_experiment.py::test_generic_adapter_accepts_bmtk_chemical_lane_and_selects_bionet_worker --junitxml=connected-model-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Connected-model/fragment source regressions failed' }
+          ./.venv/Scripts/python.exe -m pytest tests/test_voltage_plot.py tests/test_results_responsive_layout.py tests/test_morphology_voltage_ui.py tests/test_result_playback.py --junitxml=results-review-source-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Results layout, recording scope or state-action regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_connectivity_download.py tests/test_circuit_library.py tests/test_circuit_builder_ui.py tests/test_saved_neurons.py tests/test_linked_libraries.py tests/test_linked_libraries_ui.py tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_ui_wording.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py tests/test_connectome_picker.py tests/test_updates.py tests/test_update_installer.py tests/test_update_cleanup.py tests/test_updater_gate.py tests/test_updater_ui.py tests/test_project.py tests/test_morphology.py tests/test_experiment_builder_readiness.py tests/test_generic_experiment.py::test_downloaded_male_pair_graph_cannot_silently_use_native_contacts --junitxml=neuron-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Source regressions failed' }
           # Offscreen is only for inert unit tests. The real MainWindow has
@@ -128,6 +130,7 @@ jobs:
             dist/*.sha256
             neuron-source-tests.xml
             connected-model-source-tests.xml
+            results-review-source-tests.xml
             source-neuron-ui-evidence/*.json
             source-neuron-ui-evidence/*.txt
             source-neuron-ui-evidence/*.png

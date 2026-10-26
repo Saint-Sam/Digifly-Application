@@ -1619,14 +1619,16 @@ class ResultsPage(QWidget):
         )):
             self.voltage_mode_group.addButton(button)
             voltage_mode_row.addWidget(button, 1 + index // 2, index % 2)
-        self.voltage_2d_button.clicked.connect(
-            lambda: self._set_voltage_plot_mode(MODE_2D)
+        self.voltage_2d_button.toggled.connect(
+            lambda checked: self._set_voltage_plot_mode(MODE_2D) if checked else None
         )
-        self.voltage_3d_button.clicked.connect(
-            lambda: self._set_voltage_plot_mode(MODE_3D_STACK)
+        self.voltage_3d_button.toggled.connect(
+            lambda checked: self._set_voltage_plot_mode(MODE_3D_STACK) if checked else None
         )
-        self.voltage_morphology_button.clicked.connect(self._set_morphology_voltage_mode)
-        self.spike_raster_button.clicked.connect(self._show_spike_raster)
+        self.voltage_morphology_button.toggled.connect(
+            lambda checked: self._set_morphology_voltage_mode() if checked else None)
+        self.spike_raster_button.toggled.connect(
+            lambda checked: self._show_spike_raster() if checked else None)
         figure_layout.addLayout(voltage_mode_row)
         self.voltage_plot = VoltagePlotWidget()
         self.voltage_plot.status_message.connect(self.status_message)
@@ -1662,7 +1664,7 @@ class ResultsPage(QWidget):
         circuit_layout.setContentsMargins(0, 0, 0, 0)
         circuit_layout.setSpacing(7)
         circuit_header = QHBoxLayout()
-        circuit_title = QLabel("Recorded circuit")
+        circuit_title = QLabel("Run circuit")
         circuit_title.setObjectName("Strong")
         circuit_header.addWidget(circuit_title)
         circuit_header.addStretch(1)
@@ -1731,7 +1733,7 @@ class ResultsPage(QWidget):
         self.circuit_identity_scroll.setWidget(self.circuit_identity)
         circuit_layout.addWidget(self.circuit_identity_scroll)
         self.result_viewport = CircuitViewport(camera_only=True)
-        self.result_viewport.setAccessibleName("Recorded circuit visualization")
+        self.result_viewport.setAccessibleName("Run circuit visualization")
         self.result_viewport.setMinimumSize(280, 430)
         self.result_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
         self.result_viewport.status_message.connect(self.status_message)
@@ -1977,6 +1979,7 @@ class ResultsPage(QWidget):
             )
         self._display_recorded_circuit(result)
         self._configure_voltage_plot(result)
+        self._update_recording_scope(result)
         self.expand_trace_button.setVisible(not is_point_network)
         self.circuit_panel.setVisible(not is_point_network and not self.expand_trace_button.isChecked())
         for control in (
@@ -1992,7 +1995,7 @@ class ResultsPage(QWidget):
             self.spike_raster.set_run(result.summary_path)
             self.figure_stack.setCurrentWidget(self.spike_raster)
             if not is_pdcm:
-                self.spike_raster_button.setChecked(True)
+                self._check_voltage_view_button(self.spike_raster_button)
             self.image_info.setText("Interactive spikes · zoom and filter populations")
             self.save_trace_button.setEnabled(True)
         else:
@@ -2058,7 +2061,7 @@ class ResultsPage(QWidget):
             interactive or bool(self._pixmap is not None and not self._pixmap.isNull())
         )
         if interactive:
-            self.voltage_2d_button.setChecked(True)
+            self._check_voltage_view_button(self.voltage_2d_button)
             self.voltage_plot.set_mode(MODE_2D)
             self.figure_stack.setCurrentWidget(self.voltage_plot)
             self.image_info.setText(
@@ -2067,6 +2070,17 @@ class ResultsPage(QWidget):
             )
         else:
             self.figure_stack.setCurrentWidget(self.image_scroll)
+
+    def _check_voltage_view_button(self, selected: QPushButton) -> None:
+        # Sync the exclusive group's display without recursively dispatching
+        # a second view change. User and accessible state changes use toggled.
+        buttons = self.voltage_mode_group.buttons()
+        states = [button.blockSignals(True) for button in buttons]
+        try:
+            selected.setChecked(True)
+        finally:
+            for button, previous in zip(buttons, states):
+                button.blockSignals(previous)
 
     def _set_voltage_plot_mode(self, mode: str) -> None:
         if not self.voltage_plot.trace_count:
@@ -2077,8 +2091,7 @@ class ResultsPage(QWidget):
         self.voltage_plot.set_mode(mode)
         self.figure_stack.setCurrentWidget(self.voltage_plot)
         is_3d = mode == MODE_3D_STACK
-        self.voltage_2d_button.setChecked(not is_3d)
-        self.voltage_3d_button.setChecked(is_3d)
+        self._check_voltage_view_button(self.voltage_3d_button if is_3d else self.voltage_2d_button)
         self.status_message.emit(
             "Voltage plot switched to 3-D trace stack"
             if is_3d
@@ -2089,7 +2102,7 @@ class ResultsPage(QWidget):
         if not self._morphology_voltage_tracks:
             return
         self._morphology_voltage_active = True
-        self.voltage_morphology_button.setChecked(True)
+        self._check_voltage_view_button(self.voltage_morphology_button)
         self._set_trace_view_expanded(False)
         self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS)
         self._select_playback_tracks()
@@ -2101,7 +2114,7 @@ class ResultsPage(QWidget):
             self.figure_stack.setCurrentWidget(self.spike_raster)
             return
         self.figure_stack.setCurrentWidget(self.spike_raster)
-        self.spike_raster_button.setChecked(True)
+        self._check_voltage_view_button(self.spike_raster_button)
         self.image_info.setText("Interactive spikes · zoom and filter populations")
         self.status_message.emit("Showing interactive NetPyNE spike raster")
 
@@ -2221,7 +2234,7 @@ class ResultsPage(QWidget):
         if not morphologies:
             self._reset_activity_playback()
             self.result_viewport.clear()
-            self.circuit_info.setText("No recorded morphology loaded")
+            self.circuit_info.setText("No run morphology loaded")
             self.circuit_identity.setText(
                 "This result does not include a readable run-packaged SWC."
                 if morphology_artifacts
@@ -2254,24 +2267,54 @@ class ResultsPage(QWidget):
         self.save_result_visualization_button.setEnabled(True)
         segment_count = sum(len(morphology.segments) for morphology in morphologies)
         self.circuit_info.setText(
-            f"{len(morphologies)} recorded neuron(s) · {segment_count:,} SWC segments · "
+            f"{len(morphologies)} circuit neuron(s) · {segment_count:,} SWC segments · "
             "loaded from this saved run"
             + (" · soma-point view selected for responsiveness" if large_circuit else "")
         )
-        identity_lines = []
-        for morphology in morphologies:
-            record = morphology.record
-            role = "STIMULATED" if record.neuron_id in visible_stimulus_ids else "recorded"
-            identity_lines.append(
-                f"● {record.neuron_type} · body {record.neuron_id} · {role}"
-            )
-        self.circuit_identity.setText("\n".join(identity_lines))
+        # Recording labels are populated only after this result's voltage
+        # table is loaded; never use the previous result's trace membership.
+        self.circuit_identity.setText("")
         self.circuit_identity.setToolTip("\n".join(failures))
         self._configure_activity_playback(
             run_root,
             morphologies,
             visible_stimulus_ids,
         )
+
+    def _update_recording_scope(self, result: ResultRecord) -> None:
+        morphologies = self.result_viewport.morphologies
+        if not morphologies:
+            return
+        run_root = Path(result.summary_path).expanduser().resolve().parent
+        experiment = self._read_result_object(run_root / "experiment.json")
+        recording = experiment.get("recording")
+        known_scope = isinstance(recording, dict)
+        targets: set[str] = set()
+        if known_scope and (recording.get("record_voltage", True) or recording.get("detect_spikes", True)):
+            raw_targets = recording.get("target_neuron_ids")
+            targets = ({str(value) for value in raw_targets} if isinstance(raw_targets, list) and raw_targets
+                       else set(morphologies)) & set(morphologies)
+        voltage_ids = {trace.neuron_id for trace in self.voltage_plot.traces} & set(morphologies)
+        scope = f"{len(targets)} recording target(s)" if known_scope else "recording targets not saved"
+        segments = sum(len(m.segments) for m in morphologies.values())
+        self.circuit_info.setText(
+            f"{len(morphologies)} circuit neuron(s) · {scope} · {len(voltage_ids)} with saved voltage · "
+            f"{segments:,} SWC segments · loaded from this saved run"
+            + (" · soma-point view selected for responsiveness" if len(morphologies) > 64 else ""))
+        lines = []
+        for body, morphology in morphologies.items():
+            roles = []
+            if body in self._activity_stimulus_ids:
+                roles.append("stimulus target")
+            if body in voltage_ids:
+                roles.append("recorded voltage")
+            elif known_scope:
+                roles.append("recording target" if body in targets else "not a recording target")
+            else:
+                roles.append("recording scope not saved")
+            record = morphology.record
+            lines.append(f"● {record.neuron_type} · body {body} · {' · '.join(roles)}")
+        self.circuit_identity.setText("\n".join(lines))
 
     def _set_result_circuit_mode(self, mode: str) -> None:
         if not self.result_viewport.neuron_count:
@@ -2283,7 +2326,7 @@ class ResultsPage(QWidget):
         )
         label = "soma points" if mode == DISPLAY_MODE_SOMA_POINTS else "full skeletons"
         self._activity_frame_changed(self.activity_slider.value())
-        self.status_message.emit(f"Recorded circuit view changed to {label}")
+        self.status_message.emit(f"Run circuit view changed to {label}")
 
     def _configure_activity_playback(
         self,

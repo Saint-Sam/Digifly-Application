@@ -45,6 +45,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_swc_library.py", "tests/test_bundled_pair_graph.py", "tests/test_neuprint_acquisition.py",
             "tests/test_neuprint_ui.py", "tests/test_neuprint_contacts.py", "tests/test_located_contact_execution.py", "tests/test_library_review_launch.py", "scripts/launch_library_review.py", "tests/test_data_library.py", "tests/test_connectomes.py", "tests/test_connectome_picker.py",
             "tests/test_windows_release.py", "tests/test_windows_package.py", "tests/test_package_foundation.py", "tests/test_pair_graph.py",
+            "tests/test_voltage_plot.py", "tests/test_results_responsive_layout.py", "tests/test_morphology_voltage_ui.py", "tests/test_result_playback.py",
             "tests/test_stage_pdcm_bionet_assets.py", "scripts/build_macos.sh",
             "tests/test_aggregate_chemical_execution.py", "tests/test_swc_fragments.py", "tests/test_swc_quality.py", "tests/test_swc_units.py", "tests/test_mechanisms.py", "tests/test_bmtk_bionet_worker.py", "tests/test_channel_execution.py", "tests/test_regional_execution.py",
             "scripts/setup_dev.sh", "scripts/run_dev.sh", "pysidedeploy.spec",

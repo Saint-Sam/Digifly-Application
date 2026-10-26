@@ -1,10 +1,24 @@
 from pathlib import Path
 import importlib.util
 import io
+import re
 import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_windows_native_workflow_tests_are_in_frozen_snapshot(tmp_path) -> None:
+    spec = importlib.util.spec_from_file_location("stage_windows_source_check", ROOT / "scripts/stage_windows_source.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    staged = tmp_path / "release-inputs"
+    module.stage(ROOT, staged, release_snapshot=True)
+    workflow = (staged / ".github/workflows/windows-neuron-bundle.yml").read_text("utf-8")
+    test_paths = set(re.findall(r"tests/[A-Za-z0-9_]+\.py", workflow))
+    assert len(test_paths) >= 30
+    missing = sorted(name for name in test_paths if not (staged / name).is_file())
+    assert not missing, f"Native Windows workflow tests absent from frozen input: {missing}"
 
 
 def test_windows_build_packages_and_asserts_simulator_workers() -> None:

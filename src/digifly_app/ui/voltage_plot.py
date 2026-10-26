@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -49,6 +50,8 @@ TRACE_COLORS = (
     "#a5b8d9",
 )
 HOVER_TRACE_LIMIT = 12
+LEGEND_PAGE_SIZE = 60
+VOLTAGE_AXIS_LABEL = "membrane voltage (mV)"
 
 
 @dataclass(frozen=True)
@@ -386,7 +389,7 @@ class _VoltageCanvas(QWidget):
         painter.drawText(
             QRectF(-plot.height() / 2.0, -10.0, plot.height(), 20.0),
             Qt.AlignmentFlag.AlignHCenter,
-            "soma membrane voltage (mV)",
+            VOLTAGE_AXIS_LABEL,
         )
         painter.restore()
 
@@ -671,6 +674,10 @@ class VoltagePlotWidget(QWidget):
         self.setObjectName("VoltagePlotWidget")
         self.traces: tuple[VoltageTrace, ...] = ()
         self.legend_buttons: dict[str, QPushButton] = {}
+        self._legend_matches: tuple[VoltageTrace, ...] = ()
+        self._legend_page = 0
+        self._legend_generation = 0
+        self._active_trace_keys: set[str] = set()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -709,6 +716,9 @@ class VoltagePlotWidget(QWidget):
         self.legend_layout.setContentsMargins(0, 0, 0, 0)
         self.legend_layout.setHorizontalSpacing(7)
         self.legend_layout.setVerticalSpacing(5)
+        # Keep page rows at their real button height inside the scroll area.
+        # Otherwise a replacement page can collapse every row to one pixel.
+        self.legend_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.legend_widget.setLayout(self.legend_layout)
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setObjectName("VoltageLegendScroll")
@@ -719,6 +729,23 @@ class VoltagePlotWidget(QWidget):
         self.legend_scroll.setWidget(self.legend_widget)
         self.legend_scroll.setMaximumHeight(164)
         layout.addWidget(self.legend_scroll)
+        self.legend_pager = QWidget()
+        pager_layout = QHBoxLayout(self.legend_pager)
+        pager_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_previous_button = QPushButton("Previous")
+        self.legend_previous_button.setObjectName("VoltageLegendPrevious")
+        self.legend_previous_button.setAccessibleName("Previous trace legend page")
+        self.legend_previous_button.clicked.connect(lambda: self._change_legend_page(-1))
+        self.legend_page_label = QLabel()
+        self.legend_page_label.setObjectName("VoltageLegendPage")
+        self.legend_next_button = QPushButton("Next")
+        self.legend_next_button.setObjectName("VoltageLegendNext")
+        self.legend_next_button.setAccessibleName("Next trace legend page")
+        self.legend_next_button.clicked.connect(lambda: self._change_legend_page(1))
+        pager_layout.addWidget(self.legend_previous_button)
+        pager_layout.addWidget(self.legend_page_label, 1)
+        pager_layout.addWidget(self.legend_next_button)
+        layout.addWidget(self.legend_pager)
         self.canvas = _VoltageCanvas()
         self.canvas.time_selected.connect(self.time_selected)
         self.canvas.status_message.connect(self.status_message)
@@ -738,13 +765,29 @@ class VoltagePlotWidget(QWidget):
 
     def set_traces(self, traces: tuple[VoltageTrace, ...]) -> None:
         self.traces = tuple(traces)
+        self._active_trace_keys = {trace.key for trace in self.traces}
+        self.canvas.set_traces(self.traces)
+        self.show_all_button.setEnabled(bool(self.traces))
+        self.legend_filter.setEnabled(bool(self.traces))
+        self.legend_filter.blockSignals(True)
+        self.legend_filter.clear()
+        self.legend_filter.blockSignals(False)
+        self.legend_scroll.setVisible(bool(self.traces))
+        self._filter_legend("")
+
+    def _render_legend_page(self) -> None:
+        self._legend_generation += 1
+        generation = self._legend_generation
         while self.legend_layout.count():
             item = self.legend_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         self.legend_buttons.clear()
-        for index, trace in enumerate(self.traces):
+        start = self._legend_page * LEGEND_PAGE_SIZE
+        for trace in self._legend_matches[start:start + LEGEND_PAGE_SIZE]:
             button = QPushButton(f"●  {trace.label}")
             button.setObjectName("VoltageLegendButton")
             button.setCheckable(True)
@@ -752,24 +795,28 @@ class VoltagePlotWidget(QWidget):
             # name must not impose a wider-than-window grid column minimum.
             button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             button.setMinimumWidth(0)
-            button.setChecked(True)
+            button.setChecked(trace.key in self._active_trace_keys)
             button.setAccessibleName(f"Voltage trace {trace.label}")
             button.setToolTip(
                 f"{trace.label}\nClick to keep this trace visible but faded; Shift-click to isolate it"
             )
             button.setStyleSheet(f"QPushButton {{ color: {trace.color}; text-align: left; }}")
-            button.clicked.connect(
-                lambda checked, key=trace.key: self._legend_clicked(key, checked)
+            button.toggled.connect(
+                lambda checked, key=trace.key, page=generation: self._legend_clicked(key, checked, page)
             )
             self.legend_buttons[trace.key] = button
         self._relayout_legend()
-        self.canvas.set_traces(self.traces)
         self._refresh_legend_buttons()
-        self.show_all_button.setEnabled(bool(self.traces))
-        self.legend_filter.setEnabled(bool(self.traces))
-        self.legend_filter.clear()
-        self.legend_scroll.setVisible(bool(self.traces))
-        self._update_trace_count()
+        total = len(self._legend_matches)
+        self.legend_pager.setVisible(total > LEGEND_PAGE_SIZE)
+        self.legend_previous_button.setEnabled(self._legend_page > 0)
+        self.legend_next_button.setEnabled(start + LEGEND_PAGE_SIZE < total)
+        self.legend_page_label.setText(f"Legend entries {start + 1 if total else 0}–{min(start + LEGEND_PAGE_SIZE, total)} of {total:,}")
+
+    def _change_legend_page(self, delta: int) -> None:
+        last = max(0, (len(self._legend_matches) - 1) // LEGEND_PAGE_SIZE)
+        self._legend_page = max(0, min(last, self._legend_page + delta))
+        self._render_legend_page()
 
     def _relayout_legend(self) -> None:
         # A narrow split panel needs one readable column; a full-width plot
@@ -793,22 +840,22 @@ class VoltagePlotWidget(QWidget):
         self.canvas.set_time_cursor(time_ms)
 
     def show_all(self) -> None:
-        for button in self.legend_buttons.values():
-            button.setChecked(True)
+        self._active_trace_keys = {trace.key for trace in self.traces}
         self._apply_legend_state()
 
-    def _legend_clicked(self, key: str, checked: bool) -> None:
+    def _legend_clicked(self, key: str, checked: bool, generation: int | None = None) -> None:
+        if (generation is not None and generation != self._legend_generation) or key not in self.legend_buttons:
+            return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
-            for trace_key, button in self.legend_buttons.items():
-                button.setChecked(trace_key == key)
+            self._active_trace_keys = {key}
+        elif checked:
+            self._active_trace_keys.add(key)
         else:
-            self.legend_buttons[key].setChecked(bool(checked))
+            self._active_trace_keys.discard(key)
         self._apply_legend_state()
 
     def _apply_legend_state(self) -> None:
-        active = {
-            key for key, button in self.legend_buttons.items() if button.isChecked()
-        }
+        active = self._active_trace_keys
         self.canvas.set_active_keys(active)
         self._refresh_legend_buttons()
         self.status_message.emit(
@@ -817,22 +864,21 @@ class VoltagePlotWidget(QWidget):
 
     def _filter_legend(self, text: str) -> None:
         query = text.strip().casefold()
-        by_key = {trace.key: trace for trace in self.traces}
-        visible_keys: set[str] = set()
-        for key, button in self.legend_buttons.items():
-            trace = by_key[key]
+        matches = []
+        for trace in self.traces:
             haystack = " ".join(
                 (trace.label, trace.condition, trace.neuron_id, str(trace.repetition))
             ).casefold()
             visible = not query or query in haystack
-            button.setVisible(visible)
             if visible:
-                visible_keys.add(key)
-        self.canvas.set_visible_keys(visible_keys)
-        self._update_trace_count()
+                matches.append(trace)
+        self._legend_matches = tuple(matches)
+        self._legend_page = 0
+        self.canvas.set_visible_keys({trace.key for trace in matches})
+        self._render_legend_page()
 
     def _update_trace_count(self) -> None:
-        visible = sum(not button.isHidden() for button in self.legend_buttons.values())
+        visible = len(self.canvas.visible_keys)
         active = len(self.canvas.active_keys)
         if visible == len(self.traces):
             text = f"{len(self.traces)} plotted · {active} emphasized"
@@ -847,7 +893,10 @@ class VoltagePlotWidget(QWidget):
     def _refresh_legend_buttons(self) -> None:
         by_key = {trace.key: trace for trace in self.traces}
         for key, button in self.legend_buttons.items():
-            active = button.isChecked()
+            active = key in self._active_trace_keys
+            previous = button.blockSignals(True)
+            button.setChecked(active)
+            button.blockSignals(previous)
             font = button.font()
             font.setBold(active)
             button.setFont(font)
