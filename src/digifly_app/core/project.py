@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any, Mapping
 
 
@@ -28,6 +30,9 @@ class DigiflyProject:
     schema_version: int = PROJECT_SCHEMA_VERSION
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
+    arbor_python_executable: str | None = None
+    bmtk_python_executable: str | None = None
+    netpyne_python_executable: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -37,7 +42,17 @@ class DigiflyProject:
     def save(self, path: str | Path) -> Path:
         destination = Path(path).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        contents = json.dumps(self.to_dict(), indent=2, allow_nan=False)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent,
+                                             prefix=f".{destination.name}.", suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(contents)
+            os.replace(temporary, destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return destination
 
     @classmethod
@@ -82,7 +97,7 @@ class DigiflyProject:
             name=str(payload["name"]),
             digifly_public_root=str(payload.get("digifly_public_root") or ""),
             output_root=str(payload["output_root"]),
-            python_executable=str(payload.get("python_executable") or "/opt/anaconda3/bin/python"),
+            python_executable=(str(payload["python_executable"]) if payload.get("python_executable") is not None else "/opt/anaconda3/bin/python"),
             selected_engine=str(payload.get("selected_engine") or "neuron"),
             selected_workflow=selected_workflow,
             circuit=circuit,
@@ -91,6 +106,9 @@ class DigiflyProject:
             schema_version=PROJECT_SCHEMA_VERSION,
             created_at=str(payload.get("created_at") or _now()),
             updated_at=str(payload.get("updated_at") or _now()),
+            arbor_python_executable=(str(payload["arbor_python_executable"]) if payload.get("arbor_python_executable") is not None else None),
+            bmtk_python_executable=(str(payload["bmtk_python_executable"]) if payload.get("bmtk_python_executable") is not None else None),
+            netpyne_python_executable=(str(payload["netpyne_python_executable"]) if payload.get("netpyne_python_executable") is not None else None),
         )
 
     @classmethod

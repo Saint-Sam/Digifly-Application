@@ -6,11 +6,13 @@ from pathlib import Path, PurePosixPath
 import shutil
 
 
-def stage(source, bundle):
-    source, bundle = Path(source).absolute(), Path(bundle).absolute()
-    for root in (source, bundle):
-        if any(p.is_symlink() for p in (root, *root.parents)):
-            raise ValueError('Notice paths must not use symbolic links')
+def validate_source(source):
+    """Read-only check shared by early build admission and final staging."""
+    source = Path(source).absolute()
+    if any(p.is_symlink() for p in (source, *source.parents)):
+        raise ValueError('Notice paths must not use symbolic links')
+    if not (source / 'notice_files.json').is_file():
+        raise ValueError('Select a notice-only folder containing notice_files.json, not an app bundle')
     manifest = json.loads((source / 'notice_files.json').read_text())
     if manifest.get('schema') != 'digifly-macos-notice-files-v1':
         raise ValueError('Unknown Mac notice manifest')
@@ -25,7 +27,6 @@ def stage(source, bundle):
             actual.add(path.relative_to(source).as_posix())
     if actual != {*files, 'notice_files.json'}:
         raise ValueError('Unexpected or missing notice files')
-    destination = bundle / 'Contents/Resources'
     for name, expected in files.items():
         relative = PurePosixPath(name)
         if (relative.is_absolute() or '..' in relative.parts or '\\' in name
@@ -34,6 +35,16 @@ def stage(source, bundle):
         data = (source / name).read_bytes()
         if len(data) != expected['bytes'] or hashlib.sha256(data).hexdigest() != expected['sha256']:
             raise ValueError('Notice input changed: ' + name)
+    return source, files
+
+
+def stage(source, bundle):
+    source, files = validate_source(source)
+    bundle = Path(bundle).absolute()
+    if any(p.is_symlink() for p in (bundle, *bundle.parents)):
+        raise ValueError('Notice paths must not use symbolic links')
+    destination = bundle / 'Contents/Resources'
+    for name in files:
         target = destination / name
         if target.exists() or any(p.is_symlink() for p in (target, *target.parents)):
             raise ValueError('Notice destination already exists or uses a link')
@@ -48,6 +59,16 @@ def stage(source, bundle):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
-    parser.add_argument('--bundle', type=Path, required=True)
+    parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--validate-only', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(stage(args.source, args.bundle)))
+    if args.validate_only == bool(args.bundle):
+        parser.error('Choose --validate-only or provide --bundle, not both')
+    try:
+        if args.validate_only:
+            _, files = validate_source(args.source)
+            print(json.dumps({'ok': True, 'notice_files': len(files), 'validation_only': True}))
+        else:
+            print(json.dumps(stage(args.source, args.bundle)))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))

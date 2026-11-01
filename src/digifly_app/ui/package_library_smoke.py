@@ -14,7 +14,56 @@ import traceback
 import faulthandler
 
 
-def run_library_review(destination: Path, workspace: Path) -> int:
+def dispose_fixture_window(window, app, *, timeout_seconds=3):
+    """Finish owned readers and delete the test window while Qt is still alive.
+
+    This synchronous engineering fixture has no main exec() loop. Merely calling
+    processEvents() leaves DeferredDelete pending until interpreter shutdown.
+    Ordinary user windows continue to use their normal close guards/event loop.
+    """
+    from PySide6.QtCore import QCoreApplication,QEvent
+    from PySide6.QtTest import QTest
+    from shiboken6 import isValid
+    page=window.results_page
+    page.cancel_loading(quiet=True)
+    window.data_library_page.neuron_browser.shutdown()
+    window.circuit_builder_page.shutdown()
+    deadline=time.monotonic()+timeout_seconds
+    while (page.loading or page.current_plot.loading) and time.monotonic()<deadline:
+        app.processEvents();QTest.qWait(5)
+    if page.loading or page.current_plot.loading:
+        raise RuntimeError('Fixture readers did not stop; refusing to destroy an active window')
+    window.hide()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(window,QEvent.Type.DeferredDelete)
+    app.processEvents()
+    if isValid(window):
+        raise RuntimeError('Fixture window deletion is still pending')
+
+
+def prepare_library_review(destination: Path, workspace: Path, existing_profile: Path | None = None):
+    """Validate before writing; an explicit existing task profile is never reset."""
+    from digifly_app.core.resource_profile import ResourceProfile, make_default_profile
+    destination,workspace=destination.resolve(),workspace.resolve()
+    if not workspace.is_dir():
+        raise ValueError('The selected read-only Digifly workspace is missing')
+    if destination.exists():
+        raise FileExistsError('Manual app review needs a new evidence folder; do not relaunch an existing attempt')
+    if existing_profile is not None:
+        profile_path=existing_profile.resolve()
+        profile=ResourceProfile.load(profile_path)
+        if profile.workspace_root is None or profile.workspace_root.resolve()!=workspace:
+            raise ValueError('The explicit review profile belongs to another workspace')
+    else:
+        profile_path=destination/'config/resources.json'
+        profile=make_default_profile(workspace_root=workspace,output_root=destination/'runs',managed_data_root=destination/'data')
+    destination.mkdir(parents=True,exist_ok=False)
+    if existing_profile is None:
+        profile.save(profile_path)
+    return destination,workspace,profile_path,profile
+
+
+def run_library_review(destination: Path, workspace: Path, existing_profile: Path | None = None) -> int:
     """Open the real app with isolated settings/profile for manual GUI review.
 
     Unlike the fixture check, this uses the normal neuPrint dialog/client and
@@ -23,32 +72,37 @@ def run_library_review(destination: Path, workspace: Path) -> int:
     """
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
     from PySide6.QtWidgets import QApplication
-    from digifly_app.core.resource_profile import PROFILE_PATH_ENV, make_default_profile
-    destination = destination.resolve()
-    workspace = workspace.resolve()
-    if not workspace.is_dir():
-        raise ValueError("The selected read-only Digifly workspace is missing")
-    destination.mkdir(parents=True, exist_ok=False)
-    profile_path = destination / "config/resources.json"
-    make_default_profile(workspace_root=workspace, output_root=destination / "runs",
-                         managed_data_root=destination / "data").save(profile_path)
+    from digifly_app.core.resource_profile import PROFILE_PATH_ENV
+    from PySide6.QtCore import QTimer
+    destination,workspace,profile_path,profile=prepare_library_review(destination,workspace,existing_profile)
     os.environ[PROFILE_PATH_ENV] = str(profile_path)
     os.environ[SETTINGS_ROOT_ENV] = str(destination / "settings")
     app = QApplication.instance() or QApplication([])
     from digifly_app.ui.main_window import MainWindow, ORGANIZATION_NAME, APPLICATION_NAME
     settings = app_settings(ORGANIZATION_NAME, APPLICATION_NAME)
     settings.setValue("workspace_root", str(workspace))
-    settings.setValue("output_root", str(destination / "runs"))
+    settings.setValue("output_root", str(profile.output_root))
     window = MainWindow()
-    window.pages.setCurrentWidget(window.data_library_page)
+    window.nav_buttons[1].setChecked(True)
     window.show()
+    def ready():
+        with (destination/'window-ready.json').open('x') as stream:
+            json.dump({'window_visible':window.isVisible(),'pid':os.getpid(),
+                'profile':str(profile_path),'workspace':str(workspace),
+                'managed_data_root':str(profile.managed_data_root),
+                'automatic_download_or_simulation':False},stream,indent=2)
+    QTimer.singleShot(0,ready)
+    # Read-only engineering timing for manual review. It never selects a run
+    # or activates a control; real Open/Cancel/replay still use the window.
+    from .result_loading import install_review_metrics
+    install_review_metrics(window.results_page,destination)
     return app.exec()
 
 
 def run_library_smoke(destination: Path) -> int:
     from PySide6.QtCore import Qt, QTimer, QPoint
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
-    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QScrollArea, QPushButton
     from PySide6.QtTest import QTest
     from digifly_app.core.resource_profile import PROFILE_PATH_ENV, ResourceProfile, ResourceKind, ResourceBinding, AccessMode, make_standalone_profile
     from digifly_app.core.neuprint import NeuPrintClient, NeuPrintDataset
@@ -61,7 +115,12 @@ def run_library_smoke(destination: Path) -> int:
     record = {"schema": "digifly-packaged-swc-library-check-v1", "ok": False,
               "scope": "actual packaged controls/worker/storage with tiny fixtures; fake neuPrint transport; no credential, network, simulator or scientific acceptance"}
     stack_output = (destination / 'thread-stacks.txt').open('w')
-    faulthandler.dump_traceback_later(45, file=stack_output)
+    previous_fault_handler = faulthandler.is_enabled()
+    faulthandler.enable(file=stack_output)
+    # The parent runner owns the unchanged 120-second deadline. A timed Python
+    # stack dump itself crashed in dump_frame on the native PySide shim. Keep
+    # fatal-error logging, the phase journal and parent timeout output; use an
+    # external OS sample when a separate stack diagnosis is needed.
     app = window = None
     saved_question = QMessageBox.question
     saved_item = QInputDialog.getItem
@@ -121,11 +180,8 @@ def run_library_smoke(destination: Path) -> int:
         record['circuit_library_cold_handoff'] = True
         record['circuit_library_cross_family_handoff'] = True
         def click_menu(button, action, filename=None):
-            # Native menu delivery requires the fixture window, not another
-            # open app copy, to own focus. Keep the visible-menu assertion.
-            window.raise_()
-            window.activateWindow()
-            QTest.qWait(60)
+            # The actual button must activate its window. Do not hide that
+            # requirement behind a test-only focus step; retain visibility check.
             # Older storage/registration controls remain under explicit details.
             if page.storage_details.isAncestorOf(button) and not page.storage_details_button.isChecked():
                 QTest.mouseClick(page.storage_details_button, Qt.MouseButton.LeftButton)
@@ -167,8 +223,11 @@ def run_library_smoke(destination: Path) -> int:
             QTest.mouseClick(page.release_buttons[dataset], Qt.MouseButton.LeftButton)
             QTest.qWait(60)
         before_choice = profile_path.read_bytes()
-        if picker.selected_dataset or any(image.pixmap().isNull() for image in picker.pictures.values()):
-            raise ValueError('Initial connectome choices or bundled pictures are missing')
+        if picker.selected_dataset:
+            raise ValueError(f'Initial connectome chooser unexpectedly selected {picker.selected_dataset}')
+        missing_pictures = [key for key,image in picker.pictures.items() if image.pixmap().isNull()]
+        if missing_pictures:
+            raise ValueError(f'Bundled connectome pictures are missing: {missing_pictures}')
         if any(button.isCheckable() for button in picker.buttons.values()):
             raise ValueError('Connectome navigation must use ordinary accessible push buttons')
         if page.view_stack.currentWidget() is not page.picker_scroll or page.add_data_button.isVisible():
@@ -267,6 +326,13 @@ def run_library_smoke(destination: Path) -> int:
                 raise ValueError("The query switched datasets")
             query = body["cypher"]
             queries.append(query)
+            if 'MATCH (m:Meta)' in query:
+                return json.dumps({'columns':['threshold'],'data':[[.5]]}).encode()
+            if 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                return json.dumps({'columns':list(COLUMNS),'data':[]}).encode()
+            if 'ConnectsTo' in query:
+                return json.dumps({'columns':['sourceBodyId','targetBodyId','weight'],'data':[]}).encode()
             literals = [json.loads(value) for value in re.findall(r'STARTS WITH ("(?:[^"\\]|\\.)*")', query)]
             if literals:
                 rows = [row for row in fixture_rows if any(
@@ -1253,7 +1319,7 @@ def run_library_smoke(destination: Path) -> int:
                 if (attached.pair_graph_path != old.path or attached.pair_graph_index != old.metadata['index'] or
                         attached.pair_graph_sha256 != old.metadata['source_sha256'] or
                         Path(old.path).name not in window.experiment_page.circuit_detail.text() or
-                        'not implemented yet' not in window.experiment_page.circuit_detail.text()):
+                        'choose an explicit' not in window.experiment_page.circuit_detail.text().casefold()):
                     raise ValueError('Experiment Builder lost the selected downloaded table or hid its execution boundary')
                 record['experiment_downloaded_connectivity'] = True
                 dialog.grab().save(str(destination / 'connectivity-ready.png'))
@@ -1321,7 +1387,7 @@ def run_library_smoke(destination: Path) -> int:
         growing_rows = ((51, 'DNp01', 'DNp01_R'), (52, 'TTMn', 'TTMn_R'), (53, 'PSI', 'PSI_L'),
                         (54, 'IN21A026', 'IN21A026_L'), (55, 'AN08B098', 'AN08B098_R'))
         growing_edges = {(51, 52): 3, (52, 53): 1, (53, 54): 7, (54, 51): 2, (55, 52): 4}
-        growing_queries, growing_skeletons = [], []
+        growing_queries, growing_skeletons, growing_site_queries = [], [], []
         def growing_transport(method, url, headers, payload, timeout, cancel, max_bytes, on_bytes):
             if '/api/skeletons/skeleton/' in url:
                 growing_skeletons.append(int(url.split('?')[0].split('/')[-1]))
@@ -1330,6 +1396,15 @@ def run_library_smoke(destination: Path) -> int:
             if body['dataset'] != 'male-cns:v1.0':
                 raise ValueError('Cumulative query switched release')
             query = body['cypher']
+            if 'MATCH (m:Meta)' in query:
+                return json.dumps({'columns':['threshold'],'data':[[.5]]}).encode()
+            if 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                sources, targets = [set(map(int, group.split(','))) for group in re.findall(r'bodyId IN \[([^]]+)\]', query)]
+                growing_site_queries.append({'sources':sorted(sources),'targets':sorted(targets)})
+                rows = [[a,b,a*100000+b*100+j,a*100000+b*100+j+50000,.25,0,0,.75,0,0,.9,.8]
+                        for (a,b),w in growing_edges.items() if a in sources and b in targets for j in range(w)]
+                return json.dumps({'columns':list(COLUMNS),'data':rows}).encode()
             if 'ConnectsTo' in query:
                 sources, targets = [set(map(int, group.split(','))) for group in re.findall(r'bodyId IN \[([^]]+)\]', query)]
                 growing_queries.append({'sources': sorted(sources), 'targets': sorted(targets)})
@@ -1375,6 +1450,11 @@ def run_library_smoke(destination: Path) -> int:
                 validated_manifest(current_graph)['rows'] != 5 or
                 validated_manifest(frozen_graph)['rows'] != 2):
             raise ValueError('Cross-batch graph, duplicate count or frozen previous revision differs')
+        from digifly_app.core.pair_graph import selected_contact_sites
+        if (len(selected_contact_sites(current_graph,(51,52,53,54,55))[1])!=17 or
+                len(selected_contact_sites(frozen_graph,(51,52,53))[1])!=4 or
+                growing_site_queries!=growing_queries):
+            raise ValueError('Actual contact locations, cumulative census or frozen site revision differs')
         window.pages.setCurrentWidget(page)
         page.refresh()
         page.open_connectome('male-cns:v1.0')
@@ -1395,12 +1475,240 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError('Both builders did not use the same latest cumulative connectivity revision')
         if library_sources(ResourceProfile.load(profile_path), ('male-cns:v0.9',))[0].pair_graph_path:
             raise ValueError('Cumulative connectivity leaked into another release')
+        if ('17 measured pre/post chemical sites' not in window.experiment_page.circuit_detail.text()
+                or 'Choose an explicit count-to-strength' in window.experiment_page.circuit_detail.text()
+                or '17 measured chemical sites' not in builder.pair_graph_note.text()):
+            raise ValueError('A builder still describes acquired real sites as an aggregate-only count graph')
         window.grab().save(str(destination / 'cumulative-circuit-handoff.png'))
         record.update(cumulative_connectivity_two_downloads=True, cumulative_cross_batch_directions=True,
             cumulative_unique_pairs=True, cumulative_frozen_circuit=True,
             cumulative_builder_handoff=True, cumulative_release_isolation=True,
+            cumulative_contact_locations=True,
             cumulative_query_rectangles=growing_queries,
             cumulative_shared_file=str(cumulative_resources[-1].root / 'connectivity/connectivity.sqlite'))
+        journal('explicit_count_model_and_fragment_copy')
+        from digifly_app.engines.generic_experiment import GenericExperimentAdapter
+        located_spec = builder.circuit_spec()
+        located_edges = GenericExperimentAdapter({})._edge_manifest(located_spec, tuple(builder.loaded_morphologies.values()))
+        if (len(located_edges['chemical_edges']) != 17 or
+                any(not row.get('located_contact') for row in located_edges['chemical_edges'])):
+            raise ValueError('Builder did not materialize every acquired chemical location')
+        builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('ohmic'))
+        builder.gap_placement_combo.setCurrentIndex(builder.gap_placement_combo.findData('gf_ttmn_chemical_sites'))
+        apply_gap = builder.findChild(QPushButton, 'ApplyGapPolicyButton')
+        gap_status=[]
+        builder.status_message.connect(gap_status.append)
+        QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
+        if (not gap_status or 'modeled GF–TTMn' not in gap_status[-1]
+                or 'chemical endpoints' not in gap_status[-1] or 'no measured electrical anatomy' not in gap_status[-1]
+                or 'connectivity is not loaded' in gap_status[-1]):
+            raise ValueError('Chemical-site gap status incorrectly describes the saved policy or data')
+        located_spec = builder.circuit_spec()
+        gap_edges = GenericExperimentAdapter({})._edge_manifest(located_spec, tuple(builder.loaded_morphologies.values()))
+        gap_sites = [row for pair in gap_edges['electrical_edges'] for row in pair['contacts']]
+        if (len(gap_sites) != 3 or any(row.get('modeled_electrical') is not True or
+                row['placement_assumption'].get('biological_electrical_contact') is not False for row in gap_sites) or
+                any(row['located_contact'] not in [c['located_contact'] for c in located_edges['chemical_edges']] for row in gap_sites)):
+            raise ValueError('Modeled GF–TTMn gaps did not retain only the exact chemical sites')
+        if window.experiment_page._circuit.gap_junction_policy.placement_policy != 'gf_ttmn_chemical_sites':
+            raise ValueError('Applied chemical-site gap policy did not reach Experiment Builder')
+        record.update(located_chemical_model_applied=True, modeled_gf_ttmn_chemical_sites=True,
+                      chemical_site_gap_status=True)
+        experiment_page = window.experiment_page
+        original_experiment = experiment_page.config()
+        previous_page_index = window.pages.currentIndex()
+        experiment_nav = next(button for button in window.nav_buttons if 'Experiment Builder' in button.text())
+        QTest.mouseClick(experiment_nav, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        saved_job = experiment_page._output_root() / 'jobs' / 'readiness-history-only'
+        saved_job.mkdir(parents=True, exist_ok=False)
+        saved_job_request = saved_job / 'request.json'
+        saved_job_request.write_text(json.dumps({'experiment': {'name': 'Already completed contact test'}}))
+        saved_job_bytes = saved_job_request.read_bytes()
+        experiment_page.name_edit.setText('  already   COMPLETED contact test  ')
+        experiment_page.findChild(QScrollArea).ensureWidgetVisible(experiment_page.validate_button)
+        QTest.qWait(80)
+        QTest.mouseClick(experiment_page.validate_button, Qt.MouseButton.LeftButton)
+        if ('Name already used' not in experiment_page.validation_state.text()
+                or str(saved_job) not in experiment_page.validation_state.toolTip()
+                or experiment_page._process is not None
+                or saved_job_request.read_bytes() != saved_job_bytes):
+            raise ValueError('Readiness disagrees with the saved-job duplicate-name launch guard')
+        window.grab().save(str(destination / 'duplicate-name-readiness.png'))
+        experiment_page.name_edit.setText('Fresh contact readiness check')
+        if experiment_page._update_name_availability() or experiment_page.name_availability.text() != '✓ Available':
+            raise ValueError('A new experiment name remains incorrectly unavailable')
+        experiment_page.set_config(original_experiment)
+        QTest.mouseClick(window.nav_buttons[previous_page_index], Qt.MouseButton.LeftButton)
+        app.processEvents()
+        record['job_history_duplicate_readiness'] = True
+        from digifly_app.ui.package_results_smoke import check_results_review
+        record.update(check_results_review(window,destination))
+        journal('experiment_setting_inventory_and_interactions')
+        from digifly_app.ui.experiment_settings_check import check_settings_interactions
+        record.update(check_settings_interactions(destination/'experiment-settings', parent=window))
+        builder.gap_mode_combo.setCurrentIndex(builder.gap_mode_combo.findData('none'))
+        QTest.mouseClick(apply_gap, Qt.MouseButton.LeftButton)
+        # Exercise the new controls on the graph acquired by the actual app
+        # above. This is fixture engineering, not a numeric circuit experiment.
+        builder.chemical_placement.setCurrentIndex(builder.chemical_placement.findData('aggregate_post_soma'))
+        builder.chemical_default_weight.setValue(.002)
+        apply_model = next(button for button in builder.findChildren(QPushButton)
+                           if button.text() == 'Apply chemical connection model')
+        QTest.mouseClick(apply_model, Qt.MouseButton.LeftButton)
+        count_spec = builder.circuit_spec()
+        if count_spec.chemical_synapse_policy.placement_policy != 'aggregate_post_soma':
+            raise ValueError('Actual Apply did not select the explicit downloaded-count model')
+        edge_model = GenericExperimentAdapter({})._edge_manifest(count_spec, tuple(builder.loaded_morphologies.values()))
+        if (len(edge_model['chemical_edges']) != 5 or edge_model['electrical_edges']
+                or any(row['weight_uS'] != row['source_connection_count'] * .002 for row in edge_model['chemical_edges'])):
+            raise ValueError('Applied model lost directed source counts or inferred an electrical connection')
+        model_path = destination / 'count-model-circuit.json'
+        model_path.write_text(json.dumps(count_spec.to_dict(), indent=2) + '\n')
+        builder.set_circuit_spec(CircuitSpec.from_dict(json.loads(model_path.read_text())))
+        builder.load_saved_assets()
+        if (builder._read_chemical_policy() != count_spec.chemical_synapse_policy or
+                window.experiment_page._circuit.chemical_synapse_policy != count_spec.chemical_synapse_policy):
+            raise ValueError('Saved/reopened count model did not reach Experiment Builder')
+        window.grab().save(str(destination / 'count-model-circuit.png'))
+        from digifly_app.core.swc_quality import analyze_swc
+        from digifly_app.core.morphology import load_swc
+        from digifly_app.core.connectomes import NeuronRecord
+        from digifly_app.core.swc_library import add_bundle_to_library
+        fragment_seed = destination / 'fragment-seed/MN/fragment/777/777.swc'
+        fragment_seed.parent.mkdir(parents=True)
+        fragment_seed.write_text('1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n')
+        fragment_resource = import_local_source(ResourceProfile.load(profile_path), destination / 'fragment-seed',
+            provider='local', resource_id='fragment-fixture', source_version='fixture', dataset='male-cns:v1.0')
+        fragment_resource = add_bundle_to_library(ResourceProfile.load(profile_path), profile_path, fragment_resource,
+            server='https://fragments.example', dataset='male-cns:v1.0')
+        fragment_source = next(item for item in library_sources(ResourceProfile.load(profile_path), ('male-cns:v1.0',))
+                               if item.server == 'https://fragments.example')
+        fragment = Path(ConnectomeCatalog.scan(fragment_source).by_id['777'].swc_path)
+        original_fragment = fragment.read_bytes()
+        report = analyze_swc(fragment)
+        QMessageBox.question = saved_question
+        fragment_dialog_checks = []
+        def answer_fragment(accept, prefix='fragment'):
+            deadline = time.monotonic() + 4
+            def answer():
+                candidates = builder.findChildren(QMessageBox, 'FragmentJoinPreview')
+                box = next((item for item in candidates if item.isVisible()), None)
+                observation = {'accept': accept, 'candidates': [
+                    {'title': item.windowTitle(), 'visible': item.isVisible()} for item in candidates]}
+                (destination / 'fragment-dialog-state.json').write_text(json.dumps(observation, indent=2))
+                if box is not None:
+                    text = box.text()
+                    if 'total volume' not in text or 'change electrical conduction' not in text:
+                        fragment_dialog_checks.append(False)
+                        box.reject()
+                        return
+                    box.grab().save(str(destination / f'{prefix}-preview-{accept}.png'))
+                    fragment_dialog_checks.append(True)
+                    QTest.mouseClick(box.button(QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No), Qt.MouseButton.LeftButton)
+                elif time.monotonic() < deadline:
+                    QTimer.singleShot(30, answer)
+                else:
+                    fragment_dialog_checks.append(False)
+                    for item in candidates:
+                        item.reject()
+            QTimer.singleShot(30, answer)
+        answer_fragment(False)
+        if builder._offer_fragment_join(report) != (True, '') or fragment.with_name('777_fragment_healed.swc').exists():
+            raise ValueError('Declining the fragment preview wrote a joined morphology')
+        answer_fragment(True)
+        reviewed, joined = builder._offer_fragment_join(report)
+        if fragment_dialog_checks != [True, True] or not reviewed or not joined or fragment.read_bytes() != original_fragment:
+            raise ValueError('Accepted fragment preview did not preserve its original')
+        joined_morph = load_swc(NeuronRecord('fixture', 'MN', 'fixture', joined, 'custom:fixture'))
+        if sum(n.parent_id < 0 for n in joined_morph.nodes) != 1 or not joined_morph.filler_metadata:
+            raise ValueError('Joined copy is not a tagged connected morphology')
+        builder.set_circuit_spec(CircuitSpec(connectome=fragment_source, neuron_ids=('777',)))
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 builder.saved_browser.inventory.dataset == 'male-cns:v1.0' and
+                 any(str(path) == joined for neuron in builder.saved_browser.inventory.neurons
+                     for path in neuron.paths), 'Managed joined-copy indexing did not finish')
+        builder.load_saved_assets()
+        if (builder.loaded_records['777'].swc_path != joined
+                or not builder.loaded_morphologies['777'].filler_metadata
+                or window.experiment_page._circuit.neuron_ids != ('777',)):
+            raise ValueError('Managed joined copy did not reach both builders on the next Load')
+        window.grab().save(str(destination / 'fragment-managed-builder-handoff.png'))
+        # Exercise the separate, opt-in local-caliber policy through the actual
+        # action. Keep the existing default copy and never reinterpret filler
+        # as real support or a contact target.
+        old_joined_bytes = Path(joined).read_bytes()
+        bridge_text = QInputDialog.getText
+        QInputDialog.getText = lambda *args, **kwargs: ('777', True)
+        answer_fragment(False, 'axon-aware')
+        QTest.mouseClick(builder.bridge_review_button, Qt.MouseButton.LeftButton)
+        axon_path = fragment.with_name('777_axon_aware_fragment_healed.swc')
+        if axon_path.exists() or Path(joined).read_bytes() != old_joined_bytes:
+            raise ValueError('Declining the explicit axon-aware action changed existing files')
+        answer_fragment(True, 'axon-aware')
+        QTest.mouseClick(builder.bridge_review_button, Qt.MouseButton.LeftButton)
+        wait_for(lambda: builder.saved_browser.inventory is not None and
+                 any(axon_path in neuron.paths for neuron in builder.saved_browser.inventory.neurons),
+                 'Separate axon-aware copy did not reach the shared inventory')
+        builder.load_saved_assets()
+        axon_morph = builder.loaded_morphologies['777']
+        if (fragment_dialog_checks != [True, True, True, True]
+                or builder.loaded_records['777'].swc_path != str(axon_path)
+                or axon_morph.filler_metadata.get('bridge_policy') != 'adjoining_cable_profile_v1'
+                or window.experiment_page._circuit.connectome.swc_paths.get('777') != str(axon_path)
+                or fragment.read_bytes() != original_fragment or Path(joined).read_bytes() != old_joined_bytes):
+            raise ValueError('Explicit axon-aware copy did not preserve prior files and reach both builders')
+        window.grab().save(str(destination / 'axon-aware-managed-builder-handoff.png'))
+        record.update(axon_aware_preview_decline_preserves_copies=True,
+            axon_aware_separate_copy_builder_handoff=True)
+        QInputDialog.getText = bridge_text
+        # The actual failed MANC path: a reviewed derivative must not turn
+        # its raw neuron into an ambiguous download/replacement target.
+        fragment_copies = {p:p.read_bytes() for p in fragment.parent.glob('*.swc*')}
+        fragment_transfers = []
+        def fragment_transport(method,url,headers,payload,timeout,cancel,max_bytes,on_bytes):
+            if '/api/skeletons/' in url:
+                fragment_transfers.append(url)
+                raise ValueError('Keeping a reviewed source attempted a new skeleton transfer')
+            query=json.loads(payload)['cypher']
+            if 'MATCH (m:Meta)' in query:
+                data={'columns':['threshold'],'data':[[.5]]}
+            elif 'id(pre)' in query:
+                from digifly_app.core.neuprint_contacts import COLUMNS
+                data={'columns':list(COLUMNS),'data':[]}
+            elif 'ConnectsTo' in query:
+                data={'columns':['sourceBodyId','targetBodyId','weight'],'data':[]}
+            else:
+                data={'columns':['bodyId','type','instance'],'data':[[777,'fragment','fragment']]}
+            return json.dumps(data).encode()
+        class FragmentClient(NeuPrintClient):
+            def __init__(self,*args,**kwargs):
+                super().__init__(*args,**kwargs,transport=fragment_transport)
+            def validate_and_list_datasets(self,**kwargs):
+                return (NeuPrintDataset('male-cns:v1.0'),)
+        QMessageBox.question=lambda *a,**kw:QMessageBox.StandardButton.Yes
+        dialog=NeuPrintImportDialog(ResourceProfile.load(profile_path),profile_path,window,
+            client_factory=FragmentClient,credential_store=NoCredentialStore())
+        fragment_downloads=[]; dialog.resource_imported.connect(fragment_downloads.append)
+        dialog.show();dialog.server_edit.setText('https://fragments.example')
+        dialog.token_edit.setText('engineering-fixture-not-a-credential')
+        QTest.mouseClick(dialog.connect_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy refresh connect did not finish')
+        dialog.selection_edit.setText('777')
+        QTest.mouseClick(dialog.preview_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy refresh preview did not finish')
+        arm_review('keep','fragment-contact-refresh-keep.png')
+        QTest.mouseClick(dialog.download_button,Qt.MouseButton.LeftButton)
+        wait_for(lambda:not dialog.operation_in_progress,'Joined-copy contact refresh did not finish')
+        if (len(fragment_downloads)!=1 or fragment_transfers or
+                any(p.read_bytes()!=data for p,data in fragment_copies.items())):
+            raise ValueError('Contact refresh rejected or changed the reviewed raw/joined SWCs: '+dialog.status.text())
+        dialog.accept()
+        record['fragment_contact_refresh_keeps_copies']=True
+        record.update(aggregate_chemical_model_applied=True, aggregate_chemical_saved_handoff=True,
+            aggregate_model_directed_pairs=5, fragment_preview_decline_preserves_original=True,
+            fragment_preview_accept_saves_connected_copy=True,
+            fragment_original_geometry_preserved=True, fragment_managed_library_builder_handoff=True)
         builder.set_circuit_spec(CircuitSpec.from_dict(full_graph_spec))
         builder.load_saved_assets()
         record.update(ok=True, body_ids=sorted(catalog.by_id), primary_bindings=1,
@@ -1411,8 +1719,10 @@ def run_library_smoke(destination: Path) -> int:
     except Exception:
         record["error"] = traceback.format_exc()
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        faulthandler.disable()
         stack_output.close()
+        if previous_fault_handler:
+            faulthandler.enable()
         QMessageBox.question = saved_question
         QInputDialog.getItem = saved_item
         QInputDialog.getText = saved_text
@@ -1421,10 +1731,12 @@ def run_library_smoke(destination: Path) -> int:
         QMessageBox.warning, QMessageBox.critical = saved_warning, saved_critical
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         if window is not None:
-            window.data_library_page.neuron_browser.shutdown()
-            window.circuit_builder_page.shutdown()
-            # An engineering test does not ask the human to save its fixture draft.
-            window.deleteLater()
+            try:
+                dispose_fixture_window(window,app)
+                record['fixture_shutdown_checked']=True
+            except Exception:
+                record['ok']=False
+                record['fixture_shutdown_error']=traceback.format_exc()
         if app is not None:
             app.processEvents()
     (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

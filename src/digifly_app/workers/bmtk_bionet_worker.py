@@ -24,7 +24,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 try:  # Package import in tests and installed Digifly.
     from . import generic_experiment_worker as _common
@@ -208,6 +208,7 @@ def _validate_contacts(
     contact_ids: set[str] = set()
     for raw in edge_manifest.get("chemical_edges") or ():
         contact = dict(raw or {})
+        _common._validate_aggregate_chemical_contact(contact, dict(edge_manifest.get("chemical_synapse_policy") or {}))
         contact_id = str(contact.get("contact_id") or "")
         if not contact_id or contact_id in contact_ids:
             raise ValueError("Chemical contact IDs must be present and unique")
@@ -283,13 +284,20 @@ def _validate_capabilities(
     required_policy = {
         "mechanism": "exp2syn",
         "source_mode": "soma_threshold",
-        "placement_policy": "imported_post_contact",
-        "aggregation_policy": "per_site_unchanged",
         "edge_scope": "all_chemical_edges",
     }
     for key, expected in required_policy.items():
         if chemical_policy.get(key) != expected:
             raise ValueError(f"Unsupported BioNet chemical policy {key}={chemical_policy.get(key)!r}")
+    aggregate = chemical_policy.get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
+    if aggregate:
+        if (chemical_policy.get("aggregation_policy") != "one_exp2syn_per_pair"
+                or chemical_policy.get("weight_policy") not in {"count_times_default", "per_pair_default"}):
+            raise ValueError("Unsupported BioNet aggregate chemical model")
+    elif (chemical_policy.get("placement_policy") != "imported_post_contact"
+            or chemical_policy.get("aggregation_policy") != "per_site_unchanged"
+            or chemical_policy.get("weight_policy") != "source_or_default_per_contact"):
+        raise ValueError("Unsupported BioNet located-contact chemical model")
 
     gap_policy = dict(circuit.get("gap_junction_policy") or {})
     if dict(edge_manifest.get("gap_junction_policy") or {}) != gap_policy:
@@ -302,7 +310,7 @@ def _validate_capabilities(
         if (gap_policy.get("mechanism_name") != name
                 or gap_policy.get("source_sha256") != _common.NEURON_GAP_SOURCE_HASHES[name]):
             raise ValueError("BioNet gap-junction source identity is invalid")
-        if gap_policy.get("placement_policy") not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
+        if gap_policy.get("placement_policy") not in {"imported_contact_sites", "soma_pair", "ais_pair", "gf_ttmn_chemical_sites"}:
             raise ValueError("BioNet electrical contacts require a supported explicit site policy")
     if edge_manifest.get("electrical_edges") and gap_policy.get("mode") == "none":
         raise ValueError("Electrical contacts have no active gap-junction policy")
@@ -883,6 +891,13 @@ def _resolve_edge_manifest(
     edge_manifest: Mapping[str, Any], cells: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, Any]:
     resolved = json.loads(json.dumps(edge_manifest))
+    for contact in [*(resolved.get('chemical_edges') or ()),
+                    *(c for edge in resolved.get('electrical_edges') or () for c in edge['contacts'])]:
+        if contact.get('located_contact'):
+            for end in ('pre','post'):
+                cell = cells[str(contact[end+'_id'])]
+                contact.setdefault('contact_cv',{})[end] = _common._contact_cv_details(contact,end,
+                    cell['section_plan'],_common._swc_rows(Path(cell['normalized_path'])),cell['source_to_run'])
     for contact in resolved.get("chemical_edges") or ():
         post_id = str(contact["post_id"])
         cell = dict(cells[post_id])
@@ -898,6 +913,10 @@ def _resolve_edge_manifest(
                 f"Chemical contact {contact['contact_id']} maps to missing run SWC node {run_node_id}"
             )
         contact["post_run_node_id"] = int(run_node_id)
+        if "post_source_edge_fraction" in contact:
+            section_id, section_pos = _common._regional_contact_site(cell["section_plan"],
+                run_node_id, float(contact["post_source_edge_fraction"]))
+            site = {"section_id": section_id, "section_pos": section_pos}
         contact["bionet_section_id"] = int(site["section_id"])
         contact["bionet_section_pos"] = float(site["section_pos"])
     for edge in resolved.get("electrical_edges") or ():
@@ -1214,6 +1233,12 @@ class _ClassicHHCell:
             built = _common._neuron_regional_cell(h, swc_path, str(params["neuron_id"]), params["regional_data"], MAX_TOTAL_SEGMENTS)
             self.all = list(built["sections"])
             self.digifly_regional_plan = built["regional_plan"]
+            # NEURON stores pt3d coordinates at native precision. Compare the
+            # final BioCell with this constructed geometry, not the ideal
+            # double-precision Euclidean lengths in the simulator-free plan.
+            # This does not change geometry or relax the framework grid guard.
+            self.digifly_regional_sections = tuple(self.all)
+            self.digifly_regional_native = _regional_native_geometry(self.all)
             for group in ("soma", "axon", "dend", "apic"):
                 setattr(self, group, [self.all[s["section_id"]] for s in built["regional_plan"]["sections"] if s["section_group"] == group])
             return
@@ -1372,20 +1397,45 @@ def _attach_electrical_contacts(h: Any, network: Any, extension: Mapping[str, An
     return processes
 
 
+def _regional_native_geometry(sections: Sequence[Any]) -> list[dict[str, Any]]:
+    records = []
+    indices = {section: index for index, section in enumerate(sections)}
+    for section in sections:
+        parent = section.parentseg()
+        parent_index = indices.get(parent.sec) if parent is not None else None
+        if parent is not None and parent_index is None:
+            raise ValueError("Owned regional section has an external parent")
+        records.append({"nseg": int(section.nseg), "length_um": float(section.L),
+            "parent_section_id": parent_index,
+            "parent_section_pos": float(parent.x) if parent is not None else None,
+            "orientation": float(section.orientation()),
+            "points": [[float(section.x3d(i)), float(section.y3d(i)), float(section.z3d(i)),
+                        float(section.diam3d(i))] for i in range(int(section.n3d()))]})
+    return records
+
+
 def _regional_framework_cell_record(cell: Any) -> dict[str, Any] | None:
     """Check the FINAL BioCell morphology before framework clamps/reports."""
     plan = getattr(cell.hobj, "digifly_regional_plan", None)
     if not plan:
         return None
     sections = list(cell.hobj.all)
-    if len(sections) != len(plan["sections"]):
+    owned = getattr(cell.hobj, "digifly_regional_sections", ())
+    baseline = getattr(cell.hobj, "digifly_regional_native", None)
+    if (len(sections) != len(plan["sections"]) or len(owned) != len(sections)
+            or any(a != b for a, b in zip(sections, owned)) or baseline is None):
         raise ValueError("BioNet changed the owned regional section map")
+    native = _regional_native_geometry(sections)
+    if native != baseline or any(a["nseg"] != s["nseg"] for a, s in zip(native, plan["sections"])):
+        raise ValueError("BioNet changed the owned regional spatial discretization or native geometry")
     actual = [{"node_id":s["node_id"], "nseg":int(sec.nseg), "length_um":float(sec.L)}
               for s,sec in zip(plan["sections"],sections)]
-    if any(a["nseg"] != s["nseg"] or not math.isclose(a["length_um"],s["length_um"],abs_tol=1e-9)
-           for a,s in zip(actual,plan["sections"])):
-        raise ValueError("BioNet changed the owned regional spatial discretization")
-    return {"neuron_id":plan["neuron_id"], "sections":actual, "estimated_nseg":sum(a["nseg"] for a in actual)}
+    return {"neuron_id":plan["neuron_id"], "sections":actual,
+        "estimated_nseg":sum(a["nseg"] for a in actual),
+        "native_geometry_unchanged": True,
+        "native_geometry_sha256": hashlib.sha256(json.dumps(native, sort_keys=True).encode()).hexdigest(),
+        "maximum_native_vs_ideal_length_error_um": max((abs(a["length_um"]-s["length_um"])
+            for a,s in zip(actual,plan["sections"])), default=0.)}
 
 
 def _validate_independent_trial_inputs(config_payload: Mapping[str, Any], *, hash_bound: bool) -> None:
@@ -1641,9 +1691,41 @@ def _native_voltage_rows(
     repetition: int,
     regional_cells: Mapping[str, Any] | None = None,
     recording_region: str = "soma",
-) -> list[dict[str, Any]]:
+    stream: bool = False,
+    check_cancel: Callable[[], None] | None = None,
+) -> list[dict[str, Any]] | Iterator[dict[str, Any]]:
+    """Read compressed regional reports by cell, not separately by SWC edge.
+
+    The production iterator bounds temporary rows to one edge and keeps the HDF
+    handle alive while consumed. The default list preserves the helper's API.
+    Native times/values and source-edge ordering use the same strict converter.
+    """
     if not report_path.is_file():
         raise FileNotFoundError(f"BioNet did not produce its soma report: {report_path}")
+    rows = _iter_native_voltage_rows(
+        h5py, report_path, node_id_crosswalk,
+        integration_dt_ms=integration_dt_ms, expected_duration_ms=expected_duration_ms,
+        expected_sample_dt_ms=expected_sample_dt_ms, condition=condition,
+        repetition=repetition, regional_cells=regional_cells,
+        recording_region=recording_region, check_cancel=check_cancel,
+    )
+    return rows if stream else list(rows)
+
+
+def _iter_native_voltage_rows(
+    h5py: Any,
+    report_path: Path,
+    node_id_crosswalk: Mapping[int, str],
+    *,
+    integration_dt_ms: float,
+    expected_duration_ms: float,
+    expected_sample_dt_ms: float,
+    condition: str,
+    repetition: int,
+    regional_cells: Mapping[str, Any] | None,
+    recording_region: str,
+    check_cancel: Callable[[], None] | None,
+) -> Iterator[dict[str, Any]]:
     with h5py.File(report_path, "r") as handle:
         report_group = handle.get("report")
         if report_group is None:
@@ -1664,27 +1746,50 @@ def _native_voltage_rows(
             pointers = [int(n) for n in mapping["index_pointer"][:]]
             elements = list(mapping["element_ids"][:])
             positions = list(mapping["element_pos"][:])
-            if len(pointers) != len(nodes)+1 or pointers[0] != 0 or pointers[-1] != data.shape[1] or len(elements) != data.shape[1] or len(positions) != data.shape[1] or len(set(nodes)) != len(nodes):
+            if (len(pointers) != len(nodes)+1 or pointers[0] != 0
+                    or pointers[-1] != data.shape[1] or len(elements) != data.shape[1]
+                    or len(positions) != data.shape[1] or len(set(nodes)) != len(nodes)
+                    or any(right <= left for left, right in zip(pointers, pointers[1:]))):
                 raise ValueError("Invalid regional SONATA compartment mapping")
-            result = []
+            time_spec = mapping["time"][:]
             for i, bmtk_id in enumerate(nodes):
+                if check_cancel:
+                    check_cancel()
                 if bmtk_id not in node_id_crosswalk:
                     raise ValueError("Unknown regional SONATA node ID")
                 neuron_id = node_id_crosswalk[bmtk_id]
                 cell = regional_cells[neuron_id]
                 specs = _common._regional_sites(cell["section_plan"], recording_region, cell["regional_data"])
+                midpoints: dict[int, list[int]] = {}
+                for column in range(pointers[i], pointers[i+1]):
+                    if math.isclose(float(positions[column]), .5, abs_tol=1e-9):
+                        midpoints.setdefault(int(elements[column]), []).append(column)
+                selected = []
                 for spec in specs:
-                    columns = [j for j in range(pointers[i], pointers[i+1]) if int(elements[j]) == spec["section_id"] and math.isclose(float(positions[j]), .5, abs_tol=1e-9)]
+                    columns = midpoints.get(spec["section_id"], [])
                     if len(columns) != 1:
                         raise ValueError("SWC edge midpoint does not have exactly one SONATA element")
-                    rows = _report_arrays_to_rows(data[:, columns], [bmtk_id], [0,1], mapping["time"][:], node_id_crosswalk,
+                    selected.append(columns[0])
+                if not selected:
+                    continue
+                # h5py fancy indexing requires increasing, unique columns. Keep
+                # original spec order separately; never reorder output identities.
+                ordered = sorted(set(selected))
+                block = data[:, ordered]
+                block_columns = {column: index for index, column in enumerate(ordered)}
+                for spec, column in zip(specs, selected):
+                    if check_cancel:
+                        check_cancel()
+                    rows = _report_arrays_to_rows(block[:, [block_columns[column]]], [bmtk_id], [0,1], time_spec, node_id_crosswalk,
                         integration_dt_ms=integration_dt_ms, expected_duration_ms=expected_duration_ms,
                         expected_sample_dt_ms=expected_sample_dt_ms, condition=condition, repetition=repetition)
                     for row in rows:
                         row["compartment_id"] = spec["source_node_id"]
-                    result.extend(rows)
-            return result
-        return _report_arrays_to_rows(
+                        yield row
+            return
+        if check_cancel:
+            check_cancel()
+        yield from _report_arrays_to_rows(
             data,
             mapping["node_ids"][:],
             mapping["index_pointer"][:],
@@ -2086,6 +2191,8 @@ def _run(
                 native_output = repetition_dir / "native_output"
                 voltage_h5 = native_output / "soma_voltage.h5"
                 native_spikes = native_output / "spikes.h5"
+                native_storage = _common._storage.compress_native_voltage(voltage_h5, h5py,
+                    check_cancel=cancellation.raise_if_requested)
                 if not native_spikes.is_file():
                     raise FileNotFoundError(
                         f"BioNet did not produce its native spike report: {native_spikes}"
@@ -2101,6 +2208,8 @@ def _run(
                     repetition=repetition,
                     regional_cells=condition_cells if any(c.get("regional_data") for c in condition_cells.values()) else None,
                     recording_region=recording["target_region"],
+                    stream=True,
+                    check_cancel=cancellation.raise_if_requested,
                 ) if config_payload["reports"] else ()
                 for row in rows:
                     # Preserve the full native report. Export only measurements
@@ -2175,6 +2284,7 @@ def _run(
                         "simulation_config": _file_provenance(output_dir, config_path),
                         "native_soma_voltage": _file_provenance(output_dir, voltage_h5) if config_payload["reports"] else None,
                         "native_spikes": _file_provenance(output_dir, native_spikes),
+                        "native_lossless_storage": native_storage,
                     }
                 )
 
@@ -2276,6 +2386,8 @@ def _run(
         {"kind": "document", "path": provenance_path.name, "label": "BioNet source details"}
     )
 
+    storage = _common._storage.compact_outputs(output_dir, artifacts,
+        check_cancel=cancellation.raise_if_requested)
     completed_at = _common._now()
     packages = dict(runtime["packages"])
     summary = {
@@ -2309,6 +2421,9 @@ def _run(
             "Electrical contacts": sum(len(e["contacts"]) for e in resolved_edge_manifest.get("electrical_edges") or ()),
             "Electrical portability": "Digifly serial extension; not standard SONATA" if gap_evidence else "No electrical contacts",
             "Native output": "SONATA HDF5 preserved per condition/repetition",
+            "Recording storage": "Lossless compression; original samples and precision retained",
+            "Supporting files before compression (bytes)": storage["original_bytes"],
+            "Supporting files stored (bytes)": storage["stored_bytes"],
             "Edge manifest SHA-256": str(request["edge_manifest_sha256"]),
         },
         "artifacts": artifacts,

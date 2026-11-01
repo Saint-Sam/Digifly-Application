@@ -473,7 +473,14 @@ class DataLibraryPage(QWidget):
         button.setAccessibleName(text.replace(' ▾', ' menu'))
         # A nonblocking popup supports mouse, keyboard and native accessibility
         # activation through the same ordinary push-button signal.
-        button.clicked.connect(lambda: menu.popup(button.mapToGlobal(QPoint(0, button.height()))))
+        def open_menu():
+            # Accessibility activation can arrive while another app owns focus.
+            # The real button must perform the focus step, not just its tests.
+            window = button.window()
+            window.raise_()
+            window.activateWindow()
+            menu.popup(button.mapToGlobal(QPoint(0, button.height())))
+        button.clicked.connect(open_menu)
         button._library_menu = menu
         return button
 
@@ -661,6 +668,12 @@ class DataLibraryPage(QWidget):
                         graph_text.append(f"Saved-neuron connectivity: {manifest['rows']:,} directed pairs / "
                             f"{len(manifest['covered_body_ids']):,} checked neurons. Grows with downloads; "
                             "other neurons' connections are unknown.\n" + str(binding.path))
+                        if manifest.get('contact_coordinates_in_file') is True:
+                            graph_text[-1] += (f"\nChemical sites: {manifest['contact_rows']:,} pre/post location pairs / "
+                                f"{len(manifest['contact_covered_body_ids']):,} location-checked neurons. "
+                                "No measured electrical contacts or conductances are implied.")
+                        else:
+                            graph_text[-1] += '\nCounts only; download chemical contact locations before located simulation.'
                     else:
                         graph_text.append(f"{Path(binding.path).name}: {manifest['rows']:,} pairs / {manifest['represented_neurons']:,} IDs; SWCs separate; read-only")
                 except (OSError, ValueError, KeyError):
@@ -1059,10 +1072,19 @@ class DataLibraryPage(QWidget):
 
     @Slot(object)
     def _import_completed(self, resource: ManagedResource) -> None:
-        self.action_status.setText(
-            f"Imported {resource.file_count:,} files to {resource.root}. "
-            f"Audited {resource.swc_count:,} SWC(s)."
-        )
+        if resource.provider == "swc-library":
+            # These are cumulative library totals, not this import's delta.
+            # Identical body IDs may have added no new library files at all.
+            label = "neuron" if resource.swc_count == 1 else "neurons"
+            self.action_status.setText(
+                f"Dataset library now contains {resource.swc_count:,} saved {label}. "
+                f"{resource.root}"
+            )
+        else:
+            self.action_status.setText(
+                f"Imported {resource.file_count:,} files to {resource.root}. "
+                f"Audited {resource.swc_count:,} SWC(s)."
+            )
         self.refresh()
         self.sources_changed.emit()
         self._review_after_import = bool(resource.swc_count)

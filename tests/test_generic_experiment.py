@@ -51,7 +51,7 @@ def test_downloaded_male_pair_graph_cannot_silently_use_native_contacts(tmp_path
     assert ConnectomeEdgeCatalog(circuit.connectome).is_male_cns
     monkeypatch.setattr(adapter, "_male_cns_chemical_contacts",
         lambda *args: pytest.fail("Selected downloaded graph was bypassed for native contacts"))
-    with pytest.raises(ValueError, match="explicit aggregate-weight"):
+    with pytest.raises(ValueError, match="contact locations"):
         adapter._edge_manifest(circuit, (_morphology(tmp_path, "1"), _morphology(tmp_path, "2")))
 
 
@@ -84,6 +84,20 @@ def _morphology_hashes(
         ).hexdigest()
         for morphology in morphologies
     }
+
+
+def test_classic_arbor_request_pins_hh_table_translator_without_native_channels(tmp_path):
+    morphology = _morphology(tmp_path)
+    circuit = CircuitSpec(connectome=ConnectomeRef('test:v1', 'Test', str(tmp_path)),
+        neuron_ids=('1',), morphology_sha256=_morphology_hashes((morphology,)))
+    adapter = generic.GenericExperimentAdapter({'arbor':os.sys.executable})
+    payload = adapter.request_payload(circuit, _experiment('arbor'), (morphology,),
+        PreflightReport((_passing_runtime(),)), output_root=tmp_path/'runs')
+    assert payload['native_channel_sources'] == {}
+    translator = payload['arbor_channel_translator']
+    path = Path(translator['path'])
+    assert path.name == 'arbor_channel_translation.py'
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == translator['sha256']
 
 
 def _uniform_radius_morphology(
@@ -484,6 +498,9 @@ def test_generic_adapter_retains_bmtk_single_cell_gap_policy_without_inventing_c
     )
     assert connectivity.state == CheckState.PASS
     assert "serial extension" in connectivity.detail
+    assert "0 electrical contact(s)" in connectivity.detail
+    assert "explicit model additions, not measured electrical anatomy" in connectivity.detail
+    assert "exact imported electrical sites" not in connectivity.detail
     assert not adapter.needs_gap_catalogue(circuit, _experiment("bmtk"))
     assert not any(
         check.key in {"arbor_gap_catalogue", "neuron_gap_mechanisms"}

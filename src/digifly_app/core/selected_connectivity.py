@@ -30,7 +30,7 @@ def _ids(values):
     return sorted(set(result))
 
 
-def review_connectivity(profile, server, dataset, selected):
+def review_connectivity(profile, server, dataset, selected, *, include_contact_sites=False):
     """Read only managed-library IDs, not every linked external SWC collection."""
     from .swc_library import library_root, _plain_path
     root = library_root(profile, server, dataset)
@@ -56,14 +56,20 @@ def review_connectivity(profile, server, dataset, selected):
     if not set(covered).issubset(participants):
         raise ValueError('Connectivity coverage does not match the managed neuron library')
     focus = sorted(set(selected) | (set(participants) - set(covered)))
+    if include_contact_sites:
+        contact_covered=set(previous.get('contact_covered_body_ids', []))
+        if not contact_covered.issubset(participants):
+            raise ValueError('Chemical contact coverage differs from the managed library')
+        focus=sorted(set(focus) | (set(participants)-contact_covered))
     return {'schema': SCHEMA, 'server': server.rstrip('/'), 'dataset': dataset,
             'library_sha256': sha(manifest) if manifest.exists() else '',
             'previous_sha256': expected, 'participants': participants, 'focus': focus,
-            'selected': selected}
+            'selected': selected, **({'include_contact_sites':True} if include_contact_sites else {})}
 
 
 def require_current_review(profile, server, dataset, selected, review):
-    current = review_connectivity(profile, server, dataset, selected)
+    current = review_connectivity(profile, server, dataset, selected,
+        include_contact_sites=bool(review and review.get('include_contact_sites')))
     if review != current:
         raise ValueError('The connectivity library changed after review; preview and confirm again')
     return current
@@ -162,6 +168,10 @@ def stage_graph(root, history, resource, payload, check_cancel):
                     raise ValueError('Shared connectivity exceeded its 128 MiB storage limit')
         if count != info['row_count'] or count > info['row_limit']:
             raise ValueError('Connectivity row census differs from its reviewed download')
+        from .neuprint_contacts import stage_contacts
+        contact_metadata=stage_contacts(db,canonical,resource,payload,review,check_cancel)
+        if db.execute('PRAGMA page_count').fetchone()[0]*db.execute('PRAGMA page_size').fetchone()[0]>128*1024**2:
+            raise ValueError('Shared connectivity/contact database exceeds its128MiB storage limit')
         rows, minimum, maximum, self_pairs = db.execute(
             'SELECT COUNT(*),MIN(total_weight),MAX(total_weight),'
             'COALESCE(SUM(preId=postId),0) FROM pairs').fetchone()
@@ -184,7 +194,7 @@ def stage_graph(root, history, resource, payload, check_cancel):
                         'new and selected endpoints refreshed in both directions. Not a whole-connectome graph.',
         'missing_pair_meaning': 'Absent only within covered_body_ids; all other pairs unknown',
         'weight_units': 'source connection count; not conductance',
-        'morphologies_in_file': False, 'contact_coordinates_in_file': False,
+        'morphologies_in_file': False, **contact_metadata,
         'simulation_policy': 'not_selected_by_import'}
     _write_json_atomic(folder / 'manifest.json', manifest)
     # Independent bytes: changing the visible file cannot mutate an old circuit's revision.

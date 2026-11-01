@@ -40,8 +40,24 @@ except ImportError:
     _trials = importlib.util.module_from_spec(_trials_spec)
     _trials_spec.loader.exec_module(_trials)
 
+try:
+    from . import result_storage as _storage
+except ImportError:
+    _storage_spec = importlib.util.spec_from_file_location("digifly_result_storage", Path(__file__).with_name("result_storage.py"))
+    if _storage_spec is None or _storage_spec.loader is None:
+        raise ImportError("The app-owned result storage helper is missing")
+    _storage = importlib.util.module_from_spec(_storage_spec)
+    _storage_spec.loader.exec_module(_storage)
 
 REQUEST_SCHEMA_VERSION = 1
+try:
+    from . import current_tracking as _currents
+except ImportError:
+    _current_spec = importlib.util.spec_from_file_location("digifly_current_tracking", Path(__file__).with_name("current_tracking.py"))
+    if _current_spec is None or _current_spec.loader is None:
+        raise ImportError("The app-owned current recording helper is missing")
+    _currents = importlib.util.module_from_spec(_current_spec)
+    _current_spec.loader.exec_module(_currents)
 RESULT_SCHEMA_VERSION = 1
 EDGE_MANIFEST_SCHEMA_VERSION = 2
 LEGACY_EDGE_MANIFEST_SCHEMA_VERSION = 1
@@ -144,6 +160,15 @@ def _condition_edges(edge_manifest: Mapping[str, Any], active_ids: Sequence[str]
 
 def _validate_gap_contact_placement(contact: Mapping[str, Any], policy: Mapping[str, Any]) -> None:
     placement = str(policy.get("placement_policy") or "imported_contact_sites")
+    if placement == 'gf_ttmn_chemical_sites':
+        assumption = dict(contact.get('placement_assumption') or {})
+        if (contact.get('modeled_electrical') is not True
+                or assumption.get('policy') != placement
+                or assumption.get('biological_electrical_contact') is not False
+                or not assumption.get('chemical_site_id')):
+            raise ValueError('Chemical-site gaps must explicitly retain their modeled electrical assumption')
+        _validate_located_contact(contact)
+        return
     if placement not in {"imported_contact_sites", "soma_pair", "ais_pair"}:
         raise ValueError("Unknown electrical contact placement policy")
     for end in ("pre", "post"):
@@ -179,12 +204,70 @@ def _geometric_pair_site(rows: Sequence[Any], cell: Mapping[str, Any], placement
 
 
 def _regional_contact_site(plan: Mapping[str, Any], run_node_id: int, fraction: float) -> tuple[int, float]:
-    if not math.isfinite(float(fraction)) or float(fraction) != .5:
-        raise ValueError("Synthetic contacts require the declared central CV")
+    if not math.isfinite(float(fraction)) or not 0 <= float(fraction) <= 1:
+        raise ValueError("Contact fraction must be finite and within its real incoming edge")
     spec = next((s for s in plan["sections"] if int(s["node_id"]) == run_node_id), None)
     if spec is None:
-        raise ValueError("Synthetic contact has no mapped incoming SWC edge")
-    return int(spec["section_id"]), float(fraction)
+        raise ValueError("Contact has no mapped incoming SWC edge")
+    # NEURON point processes select a discrete CV. Select that same center
+    # explicitly in Arbor/BioNet; never pretend the measured coordinate moved.
+    count = int(spec['nseg'])
+    center = (min(count-1, int(float(fraction)*count))+.5)/count
+    return int(spec["section_id"]), center
+
+
+def _validate_located_contact(contact):
+    located = dict(contact.get('located_contact') or {})
+    if located.get('schema') != 'digifly-neuprint-located-contact-v1' or located.get('electrical_anatomy') is not False:
+        raise ValueError('Measured contact source identity is missing')
+    native = dict(located.get('native_site') or {})
+    convention = dict(located.get('coordinate_convention') or {})
+    scale = float(convention.get('scale_to_um', math.nan))
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError('Measured contact coordinate conversion is invalid')
+    for end, body in (('pre','source_body_id'), ('post','target_body_id')):
+        if str(native.get(body)) != str(contact.get(end+'_id')):
+            raise ValueError('Measured contact body identity differs from the selected connection')
+        synapse = native.get(end+'_synapse_id')
+        if isinstance(synapse,bool) or not isinstance(synapse,int) or not 0<=synapse<2**63:
+            raise ValueError('Measured contact synapse identity is invalid')
+        mapping = dict(dict(located.get('mapping') or {}).get(end) or {})
+        if (mapping.get('schema') != 'digifly-real-cable-contact-map-v1'
+                or mapping.get('filler_target') is not False
+                or mapping.get('source_node_id') != contact.get(end+'_source_node_id')
+                or mapping.get('source_edge_fraction') != contact.get(end+'_source_edge_fraction')):
+            raise ValueError('Measured contact cable mapping differs from its source details')
+        point = [float(native.get(f'{end}_{axis}', math.nan))*scale for axis in 'xyz']
+        if not all(math.isfinite(v) for v in point) or point != contact.get(end+'_coordinate_um') or point != mapping.get('measured_coordinate_um'):
+            raise ValueError('Measured contact coordinates were changed or guessed')
+        if not 0<=float(mapping.get('source_edge_fraction', math.nan))<=1:
+            raise ValueError('Measured contact fraction lies outside its real cable')
+
+
+def _contact_cv_details(contact, endpoint, plan, rows, source_to_run):
+    """Quantify projection and CV error without rewriting measured coordinates."""
+    _validate_located_contact(contact)
+    mapping = contact['located_contact']['mapping'][endpoint]
+    child = source_to_run.get(mapping['source_node_id'])
+    parent = source_to_run.get(mapping['source_parent_id'])
+    by_id = {r[0]:r for r in rows}
+    excluded = set(getattr(rows,'filler_metadata',{}).get('filler_edge_child_ids',()))
+    if child not in by_id or parent not in by_id or by_id[child][6]!=parent or child in excluded:
+        raise ValueError('Measured contact no longer maps to its original real SWC edge')
+    start, stop = by_id[parent][2:5], by_id[child][2:5]
+    fraction = float(mapping['source_edge_fraction'])
+    projection = [a+fraction*(b-a) for a,b in zip(start,stop)]
+    measured = mapping['measured_coordinate_um']
+    if (math.dist(projection,mapping.get('projected_coordinate_um',()))>1e-8
+            or not math.isclose(math.dist(measured,projection),float(mapping['projection_distance_um']),abs_tol=1e-8)):
+        raise ValueError('Measured contact projection changed during source normalization')
+    section, center = _regional_contact_site(plan,child,fraction)
+    cv_point = [a+center*(b-a) for a,b in zip(start,stop)]
+    return {'section_id':section,'section_pos':center,'requested_edge_fraction':fraction,
+        'cv_coordinate_um':cv_point,'projection_to_cv_distance_um':math.dist(projection,cv_point),
+        'measured_to_cv_distance_um':math.dist(measured,cv_point),
+        'mesh_policy':'Nearest shared edge CV center; requested chemical coordinates remain unchanged',
+        'target_spacing_um':ELECTRICAL_CONTACT_TARGET_SEGMENT_UM}
 
 
 def _arbor_gap_contact_locset(plan: Mapping[str, Any] | None, node_locset: str, run_node_id: int,
@@ -376,8 +459,6 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
                 for key in _active_native_channels(membrane)}
     if set(sources) != required:
         raise ValueError("Native channel source set does not match the selected circuit")
-    if not required:
-        return {}
     for key, record in sources.items():
         if (record.get("suffix"), record.get("sha256")) != NATIVE_CHANNELS.get(key):
             raise ValueError(f"Unverified native channel source: {key}")
@@ -398,6 +479,12 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
     staged = build / "sources"
     staged.mkdir()
     translations = {}
+    classic_hh = staged / "classic_hh_table.mod"
+    classic_hh.write_text(helper.classic_hh_source(), encoding="utf-8")
+    classic_hh_record = {"path": str(classic_hh), "sha256": _sha256(classic_hh),
+        "policy": "NEURON9.0.1 default HH inf/tau TABLE -100..100mV WITH200, clamped linear interpolation",
+        "source_url": "https://github.com/neuronsimulator/nrn/blob/9.0.1/src/nrnoc/hh.mod",
+        "native_table_disabled": False, "trace_fitting": False}
     for key, record in sources.items():
         data = Path(record["path"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != record["sha256"]:
@@ -432,11 +519,13 @@ def _prepare_arbor_channels(request: Mapping[str, Any], output_dir: Path) -> dic
     if linked.returncode or not library.is_file():
         raise RuntimeError("Arbor channel ABI plugin linking failed; see arbor_channels/build.log")
     catalogue = arbor.load_catalogue(str(library))
+    if "classic_hh_table" not in catalogue:
+        raise RuntimeError("Compiled Arbor catalogue is missing native-default HH")
     for record in sources.values():
         if record["suffix"] not in catalogue:
             raise RuntimeError("Compiled Arbor catalogue is missing a selected channel")
     evidence = {"engine": "arbor", "arbor_version": arbor.__version__, "sources": sources,
-                "translations": translations, "translator": translator, "command": command,
+                "translations": translations, "classic_hh": classic_hh_record, "translator": translator, "command": command,
                 "link_command": link_command, "build_method": "modcc_generated_cpu_C_ABI_plugin_no_static_solver",
                 "modcc_sha256": _sha256(modcc),
                 "headers": {str(p.relative_to(arbor_root)): _sha256(p) for p in (arbor_root / "include" / "arbor").glob("*.h*")},
@@ -468,7 +557,7 @@ def _decorate_arbor_channels(arbor: Any, decor: Any, hh: Mapping[str, Any], memb
         values = _region_hh(hh, soma=soma)
         if membrane.get("replace_builtin_hh", False):
             values = {**values, "gnabar": 0.0, "gkbar": 0.0}
-        decor.paint(region_expression, arbor.density("hh", values))
+        decor.paint(region_expression, arbor.density("digifly_channels_classic_hh_table", values))
         for key in active:
             channel = dict(membrane["channels"][key])
             _validated_native_assignment(key, channel)
@@ -633,6 +722,7 @@ def _normalize_swc(
         "male_cns_v09_phase1_legacy": 8.0,
         "male_cns_v09_release_um": 1.0,
         "male_cns_v09_neuprint_raw": 0.008,
+        "neuprint_8nm_raw": 0.008,
     }
     scale = 1.0
     if transform:
@@ -743,6 +833,12 @@ def _normalize_swc(
             f"# coordinate_scale_to_um {scale:.17g}\n"
             f"# coordinate_rule {transform.get('rule', 'identity_um')}\n"
         )
+        filler_metadata = _read_filler_metadata(source)
+        if filler_metadata:
+            normalized_metadata = {**filler_metadata, "normalized": True}
+            for field in ("synthetic_node_ids", "filler_edge_child_ids", "original_root_ids"):
+                normalized_metadata[field] = [remap[n] for n in filler_metadata[field]]
+            handle.write("# digifly_filler " + json.dumps(normalized_metadata, separators=(",", ":")) + "\n")
         for old_id in ordered:
             swc_type, x, y, z, radius, old_parent = nodes[old_id]
             new_parent = -1 if old_parent == -1 else remap[old_parent]
@@ -761,6 +857,33 @@ def _normalize_swc(
             for old_id in ordered
         )
     return normalized_path, mapping_path, _sha256(normalized_path)
+
+
+class _SwcRows(tuple):
+    def __new__(cls, values, filler_metadata=None):
+        result = super().__new__(cls, values)
+        result.filler_metadata = dict(filler_metadata or {})
+        return result
+
+
+def _read_filler_metadata(path: Path) -> dict[str, Any]:
+    metadata = {}
+    with path.open(encoding="utf-8-sig") as stream:
+        for line in stream:
+            if line.startswith("# digifly_filler "):
+                if metadata:
+                    raise ValueError("SWC has duplicate filler declarations")
+                metadata = json.loads(line[len("# digifly_filler "):])
+    if metadata:
+        if metadata.get("schema") != "digifly-filler-v1":
+            raise ValueError("Unsupported SWC filler declaration")
+        for field in ("synthetic_node_ids", "filler_edge_child_ids", "original_root_ids"):
+            ids = metadata.get(field)
+            if not isinstance(ids, list) or any(type(n) is not int or n <= 0 for n in ids) or len(ids) != len(set(ids)):
+                raise ValueError("Invalid SWC filler node declaration")
+        if not set(metadata["synthetic_node_ids"]).issubset(metadata["filler_edge_child_ids"]):
+            raise ValueError("Every synthetic SWC node must have a declared filler edge")
+    return metadata
 
 
 def _swc_rows(
@@ -784,7 +907,10 @@ def _swc_rows(
                     int(fields[6]),
                 )
             )
-    return tuple(rows)
+    metadata = _read_filler_metadata(path)
+    if metadata and set(metadata["filler_edge_child_ids"]) - {row[0] for row in rows}:
+        raise ValueError("Filler declaration references missing SWC nodes")
+    return _SwcRows(rows, metadata)
 
 
 def _target_soma_node(
@@ -792,7 +918,8 @@ def _target_soma_node(
     *,
     prefer_rostral: bool,
 ) -> tuple[int, tuple[float, float, float]]:
-    non_root = [row for row in rows if row[6] != -1]
+    filler_edges = set(getattr(rows, "filler_metadata", {}).get("filler_edge_child_ids", ()))
+    non_root = [row for row in rows if row[6] != -1 and row[0] not in filler_edges]
     candidates = [row for row in non_root if row[1] == 1] or non_root
     if not candidates:
         raise ValueError("The morphology has no non-root cable segment for stimulation")
@@ -1483,6 +1610,41 @@ def _active_native_channels(membrane: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(active)
 
 
+def _validate_aggregate_chemical_contact(contact: Mapping[str, Any], policy: Mapping[str, Any]) -> None:
+    """Check the declared count model again inside every simulator worker."""
+    placement = policy.get("placement_policy", "imported_post_contact")
+    aggregate = placement in {"aggregate_post_soma", "aggregate_post_ais"}
+    if not aggregate:
+        if contact.get('located_contact'):
+            if 'source_connection_count' in contact:
+                raise ValueError('Measured chemical contacts cannot acquire aggregate counts as individual strength')
+            _validate_located_contact(contact)
+        elif "source_connection_count" in contact or "post_source_edge_fraction" in contact:
+            raise ValueError("Located chemical contacts cannot silently acquire aggregate modeling assumptions")
+        return
+    basis = policy.get("weight_policy")
+    if basis not in {"count_times_default", "per_pair_default"} or policy.get("aggregation_policy") != "one_exp2syn_per_pair":
+        raise ValueError("Aggregate chemical execution requires the explicit count-to-strength policy")
+    count = contact.get("source_connection_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("Aggregate chemical execution requires a nonnegative source connection count")
+    assumption = dict(contact.get("placement_assumption") or {})
+    if assumption.get("policy") != placement or assumption.get("biological_contact") is not False:
+        raise ValueError("Aggregate chemical placement must be labeled as an assumed, non-anatomical site")
+    if assumption.get("source_count_is_location") is not False or assumption.get("source_count") != count:
+        raise ValueError("Aggregate placement must retain its source count without claiming a measured location")
+    strength = dict(contact.get("weight_assumption") or {})
+    if (strength.get("policy") != basis or strength.get("source_count_is_conductance") is not False
+            or strength.get("default_weight_uS") != policy.get("default_weight_uS")
+            or strength.get("weight_scale") != policy.get("weight_scale")):
+        raise ValueError("Aggregate chemical strength assumptions differ from the selected policy")
+    if float(contact.get("post_source_edge_fraction", -1)) != 0.5:
+        raise ValueError("Aggregate chemical placement requires the declared edge midpoint")
+    expected = float(policy["default_weight_uS"]) * float(policy["weight_scale"]) * (count if basis == "count_times_default" else 1)
+    if not math.isfinite(expected) or float(contact.get("weight_uS", -1)) != expected:
+        raise ValueError("Aggregate chemical strength differs from its declared count model")
+
+
 def _validate_request_capabilities(
     engine: str,
     circuit: Mapping[str, Any],
@@ -1510,6 +1672,7 @@ def _validate_request_capabilities(
         contact_ids: set[str] = set()
         for raw in manifest.get("chemical_edges") or ():
             edge = dict(raw or {})
+            _validate_aggregate_chemical_contact(edge, dict(circuit.get("chemical_synapse_policy") or {}))
             contact_id = str(edge.get("contact_id") or "")
             if not contact_id or contact_id in contact_ids:
                 raise ValueError("Chemical contact IDs must be present and unique")
@@ -1642,8 +1805,9 @@ def _validate_request_capabilities(
     for condition in conditions:
         _validate_condition_manipulations(circuit, condition)
     recording = dict(experiment.get("recording") or {})
+    current_mode = _currents.check_mode(recording, engine, experiment.get("workers", 1), experiment.get("integration_dt_ms"))
     if recording.get("target_region") not in {"soma", "all", "ais", "selected_compartments"} or not (
-        recording.get("record_voltage", False) or recording.get("detect_spikes", False)
+        recording.get("record_voltage", False) or recording.get("detect_spikes", False) or current_mode != "off"
     ):
         raise ValueError("The membrane worker requires voltage recording or spike detection in a mapped region")
     if not 1 <= int(experiment.get("workers",1)) <= 256:
@@ -2057,7 +2221,7 @@ def _arbor_network_traces(
                     )
                 synapse_label = str(contact["contact_id"])
                 decor.place(
-                    contact_locset_by_node[source_node],
+                    _arbor_gap_contact_locset(plan, contact_locset_by_node[source_node], source_node, contact, "post"),
                     arbor.synapse(
                         "exp2syn",
                         {
@@ -2466,8 +2630,10 @@ def _regional_execution(circuit: Mapping[str, Any], experiment: Mapping[str, Any
     membranes = [dict(circuit.get("membrane") or {}),
                  *[dict(x) for x in dict(circuit.get("neuron_mechanism_overrides") or {}).values()]]
     return bool(circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
+                or dict(circuit.get('connectome') or {}).get('pair_graph_path')
+                or dict(circuit.get("chemical_synapse_policy") or {}).get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
                 or (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
-                    and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair"})
+                    and dict(circuit.get("gap_junction_policy") or {}).get("placement_policy") in {"soma_pair", "ais_pair", "gf_ttmn_chemical_sites"})
                 or any(_active_native_channels(x) for x in membranes)
                 or any(x.get("active_scope") == "soma_ais" for x in scopes)
                 or dict(experiment.get("recording") or {}).get("target_region", "soma") != "soma"
@@ -2504,6 +2670,15 @@ def _electrical_contact_run_nodes(edge_manifest: Mapping[str, Any], neuron_id: s
                                   node_map: Mapping[int, int]) -> list[int]:
     """Map hash-validated source contacts, never infer nodes from coordinates."""
     nodes = set()
+    for contact in edge_manifest.get('chemical_edges') or ():
+        if not contact.get('located_contact'):
+            continue
+        for end in ('pre','post'):
+            if str(contact[end+'_id']) == neuron_id:
+                source = int(contact[end+'_source_node_id'])
+                if source not in node_map:
+                    raise ValueError('Chemical contact targets a missing original SWC edge')
+                nodes.add(node_map[source])
     for edge in edge_manifest.get("electrical_edges") or ():
         for contact in edge.get("contacts") or ():
             for end in ("pre", "post"):
@@ -2541,7 +2716,8 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
         raise ValueError("A compartment override has no incoming SWC edge (root or absent node)")
     if target not in edge_ids:
         target = edges[0][0]
-    axon = [r for r in edges if r[1] == 2]
+    filler_edges = set(getattr(rows, "filler_metadata", {}).get("filler_edge_child_ids", ()))
+    axon = [r for r in edges if r[1] == 2 and r[0] not in filler_edges]
     axon.sort(key=lambda r: (min(math.dist(r[2:5], soma_point), math.dist(by_id.get(r[6], r)[2:5], soma_point)), r[0]))
     ais = {r[0] for r in axon[:max(1, min(16, (len(axon)+19)//20))]}
     base_hh = dict(cell["hh"])
@@ -2563,7 +2739,7 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
         if any(not math.isfinite(float(v)) for k,v in hh.items() if k != "active_scope") or float(hh["cm_uF_cm2"]) <= 0 or float(hh["ra_ohm_cm"]) <= 0:
             raise ValueError("Invalid per-compartment biophysics")
         membrane = dict(dict(cell.get("compartment_mechanism_overrides") or {}).get(str(node_id), cell.get("membrane") or {}))
-        soma = kind == 1 or node_id == target
+        soma = (kind == 1 or node_id == target) and node_id not in filler_edges
         scope = hh.get("active_scope", "all")
         if scope not in {"all", "soma", "soma_ais"}:
             raise ValueError("Unknown regional active scope")
@@ -2582,7 +2758,24 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
                          "length_um": max(length, .001), "nseg": _neuron_nseg_for_length(max(length, .001), target_spacing_um=ELECTRICAL_CONTACT_TARGET_SEGMENT_UM if node_id in contact_edges else None),
                          "parent_section_id": index.get(parent_id), "parent_section_pos": 1.0,
                          "uses_degenerate_stub": length == 0, "is_target_soma": node_id == target,
-                         "soma": soma, "ais_proxy": node_id in ais, "hh": hh, "membrane": membrane})
+                         "soma": soma, "ais_proxy": node_id in ais, "is_filler": node_id in filler_edges,
+                         "hh": hh, "membrane": membrane})
+    root_junctions = []
+    for root in (row for row in rows if row[6] == -1):
+        outgoing = [row for row in edges if row[6] == root[0]]
+        if len(outgoing) < 2:
+            continue
+        # A root has no incoming edge/section. Its outgoing cables must still
+        # share one massless junction, rather than becoming independent cells.
+        # Prefer a real edge as the anchor so a new filler cannot own the site.
+        anchor = min(outgoing, key=lambda row: (row[0] in filler_edges, row[0]))[0]
+        for row in outgoing:
+            if row[0] != anchor:
+                sections[index[row[0]]]["parent_section_id"] = index[anchor]
+                sections[index[row[0]]]["parent_section_pos"] = 0.0
+        sites[root[0]] = {"section_id": index[anchor], "section_pos": 0.0}
+        root_junctions.append({"root_node_id": root[0], "anchor_edge_node_id": anchor,
+            "outgoing_edge_node_ids": sorted(row[0] for row in outgoing)})
     for row in rows:
         if row[0] not in sites:
             child = next((r[0] for r in edges if r[6] == row[0]), target)
@@ -2592,7 +2785,9 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
             "degenerate_stub_count": sum(s["uses_degenerate_stub"] for s in sections),
             "ais_policy": "Geometric preview proxy: nearest ceil(5%) type-2 edges, bounded 1..16; not anatomical AIS",
             "site_policy": "Midpoint of each incoming source SWC edge; shared odd CV grid",
-            "precedence": "default -> per-neuron -> per-SWC-edge"}
+            "precedence": "default -> per-neuron -> per-SWC-edge",
+            "root_junctions": root_junctions,
+            "root_junction_policy": "Outgoing root edges share their exact proximal point; no added cable, capacitance or membrane."}
     if contact_nodes:
         plan["electrical_mesh_policy"] = {"schema_version":1, "target_spacing_um":ELECTRICAL_CONTACT_TARGET_SEGMENT_UM,
             "baseline_spacing_um":NEURON_TARGET_SEGMENT_UM, "contact_run_node_ids":sorted(contact_nodes),
@@ -2613,20 +2808,36 @@ def _regional_sites(plan: Mapping[str, Any], region: str, cell: Mapping[str, Any
 
 
 def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, Any]) -> int:
-    """Conservative bound includes BioNet's full native all-CV report.
+    """Bound actual backend reports, separately from integration work.
 
-    This is an operational memory/output limit, not a scientific criterion.
-    All engines share the bound so changing engines cannot hide a large report.
+    NEURON records at sample_dt_ms; BioNet retains its integration-step report.
+    Arbor additionally enforces its separate dense native-probe forecast.
     """
     _require_neuron_segment_budget(0, sum(int(p["estimated_nseg"]) for p in plans.values()), segment_budget=NEURON_MAX_TOTAL_SEGMENTS)
     recording = dict(experiment.get("recording") or {})
+    _currents.plan_budget(plans, experiment)
     targets = recording.get("target_neuron_ids") or tuple(plans)
     columns = sum(int(plans[n]["estimated_nseg"]) for n in targets)
-    samples = math.ceil(float(experiment["duration_ms"])/float(experiment["integration_dt_ms"]))+1
+    engine = experiment.get("engine", "bmtk")  # Conservative legacy caller.
+    interval = float(recording.get("sample_dt_ms", experiment["integration_dt_ms"]))
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError("Recording sample interval must be finite and positive")
+    report_interval = interval if engine == "neuron" else float(experiment["integration_dt_ms"])
+    samples = math.ceil(float(experiment["duration_ms"])/report_interval)+1
     trials = int(experiment.get("repetitions", 1))*sum(bool(c.get("enabled", True)) for c in experiment.get("conditions") or ({},))
     values = columns*samples*trials
-    if values > 25_000_000:
-        raise ValueError(f"Regional native recording would require {values:,} values; the local safety limit is 25,000,000. Reduce the circuit, duration or recording targets.")
+    native_limit = _storage.MAX_PLAYBACK_VOLTAGE_SAMPLES if engine == "neuron" else 25_000_000
+    if recording.get("record_voltage", True) and recording.get("target_region") == "all":
+        edges = sum(len(plans[n].get("sections") or ()) or int(plans[n]["estimated_nseg"])
+                    for n in targets)
+        recorded = edges * (math.ceil(float(experiment["duration_ms"]) / interval) + 1) * trials
+        if recorded > _storage.MAX_PLAYBACK_VOLTAGE_SAMPLES:
+            raise ValueError(f"All-compartment recording would exceed the local playback memory budget "
+                f"({recorded:,} samples versus {_storage.MAX_PLAYBACK_VOLTAGE_SAMPLES:,}). "
+                "Select fewer recording targets, a shorter duration or a larger recording sample interval; "
+                "the app will not silently discard samples.")
+    if values > native_limit:
+        raise ValueError(f"Regional native recording would require {values:,} values; the local safety limit is {native_limit:,}. Reduce the circuit, duration or recording targets.")
     return values
 
 
@@ -2653,7 +2864,7 @@ def _neuron_regional_cell(h: Any, swc_path: Path, neuron_id: str, cell: Mapping[
         _decorate_neuron_section(section, spec["hh"], spec["membrane"], soma=spec["soma"])
     for section, spec in zip(sections, plan["sections"]):
         if spec["parent_section_id"] is not None:
-            section.connect(sections[spec["parent_section_id"]](1), 0)
+            section.connect(sections[spec["parent_section_id"]](float(spec["parent_section_pos"])), 0)
     node_sites = {n:(sections[s["section_id"]],s["section_pos"]) for n,s in plan["node_sites"].items()}
     target = next(s for s in plan["sections"] if s["is_target_soma"])
     return {"sections": tuple(sections), "node_sites": node_sites,
@@ -2867,6 +3078,7 @@ def _neuron_network_traces(
     edge_manifest: Mapping[str, Any],
     mechanism_dir: Path | None,
     mechanism_manifest_sha256: str,
+    *, current_output: Path | None = None,
 ) -> tuple[dict[str, tuple[list[float], list[float]]], str]:
     """Execute one deterministic, fixed-step multi-cell NEURON network."""
 
@@ -2951,6 +3163,12 @@ def _neuron_network_traces(
                     f"Chemical contact {contact['contact_id']} maps to missing run node {post_node}"
                 )
             post_section, post_x = post_site
+            if "post_source_edge_fraction" in contact:
+                if not built[post_id].get("regional_plan"):
+                    raise ValueError("Aggregate chemical placement requires the shared regional mesh")
+                section_id, post_x = _regional_contact_site(built[post_id]["regional_plan"],
+                    post_node, float(contact["post_source_edge_fraction"]))
+                post_section = built[post_id]["sections"][section_id]
             synapse = h.Exp2Syn(post_section(float(post_x)))
             synapse.e = float(contact["reversal_mV"])
             synapse.tau1 = float(contact["tau1_ms"])
@@ -2967,6 +3185,7 @@ def _neuron_network_traces(
             netcons.append(netcon)
 
     gap_processes: list[Any] = []
+    gap_current_details: list[Any] = []
     if gap_enabled:
         policy = dict(edge_manifest.get("gap_junction_policy") or {})
         mode = str(policy.get("mode") or "")
@@ -2976,6 +3195,7 @@ def _neuron_network_traces(
             neuron_b = str(edge["neuron_b"])
             for raw_contact in edge.get("contacts") or ():
                 contact = dict(raw_contact)
+                gap_start = len(gap_processes)
 
                 def site_for(neuron_id: str) -> tuple[Any, float]:
                     if str(contact["pre_id"]) == neuron_id:
@@ -3050,13 +3270,26 @@ def _neuron_network_traces(
                     gap_processes.extend((gap_a, gap_b))
                 else:
                     raise ValueError(f"Unsupported Digifly gap-junction mode: {mode}")
+                gap_current_details.extend((p, {"contact_id":str(contact["contact_id"]),
+                    "neuron_a":neuron_a, "neuron_b":neuron_b, "gap_mode":mode}) for p in gap_processes[gap_start:])
 
+    current_recorder = None
+    if _currents.check_mode(recording, "neuron", experiment.get("workers", 1), experiment["integration_dt_ms"]) != "off":
+        if current_output is None:
+            raise ValueError("Current tracking requires a new run-owned output directory")
+        current_recorder = _currents.CurrentRecorder(h, built, cells, recording,
+            experiment["duration_ms"], [p for p in clamps if hasattr(p, "get_segment")],
+            [(p, {"contact_id":str(c["contact_id"]), "pre_id":str(c["pre_id"]), "post_id":str(c["post_id"])})
+                for p,c in zip(synapses, chemical_edges)], gap_current_details)
+        current_recorder.check_storage(current_output)
     sample_dt = float(recording["sample_dt_ms"])
     time_vector = h.Vector()
     time_vector.record(h._ref_t, sample_dt)
     voltage_vectors: dict[str, Any] = {}
     for neuron_id in neuron_ids:
         if neuron_id not in record_ids:
+            continue
+        if not (recording.get("record_voltage", True) or recording.get("detect_spikes", True)):
             continue
         if cells[neuron_id].get("regional"):
             specs = _regional_sites(built[neuron_id]["regional_plan"], recording["target_region"], cells[neuron_id])
@@ -3078,6 +3311,8 @@ def _neuron_network_traces(
         pass
     h.finitialize(float(experiment["initial_voltage_mV"]))
     h.continuerun(h.tstop)
+    if current_recorder is not None:
+        current_recorder.write(current_output, str(condition["name"]), int(experiment.get("_current_repetition", 1)))
     times = [float(value) for value in time_vector]
     traces = {
         neuron_id: (times, [float(value) for value in voltage_vectors[neuron_id]])
@@ -3086,6 +3321,14 @@ def _neuron_network_traces(
     # Keep all hoc objects and sections alive through continuerun.
     _ = (built, clamps, synapses, netcons, gap_processes)
     return traces, str(getattr(neuron, "__version__", "unknown"))
+
+
+def _plot_trace_selection(keys, maximum=24):
+    """Bound a static overview, never the recorded data or interactive traces."""
+    ordered = sorted(keys)
+    if len(ordered) <= maximum:
+        return ordered
+    return [ordered[round(i * (len(ordered) - 1) / (maximum - 1))] for i in range(maximum)]
 
 
 def _write_plot(
@@ -3099,6 +3342,9 @@ def _write_plot(
     from matplotlib import pyplot as plt
 
     grouped: dict[Any, tuple[list[float], list[float]]] = {}
+    total_trace_count = len(rows.traces) if isinstance(rows, _storage.VoltageRows) else None
+    if isinstance(rows, _storage.VoltageRows):
+        rows = rows.overview()
     for row in rows:
         key = (
             str(row["condition"]),
@@ -3110,7 +3356,9 @@ def _write_plot(
         times.append(float(row["time_ms"]))
         voltages.append(float(row["voltage_mV"]))
     figure, axis = plt.subplots(figsize=(11.0, 5.9), constrained_layout=True)
-    for (condition, repetition, neuron_id, compartment_id), (times, voltages) in grouped.items():
+    selected = _plot_trace_selection(grouped)
+    for condition, repetition, neuron_id, compartment_id in selected:
+        times, voltages = grouped[(condition, repetition, neuron_id, compartment_id)]
         label = f"{condition} · {neuron_id}" + (f" · SWC {compartment_id}" if compartment_id else "")
         if int(experiment.get("repetitions", 1)) != 1:
             label += f" · rep {repetition}"
@@ -3123,7 +3371,12 @@ def _write_plot(
     axis.set_ylabel("Membrane voltage (mV)", fontsize=13)
     axis.tick_params(axis="both", labelsize=11)
     axis.grid(True, alpha=0.25)
-    axis.legend(loc="best", fontsize=11)
+    axis.legend(loc="upper right", fontsize=7 if len(selected)>12 else 11,
+                ncol=2 if len(selected)>12 else 1)
+    total_trace_count = total_trace_count if total_trace_count is not None else len(grouped)
+    if len(selected) < total_trace_count:
+        figure.suptitle(f"Overview: {len(selected)} of {total_trace_count:,} recorded traces shown. "
+                       "All samples remain saved and available in Results.", fontsize=9)
     # Preserve enough source pixels for a crisp fit-to-frame preview on Retina
     # displays while keeping the portable PNG comfortably below dataset scale.
     figure.savefig(path, dpi=260)
@@ -3188,9 +3441,9 @@ def _validate_independent_contact_manifest(
         raise ValueError("Independent trial active neuron identities are invalid")
     expected = _condition_edges(source, active)
     projected = json.loads(json.dumps(materialized))
-    chemical_fields = {"post_run_node_id", "bionet_section_id", "bionet_section_pos"}
+    chemical_fields = {"pre_run_node_id", "post_run_node_id", "bionet_section_id", "bionet_section_pos", "contact_cv"}
     electrical_fields = {f"{end}_{suffix}" for end in ("pre", "post")
-        for suffix in ("run_node_id", "bionet_node_id", "bionet_section_id", "bionet_section_pos")}
+        for suffix in ("run_node_id", "bionet_node_id", "bionet_section_id", "bionet_section_pos")} | {'contact_cv'}
     for manifest, remove in ((expected, False), (projected, True)):
         groups = [(manifest.get("chemical_edges") or (), chemical_fields),
             ([contact for edge in manifest.get("electrical_edges") or () for contact in edge.get("contacts") or ()], electrical_fields)]
@@ -3358,6 +3611,8 @@ def run(request_path: Path) -> Path:
         for contact in chemical_contacts:
             if str(contact["post_id"]) == neuron_id:
                 contact["post_run_node_id"] = node_map[int(contact["post_source_node_id"])]
+            if contact.get('located_contact') and str(contact['pre_id']) == neuron_id:
+                contact['pre_run_node_id'] = node_map[int(contact['pre_source_node_id'])]
         prefer_rostral_soma = str(
             morphology_record.get("family") or ""
         ).upper().startswith("DN")
@@ -3393,6 +3648,12 @@ def run(request_path: Path) -> Path:
             simulation_cells[neuron_id]["regional"] = True
             regional_plan = _regional_plan(_swc_rows(normalized_swc_path), simulation_cells[neuron_id])
             simulation_cells[neuron_id]["regional_plan"] = regional_plan
+            for contact in [*chemical_contacts, *electrical_contacts]:
+                if contact.get('located_contact'):
+                    for end in ('pre','post'):
+                        if str(contact[end+'_id']) == neuron_id:
+                            contact.setdefault('contact_cv',{})[end] = _contact_cv_details(contact,end,regional_plan,
+                                _swc_rows(normalized_swc_path),node_map)
             _atomic_json(cell_dir / "regional_map.json", regional_plan)
         morphology_metadata[neuron_id] = {
             "run_path_component": path_component,
@@ -3476,7 +3737,7 @@ def run(request_path: Path) -> Path:
         independent_results,forecast = _prepare_neuron_trials(request_path,request,simulation_cells,resolved_edge_manifest,native_evidence,conditions,stimulus)
         manifest["worker_execution"] = forecast
         _atomic_json(manifest_path,manifest)
-    trace_rows: list[dict[str, Any]] = []
+    trace_rows = _storage.VoltageRows()
     spike_rows: list[dict[str, Any]] = []
     runtime_version = "unknown"
     total = len(conditions) * int(experiment["repetitions"])
@@ -3484,6 +3745,8 @@ def run(request_path: Path) -> Path:
     condition_receipts = []
     ramp_receipts = []
     arbor_native_artifacts = []
+    current_indices = []
+    current_values = 0
     for condition_index, condition in enumerate(conditions):
         condition_cells = _condition_cells(simulation_cells, condition)
         condition_edges = _condition_edges(resolved_edge_manifest, tuple(condition_cells))
@@ -3564,7 +3827,17 @@ def run(request_path: Path) -> Path:
                     condition_edges,
                     mechanism_dir,
                     str(request.get("neuron_gap_manifest_sha256") or ""),
+                    current_output=output_dir / "currents" / f"condition-{condition_index+1}-repetition-{repetition}",
                 )
+                current_index = output_dir / "currents" / f"condition-{condition_index+1}-repetition-{repetition}" / "index.json"
+                if current_index.is_file():
+                    # Repetition is execution metadata, never a scientific input.
+                    index_data = _currents.read_index(current_index)
+                    for channel in index_data["channels"]:
+                        channel["repetition"] = repetition
+                    _atomic_json(current_index, index_data)
+                    current_indices.append(str(current_index.relative_to(output_dir)))
+                    current_values += int(index_data["total_values"])
             else:
                 neuron_id = next(iter(condition_cells))
                 cell = condition_cells[neuron_id]
@@ -3595,17 +3868,8 @@ def run(request_path: Path) -> Path:
                     raise RuntimeError(
                         f"Simulator returned non-finite soma voltage for {neuron_id}; no result was accepted"
                     )
-                for time_ms, voltage_mV in zip(times, voltages):
-                    trace_rows.append(
-                        {
-                            "condition": str(condition["name"]),
-                            "repetition": repetition,
-                            "neuron_id": neuron_id,
-                            "compartment_id": compartment_id,
-                            "time_ms": time_ms,
-                            "voltage_mV": voltage_mV,
-                        }
-                    )
+                trace_rows.add(str(condition["name"]), repetition, neuron_id,
+                               compartment_id, times, voltages)
                 if experiment["recording"].get("detect_spikes", True):
                     for spike_ms in _crossings(
                         times,
@@ -3669,6 +3933,16 @@ def run(request_path: Path) -> Path:
         {"kind": "document", "path": request_path.name, "label": "Resolved worker request"},
     ]
     artifacts.extend(morphology_artifacts)
+    if current_indices:
+        _atomic_json(output_dir / "current_recording.json", {
+            "schema": "digifly-current-recording-v1",
+            "mode": experiment["recording"].get("current_tracking", "off"),
+            "indices": current_indices,
+            "helper_sha256": _sha256(Path(_currents.__file__)),
+        })
+        artifacts.append({"kind":"document", "path":"current_recording.json", "label":"Current recording sites, units and directions"})
+        for relative in current_indices:
+            artifacts.append({"kind":"document", "path":relative, "label":"Current trace index; samples in adjacent values.bin"})
     if engine == "arbor":
         artifacts.extend(arbor_native_artifacts)
         artifacts.append({"kind":"document","path":"arbor_execution_resource_forecast.json","label":"Exact-envelope and native-report resource forecast"})
@@ -3687,6 +3961,7 @@ def run(request_path: Path) -> Path:
         artifacts.append(
             {"kind": "image", "path": plot_path.name, "label": "Voltage comparison" if voltage_enabled else "Spike raster"}
         )
+    storage = _storage.compact_outputs(output_dir, artifacts)
     completed_at = _now()
     neuron_types = {
         neuron_id: str(record.get("neuron_type") or "Unknown")
@@ -3705,10 +3980,15 @@ def run(request_path: Path) -> Path:
         "Recorded samples": len(trace_rows) if voltage_enabled else 0,
         "Samples used for spike detection": len(trace_rows),
         "Detected spikes": len(spike_rows),
+        "Current tracking": experiment["recording"].get("current_tracking", "off"),
+        "Recorded current values": current_values,
         "Morphology transform": morphology_transform,
         "Chemical contacts": len(chemical_contacts),
         "Electrical contacts": len(electrical_contacts),
         "Edge manifest SHA-256": str(request["edge_manifest_sha256"]),
+        "Recording storage": "Lossless compression; original samples and precision retained",
+        "Supporting files before compression (bytes)": storage["original_bytes"],
+        "Supporting files stored (bytes)": storage["stored_bytes"],
     }
     if engine == "neuron":
         metadata["Requested independent trial workers"]=int(experiment.get("workers",1))

@@ -4,9 +4,10 @@ from array import array
 from dataclasses import dataclass
 from math import ceil, isfinite, radians, sqrt, tan
 from typing import Iterable, Mapping
+import weakref
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QMatrix4x4, QVector3D, QVector4D
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QImage, QMatrix4x4, QPainter, QSurfaceFormat, QVector3D, QVector4D
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLFramebufferObject,
@@ -14,9 +15,9 @@ from PySide6.QtOpenGL import (
     QOpenGLFunctions_2_0,
     QOpenGLShader,
     QOpenGLShaderProgram,
+    QOpenGLWindow,
 )
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QApplication, QMessageBox, QRubberBand
+from PySide6.QtWidgets import QApplication, QMessageBox, QRubberBand, QVBoxLayout, QWidget
 
 from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
 from digifly_app.core.connectomes import unwrapped_connectome_key
@@ -233,15 +234,21 @@ def _build_spatial_tree(
     )
 
 
-class CircuitViewport(QOpenGLWidget):
-    """Batched OpenGL SWC renderer with CPU-assisted neuron and segment picking."""
+class _NativeRubberBand(QRubberBand):
+    """Keep the selection outline above the native scene, clipped to its host."""
+    def __init__(self, parent):
+        super().__init__(QRubberBand.Shape.Rectangle,parent)
+        if QApplication.platformName() not in {'offscreen','minimal'}:
+            self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    neuron_selected = Signal(str)
-    neurons_selected = Signal(object)
-    compartments_changed = Signal(str, object)
-    isolation_changed = Signal(bool)
-    display_mode_changed = Signal(str)
-    status_message = Signal(str)
+    def show(self):
+        super().show()
+        self.raise_()
+
+
+class _CircuitScene:
+    """Shared unchanged scene, geometry, camera and selection calculations."""
 
     _palette = (
         "#6aa8ff",
@@ -321,7 +328,7 @@ class CircuitViewport(QOpenGLWidget):
         self._dragged = False
         self._box_origin: QPoint | None = None
         self._box_selecting = False
-        self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+        self._rubber_band = _NativeRubberBand(self)
         self._interaction_preview = False
         self._interaction_timer = QTimer(self)
         self._interaction_timer.setSingleShot(True)
@@ -422,29 +429,27 @@ class CircuitViewport(QOpenGLWidget):
         self.status_message.emit(f"Visualization switched to {label}")
         self.update()
 
-    def set_morphologies(self, morphologies: Iterable[Morphology]) -> None:
+    @staticmethod
+    def prepare_morphologies(morphologies: Iterable[Morphology], check=lambda: None):
+        """Build CPU geometry off-thread; no widget or OpenGL operation here."""
         items = list(morphologies)
-        self.morphologies = {item.record.neuron_id: item for item in items}
-        self._ordered_ids = [item.record.neuron_id for item in items]
-        self._soma_locations = {
+        ordered_ids = [item.record.neuron_id for item in items]
+        soma_locations = {
             item.record.neuron_id: locate_soma(item) for item in items
         }
-        self._point_indices = {
-            neuron_id: index for index, neuron_id in enumerate(self._ordered_ids)
-        }
         point_vertices = array("f")
-        for neuron_id in self._ordered_ids:
-            point_vertices.extend(self._soma_locations[neuron_id].point)
-        self._point_data = point_vertices.tobytes()
+        for neuron_id in ordered_ids:
+            point_vertices.extend(soma_locations[neuron_id].point)
         vertices = array("f")
         preview_vertices = array("f")
-        self._preview_ranges.clear()
-        self._spatial_roots.clear()
+        preview_ranges = {}
+        spatial_roots = {}
         vertex_index = 0
         preview_vertex_index = 0
         total_segments = sum(len(item.segments) for item in items)
         build_preview = total_segments > INTERACTION_PREVIEW_THRESHOLD
         for morphology in items:
+            check()
             neuron_id = morphology.record.neuron_id
             if morphology.segments:
                 spatial_root, vertex_index = _build_spatial_tree(
@@ -454,7 +459,7 @@ class CircuitViewport(QOpenGLWidget):
                 # A published point-only skeleton has soma geometry but no
                 # drawable edges. Keep an empty range, never invent a branch.
                 spatial_root = _SpatialNode(morphology.bounds, vertex_index, 0)
-            self._spatial_roots[neuron_id] = spatial_root
+            spatial_roots[neuron_id] = spatial_root
             if build_preview:
                 preview_start = preview_vertex_index
                 budget = max(
@@ -468,12 +473,31 @@ class CircuitViewport(QOpenGLWidget):
                 for line in _preview_lines(morphology, budget):
                     preview_vertices.extend(line)
                     preview_vertex_index += 2
-                self._preview_ranges[neuron_id] = (
+                preview_ranges[neuron_id] = (
                     preview_start,
                     preview_vertex_index - preview_start,
                 )
-        self._vertex_data = vertices.tobytes()
-        self._preview_data = preview_vertices.tobytes()
+        return dict(ids=tuple(ordered_ids), items=tuple(items), soma_locations=soma_locations,
+                    point_data=point_vertices.tobytes(), spatial_roots=spatial_roots,
+                    preview_ranges=preview_ranges, vertex_data=vertices.tobytes(),
+                    preview_data=preview_vertices.tobytes())
+
+    def set_morphologies(self, morphologies: Iterable[Morphology], *, prepared_geometry=None) -> None:
+        items = list(morphologies)
+        geometry = prepared_geometry if prepared_geometry is not None else self.prepare_morphologies(items)
+        if (geometry['ids'] != tuple(item.record.neuron_id for item in items)
+                or len(geometry['items']) != len(items)
+                or any(a is not b for a,b in zip(geometry['items'],items))):
+            raise ValueError('Prepared display geometry belongs to another neuron set')
+        self.morphologies = {item.record.neuron_id: item for item in items}
+        self._ordered_ids = list(geometry['ids'])
+        self._soma_locations = geometry['soma_locations']
+        self._point_indices = {neuron_id: index for index,neuron_id in enumerate(self._ordered_ids)}
+        self._point_data = geometry['point_data']
+        self._spatial_roots = geometry['spatial_roots']
+        self._preview_ranges = geometry['preview_ranges']
+        self._vertex_data = geometry['vertex_data']
+        self._preview_data = geometry['preview_data']
         self._geometry_dirty = True
         self._point_geometry_dirty = True
         self._preview_dirty = True
@@ -578,6 +602,8 @@ class CircuitViewport(QOpenGLWidget):
         morphology = self.morphologies.get(str(neuron_id))
         if morphology is None:
             return
+        if not self._selection_change_allowed():
+            return
         changed = self.selected_neuron_id != str(neuron_id)
         self.selected_neuron_id = str(neuron_id)
         self.selected_neuron_ids = [str(neuron_id)]
@@ -597,6 +623,8 @@ class CircuitViewport(QOpenGLWidget):
     def set_neuron_selection(self, neuron_ids: Iterable[str | int]) -> tuple[str, ...]:
         """Select at most two neurons without hiding the rest of the circuit."""
 
+        if not self._selection_change_allowed():
+            return tuple(self.selected_neuron_ids)
         normalized: list[str] = []
         for value in neuron_ids:
             neuron_id = str(value)
@@ -635,6 +663,8 @@ class CircuitViewport(QOpenGLWidget):
         return self.set_neuron_selection(ordered[-2:])
 
     def clear_neuron_selection(self, *, restore_overview: bool = True) -> None:
+        if not self._selection_change_allowed():
+            return
         previous = self.selected_neuron_id
         self.selected_neuron_ids.clear()
         self.selected_neuron_id = None
@@ -660,11 +690,17 @@ class CircuitViewport(QOpenGLWidget):
         self.status_message.emit("Showing all loaded neurons")
 
     def clear_compartments(self) -> None:
+        if not self._selection_change_allowed():
+            return
         self.selected_compartments.clear()
         self._rebuild_selection_data()
         if self.selected_neuron_id is not None:
             self.compartments_changed.emit(self.selected_neuron_id, ())
         self.update()
+
+    def _selection_change_allowed(self) -> bool:
+        guard = getattr(self, 'selection_change_guard', None)
+        return guard is None or guard()
 
     def set_highlights(
         self,
@@ -1119,8 +1155,12 @@ class CircuitViewport(QOpenGLWidget):
             self.height(),
         )
         aspect = max(1.0, float(render_width)) / max(1.0, float(render_height))
-        half_height = max(0.001, self.distance * tan(radians(42.0 / 2.0)))
-        half_width = half_height * aspect
+        # Keep the fitted sphere inside the shorter pane dimension. Fixed
+        # vertical extent crops the sides in a tall Results/Builder split.
+        # Projection alone changes: stored zoom, camera and SWC data do not.
+        half_extent = max(0.001, self.distance * tan(radians(42.0 / 2.0)))
+        half_height = half_extent / min(1.0, aspect)
+        half_width = half_extent * max(1.0, aspect)
         camera_depth = max(1.0, self.scene_radius * 4.0)
         projection.ortho(
             -half_width,
@@ -1450,6 +1490,8 @@ class CircuitViewport(QOpenGLWidget):
                 matched.add(segment.child_id)
         added = len(matched - self.selected_compartments)
         if matched:
+            if not self._selection_change_allowed():
+                return 0
             self.selected_compartments.update(matched)
             self._rebuild_selection_data()
             self.compartments_changed.emit(
@@ -1663,6 +1705,9 @@ class CircuitViewport(QOpenGLWidget):
                         f"Pair selection: {len(selected)} neuron(s) selected"
                     )
                 elif self.isolated and self.selected_neuron_id == neuron_id:
+                    if not self._selection_change_allowed():
+                        event.accept()
+                        return
                     if segment.child_id in self.selected_compartments:
                         self.selected_compartments.remove(segment.child_id)
                     else:
@@ -1765,3 +1810,144 @@ class CircuitViewport(QOpenGLWidget):
             self._pan(0.0, 18.0)
         else:
             super().keyPressEvent(event)
+
+
+class _CircuitSurface(QOpenGLWindow):
+    """Own only the 3-D surface; ordinary controls retain a raster window."""
+    def __init__(self, owner):
+        # Preserve the scene framebuffer for reliable captures after a swap.
+        super().__init__(QOpenGLWindow.UpdateBehavior.PartialUpdateBlit)
+        surface_format=QSurfaceFormat.defaultFormat()
+        surface_format.setDepthBufferSize(24);surface_format.setStencilBufferSize(8)
+        self.setFormat(surface_format)
+        self._owner=weakref.ref(owner)
+        owner.destroyed.connect(self._detach_owner)
+
+    @Slot()
+    def _detach_owner(self):
+        self._owner=None
+
+    def _target(self):
+        return self._owner() if self._owner is not None else None
+
+    def initializeGL(self):
+        owner=self._target()
+        if owner is not None:owner.initializeGL()
+
+    def paintGL(self):
+        owner=self._target()
+        if owner is not None:owner.paintGL()
+
+    def resizeGL(self,width,height):
+        owner=self._target()
+        if owner is not None:
+            ratio=self.devicePixelRatio()
+            owner.resizeGL(round(width*ratio),round(height*ratio))
+
+    def _forward(self,method,event):
+        owner=self._target()
+        if owner is not None and owner.isEnabled():
+            getattr(owner,method)(event)
+            self.setCursor(owner.cursor())
+        else:event.ignore()
+
+    def mousePressEvent(self,event):self._forward('mousePressEvent',event)
+    def mouseMoveEvent(self,event):self._forward('mouseMoveEvent',event)
+    def mouseReleaseEvent(self,event):self._forward('mouseReleaseEvent',event)
+    def mouseDoubleClickEvent(self,event):self._forward('mouseDoubleClickEvent',event)
+    def wheelEvent(self,event):self._forward('wheelEvent',event)
+
+    def keyPressEvent(self,event):
+        owner=self._target()
+        if owner is None or not owner.isEnabled():
+            event.ignore();return
+        if event.key() in (Qt.Key.Key_Tab,Qt.Key.Key_Backtab):
+            owner.focusNextPrevChild(event.key()!=Qt.Key.Key_Backtab
+                and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            event.accept()
+        else:self._forward('keyPressEvent',event)
+
+
+class CircuitViewport(_CircuitScene,QWidget):
+    """Raster widget host for the same batched native OpenGL scene."""
+    neuron_selected = Signal(str)
+    neurons_selected = Signal(object)
+    compartments_changed = Signal(str, object)
+    isolation_changed = Signal(bool)
+    display_mode_changed = Signal(str)
+    status_message = Signal(str)
+
+    def __init__(self,parent=None,*,camera_only=False):
+        super().__init__(parent,camera_only=camera_only)
+        self._surface=None
+        self._surface_container=None
+        # Pure geometry/lifecycle tests remain usable without pretending that
+        # an offscreen plugin supplies a native graphics context.
+        if QApplication.platformName() in {'offscreen','minimal'}:return
+        self._surface=_CircuitSurface(self)
+        self._surface_container=QWidget.createWindowContainer(self._surface,self)
+        self._surface_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._surface_container.setAccessibleName('Native circuit scene')
+        layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(0);layout.addWidget(self._surface_container)
+        self.setFocusProxy(self._surface_container)
+
+    def context(self):
+        surface=getattr(self,'_surface',None)
+        return surface.context() if surface is not None else None
+
+    def isValid(self):
+        context=self.context()
+        return bool(context is not None and context.isValid())
+
+    def format(self):
+        return self._surface.format() if self._surface is not None else QSurfaceFormat.defaultFormat()
+
+    def makeCurrent(self):
+        if self._surface is None:raise RuntimeError('Native renderer is not available')
+        self._surface.makeCurrent()
+
+    def doneCurrent(self):
+        if self._surface is not None:self._surface.doneCurrent()
+
+    def grabFramebuffer(self):
+        return self._surface.grabFramebuffer() if self.isValid() else QImage()
+
+    def update(self,*args):
+        surface=getattr(self,'_surface',None)
+        if surface is not None:surface.update()
+        else:super().update(*args)
+
+    def hideEvent(self,event):
+        self._rubber_band.hide()
+        self._box_selecting=False;self._box_origin=None
+        super().hideEvent(event)
+
+
+def composite_native_viewports(widget,pixmap,rectangle=None):
+    """Include native child scenes in app-owned window snapshots, with clipping."""
+    painter=QPainter(pixmap)
+    if rectangle is not None:painter.translate(-rectangle.topLeft())
+    try:
+        for viewport in widget.findChildren(CircuitViewport):
+            if not viewport.isVisibleTo(widget) or not viewport.isValid():continue
+            clip=QRect(viewport.rect());ancestor=viewport.parentWidget()
+            while ancestor is not None:
+                bounds=QRect(viewport.mapFrom(ancestor,QPoint()),ancestor.size())
+                clip=clip.intersected(bounds)
+                if ancestor is widget:break
+                ancestor=ancestor.parentWidget()
+            if clip.isEmpty():continue
+            image=viewport.grabFramebuffer()
+            if image.isNull():raise RuntimeError('Native scene snapshot is empty')
+            origin=viewport.mapTo(widget,QPoint())
+            painter.save();painter.setClipRect(clip.translated(origin))
+            painter.drawImage(QRectF(QRect(origin,viewport.size())),image)
+            # The native scene would otherwise cover its selection outline in
+            # a composed app-window capture, despite correct physical stacking.
+            outline=viewport._rubber_band
+            if outline.isVisibleTo(viewport):
+                outline.render(painter,origin+outline.pos())
+            painter.restore()
+    finally:painter.end()
+    return pixmap

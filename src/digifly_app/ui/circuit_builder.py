@@ -68,11 +68,15 @@ from digifly_app.core.linked_libraries import canonical_dataset
 from digifly_app.core.pair_graph import attach_registered_pair_graph
 from digifly_app.core.resource_profile import ResourceKind, default_profile_path, load_default_profile
 from digifly_app.core.swc_quality import (
+    analyze_swc,
+    fragments_reviewed,
     heal_swc,
     record_review_decision,
     reviewed_hashes,
     scan_recent_imports,
 )
+from digifly_app.core.swc_fragments import (AXON_AWARE_POLICY, ENDPOINT_POLICY,
+    original_for_bridge_review, plan_fragment_join, save_fragment_join)
 from digifly_app.core.mechanisms import (
     MEMBRANE_MECHANISMS,
     MEMBRANE_PROFILES,
@@ -276,6 +280,7 @@ class CircuitBuilderPage(QWidget):
         self._edge_catalog: ConnectomeEdgeCatalog | None = None
         self._restoring_controls = False
         self._setting_mechanism_controls = False
+        self._applied_editor_state: dict[str, Any] = {}
         self._unlisted_channel_assignments: dict[str, ChannelAssignment] = {}
         self._known_channel_parameters: dict[str, dict[str, float]] = {}
         self._mixed_selection_design = False
@@ -385,6 +390,10 @@ class CircuitBuilderPage(QWidget):
         )
         quality_check.clicked.connect(self.review_recent_imports)
         tools.addWidget(quality_check)
+        self.bridge_review_button = QPushButton("Review bridge copies…")
+        self.bridge_review_button.setToolTip("Create a separate local-caliber bridge model for explicitly selected loaded neuron IDs; keep original and earlier copies.")
+        self.bridge_review_button.clicked.connect(self.review_bridge_copies)
+        tools.addWidget(self.bridge_review_button)
         tools.addStretch()
         options.addLayout(tools)
 
@@ -513,11 +522,11 @@ class CircuitBuilderPage(QWidget):
         viewport_top.addWidget(self.viewport_controls_hint)
         viewport_layout.addLayout(viewport_top)
         self.viewport = CircuitViewport()
-        self.soma_points_button.clicked.connect(
-            lambda: self.viewport.set_display_mode(DISPLAY_MODE_SOMA_POINTS)
+        self.soma_points_button.toggled.connect(
+            lambda checked: self.viewport.set_display_mode(DISPLAY_MODE_SOMA_POINTS) if checked else None
         )
-        self.full_skeletons_button.clicked.connect(
-            lambda: self.viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
+        self.full_skeletons_button.toggled.connect(
+            lambda checked: self.viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS) if checked else None
         )
         self.viewport.neuron_selected.connect(self._neuron_selected)
         self.viewport.neurons_selected.connect(self._neurons_selected)
@@ -761,7 +770,9 @@ class CircuitBuilderPage(QWidget):
             "chemical_synapses", "Chemical-synapse policy"
         )
         chemical_help = QLabel(
-            "Imported contacts define pre/post neurons and postsynaptic placement. "
+            "Located contacts define pre/post neurons and placement. Downloaded pair counts need an explicit model below. "
+            "Aggregate soma/AIS sites and strength are assumptions, not measured contacts. Transmitter labels are retained; "
+            "the reversal entered here is used, not an inferred transmitter sign. Chemical count tables supply no gap junctions. "
             "This saved policy supplies electrophysiology that is absent from many "
             "connectome exports; each value and its source history are written into the run manifest."
         )
@@ -771,14 +782,28 @@ class CircuitBuilderPage(QWidget):
         chemical_form = QFormLayout()
         self.chemical_mechanism_label = QLabel("Exp2Syn · per imported contact")
         chemical_form.addRow("Mechanism", self.chemical_mechanism_label)
+        self.chemical_placement = QComboBox()
+        self.chemical_placement.setObjectName("ChemicalPlacementPolicy")
+        self.chemical_placement.addItem("Measured contacts → original SWC cables", "imported_post_contact")
+        self.chemical_placement.setToolTip("Measured coordinates are retained. Cable projection and shared CV offsets "
+            "are reported; missing branches are not reconstructed. Release currently uses the declared soma threshold.")
+        self.chemical_placement.addItem("Downloaded counts → soma proxy (assumed)", "aggregate_post_soma")
+        self.chemical_placement.addItem("Downloaded counts → AIS proxy (assumed)", "aggregate_post_ais")
+        chemical_form.addRow("Synapse placement", self.chemical_placement)
+        self.chemical_aggregate_basis = QComboBox()
+        self.chemical_aggregate_basis.setObjectName("ChemicalAggregateWeightBasis")
+        self.chemical_aggregate_basis.addItem("Strength per source count × count", "count_times_default")
+        self.chemical_aggregate_basis.addItem("One strength per directed pair", "per_pair_default")
+        chemical_form.addRow("Count-to-strength rule", self.chemical_aggregate_basis)
         self.chemical_default_weight = self._new_gap_editor(
             0.0, 1000.0, 0.000001, 7, " µS"
         )
         self.chemical_default_weight.setObjectName("ChemicalDefaultWeight")
-        chemical_form.addRow("Fallback contact weight", self.chemical_default_weight)
+        self.chemical_default_weight_label = QLabel("Fallback contact weight")
+        chemical_form.addRow(self.chemical_default_weight_label, self.chemical_default_weight)
         self.chemical_weight_scale = self._new_gap_editor(0.0, 1000000.0, 0.1, 5)
         self.chemical_weight_scale.setObjectName("ChemicalWeightScale")
-        chemical_form.addRow("Imported weight scale", self.chemical_weight_scale)
+        chemical_form.addRow("Weight multiplier", self.chemical_weight_scale)
         self.chemical_delay = self._new_gap_editor(0.000001, 10000.0, 0.1, 4, " ms")
         self.chemical_delay.setObjectName("ChemicalDefaultDelay")
         chemical_form.addRow("Fallback delay", self.chemical_delay)
@@ -823,9 +848,11 @@ class CircuitBuilderPage(QWidget):
             editor.valueChanged.connect(self._chemical_controls_changed)
         self.chemical_geom_delay.toggled.connect(self._chemical_controls_changed)
         self.chemical_kinetics_policy.currentIndexChanged.connect(self._chemical_controls_changed)
+        self.chemical_placement.currentIndexChanged.connect(self._chemical_controls_changed)
+        self.chemical_aggregate_basis.currentIndexChanged.connect(self._chemical_controls_changed)
         chemical_layout.addLayout(chemical_form)
         save_chemical_policy = QPushButton(
-            "Set policy for all imported chemical contacts"
+            "Apply chemical connection model"
         )
         save_chemical_policy.setObjectName("ApplyChemicalPolicyButton")
         save_chemical_policy.clicked.connect(self.apply_chemical_policy)
@@ -833,8 +860,9 @@ class CircuitBuilderPage(QWidget):
 
         gap_layout = add_hh_section("gap_junctions", "Gap-junction policy")
         gap_help = QLabel(
-            "GJs join two electrical-edge endpoints, so they cannot be attached to a neuron alone. "
-            "This saves a mass-apply policy for all electrical edges once connectivity is loaded."
+            "Gap junctions connect two neurons. Choose imported electrical sites or explicitly modeled "
+            "GF–TTMn gaps at downloaded chemical sites. Apply saves the policy; Run checks the endpoints. "
+            "Modeled gaps are not measured electrical anatomy."
         )
         gap_help.setObjectName("Muted")
         gap_help.setWordWrap(True)
@@ -860,6 +888,9 @@ class CircuitBuilderPage(QWidget):
         gap_form.addRow("Preferred direction", self.gap_direction_combo)
         self.gap_placement_combo = QComboBox()
         self.gap_placement_combo.addItem("Imported contact sites", "imported_contact_sites")
+        self.gap_placement_combo.addItem("Modeled GF–TTMn gaps at chemical sites", "gf_ttmn_chemical_sites")
+        self.gap_placement_combo.setToolTip("Chemical-site gaps are an explicit model, not measured electrical anatomy. "
+            "Uses only downloaded GF/DNp01–TTMn pre/post chemical locations; never soma substitutes or filler links.")
         self.gap_placement_combo.addItem("One AIS site per pair", "ais_pair")
         self.gap_placement_combo.addItem("One soma site per pair", "soma_pair")
         self.gap_placement_combo.currentIndexChanged.connect(self._gap_controls_changed)
@@ -966,6 +997,69 @@ class CircuitBuilderPage(QWidget):
         self._update_viewport_guidance()
         self._set_mixed_selection_design(False)
         self._engine_changed()
+        self._remember_editor_state()
+        self._remember_selection_controls()
+        self.viewport.selection_change_guard = lambda: self.confirm_unapplied_settings(('membrane',))
+
+    def _editor_group_state(self, group: str) -> Any:
+        if group == 'membrane':
+            return (self._read_hh().to_dict(), self._read_membrane().to_dict())
+        return (self._read_chemical_policy() if group == 'chemical' else self._read_gap_policy()).to_dict()
+
+    def _remember_editor_state(self, groups=('membrane', 'chemical', 'gap')) -> None:
+        for group in groups:
+            self._applied_editor_state[group] = self._editor_group_state(group)
+
+    def pending_settings_groups(self) -> tuple[str, ...]:
+        pending = []
+        for group, baseline in self._applied_editor_state.items():
+            try:
+                changed = self._editor_group_state(group) != baseline
+            except (ValueError, TypeError):
+                changed = True
+            if changed:
+                pending.append(group)
+        return tuple(pending)
+
+    def has_unapplied_settings(self) -> bool:
+        return bool(self.pending_settings_groups())
+
+    def unapplied_settings_message(self) -> str:
+        groups = ', '.join(self.pending_settings_groups())
+        return (f'Unapplied Circuit Builder settings: {groups}. Return to Circuit Builder and use '
+                'the appropriate Apply control (defaults, neuron, selected segments or policy), '
+                'or discard those edits before saving, updating or running. No values were silently applied.')
+
+    def confirm_unapplied_settings(self, groups=('membrane', 'chemical', 'gap')) -> bool:
+        if self._restoring_controls:
+            return True
+        pending = tuple(group for group in self.pending_settings_groups() if group in groups)
+        if not pending:
+            return True
+        answer = QMessageBox.question(
+            self, 'Unapplied Circuit Builder settings',
+            'Discard unapplied ' + ', '.join(pending) + ' edits before changing this selection? '
+            'Choose Cancel to keep them, then use the appropriate Apply control.',
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return False
+        for group in pending:
+            baseline = self._applied_editor_state[group]
+            if group == 'membrane':
+                self._set_hh(HodgkinHuxleySpec.from_dict(baseline[0]))
+                self._set_membrane(MembraneMechanismSpec.from_dict(baseline[1]))
+            elif group == 'chemical':
+                self._set_chemical_policy(ChemicalSynapsePolicy.from_dict(baseline))
+            else:
+                self._set_gap_policy(GapJunctionPolicy.from_dict(baseline))
+        return True
+
+    def _remember_selection_controls(self) -> None:
+        source = self._selected_source()
+        self._accepted_selection_controls = (
+            source.key if source else '', self.query_edit.text(), self.limit_spin.value())
 
     @staticmethod
     def _new_channel_editor(step: float) -> QDoubleSpinBox:
@@ -1260,7 +1354,7 @@ class CircuitBuilderPage(QWidget):
         issues = f' · {len(inventory.issues)} folder issue(s); count may be incomplete' if inventory.issues else ''
         self.source_summary.setText(f'{count:,} saved neurons · {source.dataset} · {len(source.swc_sources)} location(s){issues}')
         self.source_summary.setToolTip('Search combines matching folders. Preferred SWC variants use the existing '
-            'synapse-bearing/healed/plain order. Different equally preferred copies require your choice. '
+            'explicitly joined/synapse-bearing/radius-healed/plain order. Different equally preferred copies require your choice. '
             'Counts describe saved files, not complete biological coverage.')
         self.assemble_button.setEnabled(bool(count))
         if not count:
@@ -1302,16 +1396,23 @@ class CircuitBuilderPage(QWidget):
             report
             for report in batch.review_reports
             if report.sha256 not in reviewed_hashes(report)
+            or (report.component_count > 1 and not fragments_reviewed(report))
         ]
         if not pending:
             self.status_message.emit(
-                f"Audited {len(batch.reports)} recent SWC import(s); no unreviewed radius flags"
+                f"Audited {len(batch.reports)} recent SWC import(s); no unreviewed radius or fragment findings"
             )
             return
 
         completed = 0
         for report in pending:
             identity = report.body_id or report.instance or Path(report.path).stem
+            if report.sha256 in reviewed_hashes(report):
+                reviewed, joined = self._offer_fragment_join(report)
+                if reviewed:
+                    record_review_decision(report, action="keep", fragments_reviewed=True, joined_copy=joined)
+                completed += bool(joined)
+                continue
             box = QMessageBox(self)
             box.setIcon(
                 QMessageBox.Icon.Warning if report.errors else QMessageBox.Icon.Question
@@ -1323,8 +1424,9 @@ class CircuitBuilderPage(QWidget):
                 "relative to this neuron's own topology and radius distribution."
             )
             box.setInformativeText(
-                "The healer changes radii only. Saving a separately named healed SWC is "
-                "recommended; overwrite keeps the original filename and first creates a backup."
+                "Radius repair changes radii only. Saving a separately named healed SWC is "
+                "recommended; overwrite first creates a backup. Disconnected pieces, if present, "
+                "have a separate synthetic-bridge preview after this choice."
             )
             details = [
                 f"Source: {report.path}",
@@ -1360,31 +1462,160 @@ class CircuitBuilderPage(QWidget):
             box.exec()
             clicked = box.clickedButton()
             try:
+                result, action = None, "keep"
                 if clicked is copy_button and copy_button is not None:
                     result = heal_swc(report, mode="copy")
-                    record_review_decision(report, action="copy", healing_result=result)
+                    action = "copy"
                     self.status_message.emit(f"Saved radius-healed SWC copy: {result.output_path}")
                     completed += 1
                 elif clicked is overwrite_button and overwrite_button is not None:
                     result = heal_swc(report, mode="overwrite")
-                    record_review_decision(
-                        report, action="overwrite", healing_result=result
-                    )
+                    action = "overwrite"
                     self.status_message.emit(
                         f"Healed imported SWC in place; backup: {result.backup_path}"
                     )
                     completed += 1
-                elif clicked is keep_button:
-                    record_review_decision(report, action="keep")
+                elif clicked is not keep_button:
+                    continue
+                joined_report = (analyze_swc(result.output_path, dataset=report.dataset,
+                    body_id=report.body_id, provider=report.provider, manifest=report.manifest,
+                    instance=report.instance) if result is not None else report)
+                reviewed, joined = self._offer_fragment_join(joined_report)
+                record_review_decision(report, action=action, healing_result=result,
+                    fragments_reviewed=reviewed, joined_copy=joined)
+                completed += bool(joined)
             except (OSError, ValueError) as exc:
                 self.status_message.emit(f"Could not heal {identity}: {exc}")
 
         if completed:
             self.refresh_connectomes()
 
+    def review_bridge_copies(self) -> None:
+        """Explicit model comparison, never a silent change to reviewed anatomy."""
+        if not self.loaded_records:
+            self.status_message.emit("Load neurons before reviewing a separate bridge copy.")
+            return
+        text, accepted = QInputDialog.getText(self, "Review axon-aware bridge copies",
+            "Enter loaded neuron IDs, separated by commas. Only their added cable will change; originals and earlier copies stay.",
+            text=", ".join(self.viewport.selected_neuron_ids))
+        if not accepted:
+            return
+        ids = tuple(dict.fromkeys(item.strip() for item in re.split(r"[,;\n]+", text) if item.strip()))
+        if not ids or any(body not in self.loaded_records for body in ids):
+            self.status_message.emit("Bridge review requires explicit IDs from the currently loaded neurons; nothing changed.")
+            return
+        paths = {body: record.swc_path for body, record in self.loaded_records.items()}
+        hashes = dict(self.spec.morphology_sha256)
+        changed = []
+        for body in ids:
+            try:
+                loaded = Path(paths[body])
+                if sha256_file(loaded) != hashes.get(body):
+                    raise ValueError("Loaded morphology changed; reload and review it first")
+                fillers = set(self.loaded_morphologies[body].filler_metadata.get("filler_edge_child_ids", ()))
+                edited = set(self.spec.compartment_overrides.get(body, ())) | set(self.spec.compartment_mechanism_overrides.get(body, ()))
+                if fillers & {int(item) for item in edited}:
+                    raise ValueError("This neuron has per-compartment settings on earlier filler cable. Save the current draft and remove those filler overrides before comparing another bridge policy")
+                source = original_for_bridge_review(loaded)
+                report = analyze_swc(source, dataset=self.spec.connectome.dataset, body_id=body)
+                reviewed, joined = self._offer_fragment_join(report, policy=AXON_AWARE_POLICY, force_review=True)
+                if reviewed and joined:
+                    paths[body] = joined
+                    hashes[body] = sha256_file(Path(joined))
+                    changed.append(body)
+            except (OSError, ValueError, KeyError) as exc:
+                self.status_message.emit(f"Could not review bridge copy for {body}: {exc}")
+        if changed:
+            source = replace(self.spec.connectome, swc_paths=paths)
+            spec = replace(self.spec, connectome=source, morphology_sha256=hashes)
+            self._catalog_cache.clear()
+            self.set_circuit_spec(spec)
+            self.status_message.emit("Separate bridge copies selected for " + ", ".join(changed) + "; click Load neurons after indexing. Save as a separate draft to retain the comparison.")
+
+    def _offer_fragment_join(self, report, *, policy=ENDPOINT_POLICY, force_review=False) -> tuple[bool, str]:
+        """A topology change is always a separate, size-reviewed copy choice."""
+        if report.component_count < 2 or (fragments_reviewed(report) and not force_review):
+            return True, ""
+        if report.errors:
+            self.status_message.emit("Fragment joining refused: resolve the SWC's structural errors first.")
+            return False, ""
+        try:
+            plan = plan_fragment_join(report, policy=policy)
+            details = plan.to_dict()
+            fraction = details["added_volume_fraction"]
+            ratio = f" ({100 * fraction:.3g}% of the real cable volume)" if fraction is not None else ""
+            profile_note = "Its radius tapers between the endpoint radii. "
+            if policy == AXON_AWARE_POLICY:
+                estimates = [radius for bridge in plan.bridges for radius in bridge['local_profile']['estimated_radii_um']]
+                resistances = [bridge['axial_resistance_MOhm_at_100_ohm_cm'] for bridge in plan.bridges]
+                profile_note = ("Axon-aware comparison: interior filler radii use median diameters along up to three adjoining original edges, following the thickest continuation, with short endpoint transitions. "
+                    "This estimates local cable caliber; it does not identify or reconstruct a real axon. "
+                    "Original endpoint radii are retained. "
+                    + f"{len(plan.bridges)} bridge(s): estimated interior radius range {min(estimates):.4g}–{max(estimates):.4g} µm; calculated axial resistance range {min(resistances):.4g}–{max(resistances):.4g} MΩ at 100 Ω·cm. "
+                    "The complete support-node and per-bridge breakdown will be saved beside the copy. ")
+            answer = self._confirm_fragment_join(
+                f"{report.dataset or 'Imported SWC'} · {report.body_id or Path(report.path).stem}\n"
+                f"{report.component_count} pieces → 1 connected copy\n"
+                f"Add {plan.added_compartments:,} short tapered compartments; "
+                f"total length {details['added_length_um']:.6g} µm; "
+                f"total volume {details['added_volume_um3']:.6g} µm³{ratio}.\n\n"
+                "Each filler is no longer or larger in volume than the largest sampled adjoining real compartment. "
+                + profile_note + "Existing points, radii, real edges and "
+                "connection locations stay unchanged. Fillers cannot become soma, AIS or synapse targets.\n\n"
+                "These are synthetic cables, not recovered anatomy. They use branch membrane settings "
+                "and change electrical conduction; a long gap can add substantial total membrane. "
+                "The app will use the separately named joined copy on the next Load. "
+                "The original and earlier copies will not be replaced. Save the joined copy?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return True, ""
+            output = save_fragment_join(plan)
+            self.status_message.emit(f"Saved joined SWC copy with {plan.added_compartments:,} synthetic compartments: {output}")
+            return True, str(output)
+        except (OSError, ValueError) as exc:
+            self.status_message.emit(f"Could not join skeleton pieces: {exc}")
+            return False, ""
+
+    def _confirm_fragment_join(self, message: str):
+        # Keep the complete size/model preview in the app-owned dialog on both
+        # platforms rather than an OS alert with different accessibility rules.
+        box = QMessageBox(self)
+        box.setOption(QMessageBox.Option.DontUseNativeDialog, True)
+        box.setObjectName("FragmentJoinPreview")
+        box.setWindowTitle("Join disconnected skeleton pieces?")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        return box.exec()
+
     def _selection_controls_changed(self, *_args: Any) -> None:
         if self._restoring_controls:
             return
+        allow_reset = self.confirm_unapplied_settings()
+        if allow_reset and any((self.spec.neuron_overrides, self.spec.compartment_overrides,
+                                self.spec.neuron_mechanism_overrides,
+                                self.spec.compartment_mechanism_overrides,
+                                self.spec.connection_overrides)):
+            allow_reset = QMessageBox.question(
+                self, 'Replace edited cell set?',
+                'Changing the neuron query, limit or source clears the current cell set and its '
+                'local settings. Save a separate project first to keep them. Discard these local '
+                'settings, or Cancel to keep the current cell set?',
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            ) == QMessageBox.StandardButton.Discard
+        if not allow_reset:
+            key, query, limit = self._accepted_selection_controls
+            self._restoring_controls = True
+            try:
+                self.connectome_combo.setCurrentIndex(self.connectome_combo.findData(key))
+                self.query_edit.setText(query)
+                self.limit_spin.setValue(limit)
+            finally:
+                self._restoring_controls = False
+            self._sync_source_controls()
+            return
+        self._remember_selection_controls()
         self._clear_missing_neuprint_request()
         self._update_pair_graph_note()
         if self.spec.neuron_ids or self.loaded_morphologies:
@@ -1413,6 +1644,7 @@ class CircuitBuilderPage(QWidget):
         self._set_membrane(self.spec.membrane)
         self._set_mixed_selection_design(False)
         self._update_viewport_guidance()
+        self._remember_editor_state(('membrane',))
 
     def _selected_source(self) -> ConnectomeRef | None:
         index = self.connectome_combo.currentIndex()
@@ -1424,9 +1656,12 @@ class CircuitBuilderPage(QWidget):
             self.pair_graph_note.setText("Connectivity: native contact source; no aggregate pair file selected")
             return
         try:
-            manifest = json.loads((Path(source.pair_graph_index).parent / "manifest.json").read_text(encoding="utf-8"))
+            from digifly_app.core.pair_graph import graph_manifest_metadata
+            manifest = graph_manifest_metadata(source)
             release_note = manifest.get('source_scope', 'release unconfirmed')
-            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · total_weight {manifest['min_weight']}–{manifest['max_weight']} · read-only; {release_note}")
+            locations=(f"{manifest['contact_rows']:,} measured chemical sites / {len(manifest['contact_covered_body_ids']):,} location-checked neurons"
+                       if manifest.get('contact_coordinates_in_file') is True else 'counts only; no measured contact locations')
+            self.pair_graph_note.setText(f"Connectivity: {Path(source.pair_graph_path).name} · {manifest['rows']:,} directed pairs · {manifest['represented_neurons']:,} IDs · {locations} · read-only; {release_note}")
         except (OSError, ValueError, KeyError):
             self.pair_graph_note.setText("Selected connectivity file is unavailable. Open Data Library to review it; no fallback source is used.")
 
@@ -1556,6 +1791,8 @@ class CircuitBuilderPage(QWidget):
             self._inventory_ready()
 
     def assemble_circuit(self) -> None:
+        if not self.confirm_unapplied_settings():
+            return
         source = self._selected_source()
         if source is None:
             self.status_message.emit("Choose an available SWC morphology source first")
@@ -1900,7 +2137,8 @@ class CircuitBuilderPage(QWidget):
                 self.viewport.set_neuron_selection(ordered)
         finally:
             self._syncing_neuron_table_selection = False
-        self._sync_table_selection(tuple(ordered))
+        # A cancelled inspector change keeps the viewport's previous target.
+        self._sync_table_selection(tuple(self.viewport.selected_neuron_ids))
 
     def _neuron_selected(self, neuron_id: str) -> None:
         record = self.loaded_records.get(neuron_id)
@@ -2238,6 +2476,7 @@ class CircuitBuilderPage(QWidget):
         self._set_hh(HodgkinHuxleySpec.from_dict(base_hh))
         self._set_membrane(MembraneMechanismSpec.from_dict(base_membrane))
         self._update_mechanism_capability()
+        self._remember_editor_state(('membrane',))
 
     def _set_mixed_selection_design(self, mixed: bool) -> None:
         self._mixed_selection_design = bool(mixed)
@@ -2373,7 +2612,12 @@ class CircuitBuilderPage(QWidget):
             self._setting_mechanism_controls = prior_guard
 
     def _read_chemical_policy(self) -> ChemicalSynapsePolicy:
+        placement = str(self.chemical_placement.currentData())
+        aggregate = placement != "imported_post_contact"
         return ChemicalSynapsePolicy(
+            placement_policy=placement,
+            weight_policy=str(self.chemical_aggregate_basis.currentData()) if aggregate else "source_or_default_per_contact",
+            aggregation_policy="one_exp2syn_per_pair" if aggregate else "per_site_unchanged",
             default_weight_uS=self.chemical_default_weight.value(),
             weight_scale=self.chemical_weight_scale.value(),
             default_delay_ms=self.chemical_delay.value(),
@@ -2391,6 +2635,9 @@ class CircuitBuilderPage(QWidget):
         prior_guard = self._setting_mechanism_controls
         self._setting_mechanism_controls = True
         try:
+            self.chemical_placement.setCurrentIndex(self.chemical_placement.findData(policy.placement_policy))
+            if policy.is_aggregate:
+                self.chemical_aggregate_basis.setCurrentIndex(self.chemical_aggregate_basis.findData(policy.weight_policy))
             self.chemical_default_weight.setValue(policy.default_weight_uS)
             self.chemical_weight_scale.setValue(policy.weight_scale)
             self.chemical_delay.setValue(policy.default_delay_ms)
@@ -2412,6 +2659,13 @@ class CircuitBuilderPage(QWidget):
         self._update_chemical_control_state()
 
     def _update_chemical_control_state(self) -> None:
+        aggregate = self.chemical_placement.currentData() != "imported_post_contact"
+        self.chemical_aggregate_basis.setEnabled(aggregate)
+        per_count = self.chemical_aggregate_basis.currentData() == "count_times_default"
+        self.chemical_default_weight_label.setText(
+            "Model strength per count" if aggregate and per_count else
+            "Model strength per pair" if aggregate else "Fallback contact weight")
+        self.chemical_mechanism_label.setText("Exp2Syn · one modeled synapse per directed pair" if aggregate else "Exp2Syn · per imported contact")
         geometric = self.chemical_geom_delay.isChecked()
         self.chemical_base_delay.setEnabled(geometric)
         self.chemical_velocity.setEnabled(geometric)
@@ -2620,6 +2874,8 @@ class CircuitBuilderPage(QWidget):
         self._update_pair_graph_note()
         self._sync_source_controls()
         self._start_source_inventory()
+        self._remember_editor_state()
+        self._remember_selection_controls()
 
     def load_saved_assets(self) -> None:
         """Reload the exact saved neuron IDs without re-evaluating the original query."""
@@ -2680,6 +2936,9 @@ class CircuitBuilderPage(QWidget):
         finally:
             self._restoring_controls = False
 
+        self._remember_editor_state()
+        self._remember_selection_controls()
+
     def apply_neuron_override(self) -> None:
         neuron_id = self.viewport.selected_neuron_id
         if neuron_id is None:
@@ -2689,6 +2948,7 @@ class CircuitBuilderPage(QWidget):
             return
         self.spec.apply_neuron_override(neuron_id, self._read_regional_hh())
         self.spec.apply_neuron_mechanism_override(neuron_id, self._read_membrane())
+        self._remember_editor_state(('membrane',))
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
         self.status_message.emit(
@@ -2706,6 +2966,7 @@ class CircuitBuilderPage(QWidget):
         self.spec.apply_compartment_mechanism_override(
             neuron_id, node_ids, self._read_membrane()
         )
+        self._remember_editor_state(('membrane',))
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
         self.status_message.emit(
@@ -2727,6 +2988,7 @@ class CircuitBuilderPage(QWidget):
     def apply_cell_set_defaults(self) -> None:
         self.spec.hh = self._read_hh()
         self.spec.membrane = self._read_membrane()
+        self._remember_editor_state(('membrane',))
         self.circuit_changed.emit(self.spec)
         self._apply_experiment_globals()
         self._update_override_summary()
@@ -2747,6 +3009,7 @@ class CircuitBuilderPage(QWidget):
         for neuron_id in self.loaded_records:
             self.spec.neuron_overrides[neuron_id].pop("v_init_mV", None)
             self.spec.neuron_overrides[neuron_id].pop("celsius_C", None)
+        self._remember_editor_state(('membrane',))
         self._update_override_summary()
         self.circuit_changed.emit(self.spec)
         self._apply_experiment_globals()
@@ -2761,22 +3024,32 @@ class CircuitBuilderPage(QWidget):
         except ValueError as exc:
             self.status_message.emit(f"Chemical-synapse policy is invalid: {exc}")
             return
+        self._remember_editor_state(('chemical',))
         self.circuit_changed.emit(self.spec)
         self.status_message.emit(
-            "Stored Exp2Syn kinetics, delay, threshold, and weight handling for all imported chemical contacts"
+            "Stored explicit aggregate chemical model; no electrical contacts inferred"
+            if self.spec.chemical_synapse_policy.is_aggregate else
+            "Stored Exp2Syn kinetics, delay, threshold, and weight handling for located chemical contacts"
         )
         self._update_override_summary()
 
     def apply_gap_policy(self) -> None:
         self.spec.gap_junction_policy = self._read_gap_policy()
+        self._remember_editor_state(('gap',))
         self.circuit_changed.emit(self.spec)
         policy = self.spec.gap_junction_policy
         if policy.mode == "none":
             self.status_message.emit("Cleared the all-electrical-edge gap-junction policy")
+        elif policy.placement_policy == 'gf_ttmn_chemical_sites':
+            self.status_message.emit(
+                f"Stored modeled GF–TTMn {policy.mechanism_label} policy. Run will validate "
+                "the selected chemical endpoints and place modeled gaps there; "
+                "no measured electrical anatomy is implied."
+            )
         else:
             self.status_message.emit(
-                f"Stored {policy.mechanism_label} as the future all-electrical-edge policy; "
-                "no GJ was attached because connectivity is not loaded"
+                f"Stored {policy.mechanism_label} policy for imported electrical contacts. "
+                "Run checks the selected contact source before attaching gaps."
             )
         self._update_override_summary()
         self._update_mechanism_capability()
@@ -2832,6 +3105,9 @@ class CircuitBuilderPage(QWidget):
         )
 
     def save_custom_neuron(self) -> None:
+        if any(group in self.pending_settings_groups() for group in ('chemical', 'gap')):
+            QMessageBox.warning(self, 'Unapplied settings', self.unapplied_settings_message())
+            return
         neuron_id = self.viewport.selected_neuron_id
         morphology = self.loaded_morphologies.get(neuron_id or "")
         if neuron_id is None or morphology is None:
@@ -2849,4 +3125,5 @@ class CircuitBuilderPage(QWidget):
             self.status_message.emit(f"Could not save SWC + biophysics bundle: {exc}")
             return
         self.status_message.emit(f"Saved unchanged SWC + biophysics bundle: {bundle}")
+        self._remember_editor_state(('membrane',))
         self.refresh_connectomes()

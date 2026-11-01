@@ -255,7 +255,13 @@ print(json.dumps({
             timeout=timeout,
             env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        return SimulatorRuntime(
+            executable, "",
+            error=f"Runtime check timed out after {timeout:g} seconds while importing simulator dependencies. "
+                  "The runtime was not verified; this does not mean it is uninstalled.",
+        )
+    except OSError as exc:
         return SimulatorRuntime(executable, "", error=str(exc))
     if completed.returncode != 0:
         return SimulatorRuntime(

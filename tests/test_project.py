@@ -6,6 +6,28 @@ def test_standalone_draft_with_no_public_checkout_roundtrips(tmp_path):
     project = DigiflyProject(name="standalone", digifly_public_root="", output_root=str(tmp_path / "runs"))
     assert DigiflyProject.load(project.save(tmp_path / "standalone.digifly.json")).digifly_public_root == ""
 
+
+def test_failed_atomic_project_replace_preserves_existing_file(tmp_path,monkeypatch):
+    from digifly_app.core import project as module
+    destination=tmp_path/'original.digifly.json'
+    destination.write_text('existing project bytes')
+    def fail(*args):raise OSError('inert replacement failure')
+    monkeypatch.setattr(module.os,'replace',fail)
+    with pytest.raises(OSError,match='replacement failure'):
+        module.DigiflyProject(name='new',digifly_public_root='',output_root='runs').save(destination)
+    assert destination.read_text()=='existing project bytes'
+    assert list(tmp_path.iterdir())==[destination]
+
+
+def test_explicit_unconfigured_runtimes_are_not_replaced_by_old_defaults(tmp_path):
+    from digifly_app.core.project import DigiflyProject
+    project=DigiflyProject(name='unconfigured',digifly_public_root='',output_root='runs',
+        python_executable='',arbor_python_executable='',bmtk_python_executable='',netpyne_python_executable='')
+    saved=DigiflyProject.load(project.save(tmp_path/'unconfigured.json'))
+    assert (saved.python_executable,saved.arbor_python_executable,saved.bmtk_python_executable,saved.netpyne_python_executable)==('','','','')
+    old=DigiflyProject.from_dict({'schema_version':2,'name':'old','output_root':'runs'})
+    assert old.arbor_python_executable is None and old.bmtk_python_executable is None
+
 import json
 
 import pytest

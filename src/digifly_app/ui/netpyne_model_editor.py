@@ -17,6 +17,7 @@ from typing import Any, Callable
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -299,11 +300,16 @@ class NetPyNEModelEditor(QWidget):
         rail_heading.setObjectName("NetPyNERailHeading")
         rail_layout.addWidget(rail_heading)
         self.section_nav_buttons: list[QPushButton] = []
+        self.section_nav_group = QButtonGroup(self)
+        self.section_nav_group.setExclusive(True)
         for index, (title, _widget) in enumerate(section_widgets):
             button = QPushButton(title)
             button.setObjectName("NetPyNESectionNavButton")
             button.setCheckable(True)
-            button.clicked.connect(lambda _checked=False, i=index: self.sections.setCurrentIndex(i))
+            self.section_nav_group.addButton(button)
+            button.toggled.connect(
+                lambda checked, i=index: self.sections.setCurrentIndex(i) if checked else None
+            )
             rail_layout.addWidget(button)
             self.section_nav_buttons.append(button)
         rail_layout.addSpacing(12)
@@ -313,7 +319,10 @@ class NetPyNEModelEditor(QWidget):
         experiment_button = QPushButton("Experiment / recording")
         experiment_button.setObjectName("NetPyNESectionNavButton")
         experiment_button.setCheckable(True)
-        experiment_button.clicked.connect(lambda: self.sections.setCurrentIndex(5))
+        self.section_nav_group.addButton(experiment_button)
+        experiment_button.toggled.connect(
+            lambda checked: self.sections.setCurrentIndex(5) if checked else None
+        )
         rail_layout.addWidget(experiment_button)
         self.section_nav_buttons.append(experiment_button)
         rail_layout.addStretch(1)
@@ -346,7 +355,7 @@ class NetPyNEModelEditor(QWidget):
         actions.addStretch(1)
         shell.addLayout(actions)
 
-        self.example_button.clicked.connect(lambda: self.load_model(synthetic_two_population_example()))
+        self.example_button.clicked.connect(self._choose_example)
         self.open_button.clicked.connect(self._choose_load)
         self.save_button.clicked.connect(self._choose_save)
         self.export_button.clicked.connect(self._choose_export)
@@ -588,6 +597,7 @@ class NetPyNEModelEditor(QWidget):
         self._refresh_population_choices(selected=set(model.experiment.voltage_populations))
         self._recording_controls_changed(False)
         self._loading = False
+        self._clean_document = self.document_identity()
         self.model_changed.emit()
         self.refresh_validation()
 
@@ -602,7 +612,54 @@ class NetPyNEModelEditor(QWidget):
         """Atomically save the editable workbench document to an explicit path."""
         destination = save_workbench_spec(path, self.model_spec())
         self.current_path = destination.resolve()
+        self._clean_document = self.document_identity()
         return destination
+
+    def document_identity(self) -> str | None:
+        try:
+            return json.dumps(self.model_spec().to_dict(), sort_keys=True, allow_nan=False)
+        except (ValueError, TypeError):
+            return None
+
+    def _prepare_modal_dialog(self) -> None:
+        # Cocoa can query stale selected-cell interfaces in a nested native
+        # dialog after an inline edit (DF68). Clear only transient highlights,
+        # not rows, edits or population check states. This is an app-side
+        # mitigation; native crash qualification remains a separate check.
+        for records in (self.cell_rules_table, self.populations_table,
+                        self.synapses_table, self.connections_table,
+                        self.stimuli_table):
+            records.table.clearSelection()
+        self.voltage_population_list.clearSelection()
+
+    def confirm_unsaved_changes(self, action: str) -> bool:
+        current = self.document_identity()
+        if current is not None and current == self._clean_document:
+            return True
+        self._prepare_modal_dialog()
+        answer = QMessageBox.question(
+            self, "Unsaved NetPyNE model", f"Save the editable NetPyNE model before {action}?\n\n"
+            "It is a separate document, not included in Circuit/Experiment project files.",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Save:
+            return answer == QMessageBox.StandardButton.Discard
+        path = str(self.current_path) if self.current_path else ""
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Save NetPyNE model", "netpyne-model.json", "JSON files (*.json)")
+        if not path:
+            return False
+        try:
+            self.save_file(path)
+            return True
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not save model", str(exc))
+            return False
+
+    def _choose_example(self) -> None:
+        if self.confirm_unsaved_changes("loading the example"):
+            self.load_model(synthetic_two_population_example())
 
     def export_payload(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """Validate the complete draft before deriving NetPyNE network/sim settings."""
@@ -641,17 +698,20 @@ class NetPyNEModelEditor(QWidget):
             QMessageBox.warning(self, title, str(exc))
 
     def _choose_load(self) -> None:
+        self._prepare_modal_dialog()
         path, _ = QFileDialog.getOpenFileName(self, "Open NetPyNE model", "", "JSON files (*.json)")
-        if path:
+        if path and self.confirm_unsaved_changes("opening another model"):
             self._show_file_error("Could not open model", lambda: self.load_file(path))
 
     def _choose_save(self) -> None:
+        self._prepare_modal_dialog()
         start = str(self.current_path) if self.current_path else "netpyne-model.json"
         path, _ = QFileDialog.getSaveFileName(self, "Save NetPyNE model", start, "JSON files (*.json)")
         if path:
             self._show_file_error("Could not save model", lambda: self.save_file(path))
 
     def _choose_export(self) -> None:
+        self._prepare_modal_dialog()
         path, _ = QFileDialog.getSaveFileName(
             self, "Export NetPyNE settings", "netpyne-settings.json", "JSON files (*.json)"
         )

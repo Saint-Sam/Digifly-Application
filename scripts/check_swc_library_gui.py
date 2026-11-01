@@ -21,6 +21,11 @@ def run_child(command, project, environment):
             decoded(exc.stderr) + '\nNative app check exceeded its unchanged 120-second limit.\n'), True
 
 
+def child_command(project, executable, output, *, source=False, results_only=False):
+    command=[sys.executable,str(project/'main.py')] if source else [str(executable.resolve())]
+    return command+['--package-results-test' if results_only else '--package-library-test',str(output)]
+
+
 def fingerprint():
     settings = QSettings("digifly", "Digifly Workstation")
     # Compare this app's values, not macOS-global fallback preferences such as
@@ -35,6 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path)
     parser.add_argument("--source", action="store_true")
+    parser.add_argument("--results-only", action="store_true", help="Focused native Results and safety fixtures; not full library acceptance")
     parser.add_argument("--archive", type=Path, help="Bind a packaged check to its delivery ZIP as well")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -42,8 +48,7 @@ def main():
     if output.exists():
         raise ValueError("GUI evidence destination must be new")
     project = Path(__file__).resolve().parents[1]
-    command = [sys.executable, str(project / "main.py")] if args.source else [str(args.executable.resolve())]
-    command += ["--package-library-test", str(output)]
+    command=child_command(project,args.executable,output,source=args.source,results_only=args.results_only)
     executable_sha = hashlib.sha256(args.executable.read_bytes()).hexdigest() if args.executable else None
     archive_sha = hashlib.sha256(args.archive.read_bytes()).hexdigest() if args.archive else None
     before = fingerprint()
@@ -61,6 +66,9 @@ def main():
               "native_preferences_unchanged": before == after, "explicit_settings_files": [str(p) for p in isolated_settings],
               "exit_code": result.returncode, "timed_out": timed_out,
               "child_receipt_present": receipt.is_file(), "engineering_only": True}
+    report['fixture_scope']='results-and-safety' if args.results_only else 'full-library-and-safety'
+    if args.results_only and evidence.get('schema')!='digifly-native-results-check-v1':
+        report['ok']=False
     if args.executable and hashlib.sha256(args.executable.read_bytes()).hexdigest() != executable_sha:
         report["ok"] = False
     if args.archive and hashlib.sha256(args.archive.read_bytes()).hexdigest() != archive_sha:

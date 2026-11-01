@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -17,6 +18,8 @@ from .runtime_discovery import probe_simulator_runtime
 
 if TYPE_CHECKING:
     from .resource_profile import ResourceProfile
+
+MAX_BIONET_READINESS_SECONDS = 60.0
 
 
 class DigiflyWorkspace:
@@ -120,6 +123,8 @@ class DigiflyWorkspace:
         arbor_python_executable: str | None = None,
         bmtk_python_executable: str | None = None,
         netpyne_python_executable: str | None = None,
+        *,
+        bionet_timeout: float = 20.0,
     ) -> tuple[EngineProbe, ...]:
         neuron_python = Path(python_executable).expanduser()
         arbor_python = Path(arbor_python_executable or python_executable).expanduser()
@@ -172,24 +177,38 @@ class DigiflyWorkspace:
         )
 
         arbor_source = self.phase2_arbor / "digifly" / "phase2"
-        arbor_runtime = _probe_python_module(str(arbor_python), "arbor")
+        arbor_worker = worker_path("generic_experiment_worker.py")
+        arbor_mechanisms = resource_path("mechanisms", "arbor_gap_junctions")
+        arbor_sources = (
+            arbor_worker,
+            worker_path("arbor_channel_translation.py"),
+            worker_path("arbor_gap_bridge.py"),
+            *(arbor_mechanisms / name for name in (
+                "gap.mod", "rect_gap.mod", "hetero_rect_gap.mod", "source_manifest.json"
+            )),
+        )
+        arbor_source_ok = all(path.is_file() for path in arbor_sources)
+        arbor_runtime = _probe_python_module(str(arbor_python), "arbor", clean_environment=True)
         arbor = EngineProbe(
             key="arbor",
             name="Arbor",
-            source_state=CheckState.PASS if arbor_source.is_dir() else CheckState.WARNING,
+            source_state=CheckState.PASS if arbor_source_ok else CheckState.FAIL,
             runtime_state=arbor_runtime[0],
             summary=(
-                "Cache-free staging source and Arbor runtime are available."
-                if arbor_source.is_dir() and arbor_runtime[0] == CheckState.PASS
-                else "Arbor source or runtime is not yet configured."
+                "The app-owned Arbor worker and mechanism sources are ready with the selected runtime."
+                if arbor_source_ok and arbor_runtime[0] == CheckState.PASS
+                else "Arbor needs its packaged worker, mechanism sources, and a compatible runtime."
             ),
-            details=(str(arbor_source), arbor_runtime[1]),
+            details=(str(arbor_worker), str(arbor_mechanisms), arbor_runtime[1],
+                     (f"Optional legacy preset source: {arbor_source}"
+                      if arbor_source.is_dir()
+                      else "No legacy staging tree is required for the app-owned selected-cell workflow.")),
         )
 
         bmtk_source = self.phase2_bmtk / "src" / "digifly_bmtk"
         bmtk_worker = worker_path("bmtk_bionet_worker.py")
         bmtk_runtime = (
-            _probe_bionet_runtime(str(bmtk_python))
+            _probe_bionet_runtime(str(bmtk_python), timeout=bionet_timeout)
             if bmtk_python
             else (
                 CheckState.WARNING,
@@ -277,13 +296,20 @@ def _probe_python_module(
     executable = Path(python_executable).expanduser()
     if not executable.is_file():
         return CheckState.FAIL, f"Python executable not found: {executable}"
-    snippet = (
-        "import importlib.util, json; "
-        f"s=importlib.util.find_spec({module!r}); "
-        "print(json.dumps({'found': bool(s), 'origin': getattr(s, 'origin', None)}))"
-    )
+    snippet = f"""import importlib, json
+name = {module!r}
+try:
+    loaded = importlib.import_module(name)
+except ModuleNotFoundError as error:
+    if error.name != name:
+        raise
+    print(json.dumps({{'found': False}}))
+else:
+    print(json.dumps({{'found': True, 'origin': getattr(loaded, '__file__', None)}}))
+"""
     try:
         environment = sanitized_external_environment({})
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         if clean_environment:
             environment["PYTHONNOUSERSITE"] = "1"
         completed = subprocess.run(
@@ -294,25 +320,32 @@ def _probe_python_module(
             timeout=8,
             env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return CheckState.FAIL, f"Runtime probe failed: {exc}"
+    except subprocess.TimeoutExpired:
+        return CheckState.FAIL, f"{module} import timed out after 8 seconds; readiness remains unverified."
+    except OSError as exc:
+        return CheckState.FAIL, f"Could not start the selected Python: {exc}"
     if completed.returncode != 0:
-        message = (completed.stderr or completed.stdout).strip()
-        return CheckState.FAIL, message or f"Could not probe {module}."
+        lines = (completed.stderr or completed.stdout).strip().splitlines()
+        message = lines[-1][:400] if lines else "No error details returned."
+        return CheckState.FAIL, f"{module} import failed: {message}"
     try:
         payload = json.loads(completed.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
         return CheckState.FAIL, f"Unexpected probe output for {module}."
-    if payload.get("found"):
+    if not isinstance(payload, dict) or not isinstance(payload.get("found"), bool):
+        return CheckState.FAIL, f"Unexpected probe output for {module}."
+    if payload["found"]:
         return CheckState.PASS, f"{module} available at {payload.get('origin') or 'built-in'}"
     return CheckState.WARNING, f"{module} is not installed in {executable}"
 
 
-def _probe_bionet_runtime(python_executable: str) -> tuple[CheckState, str]:
+def _probe_bionet_runtime(python_executable: str, *, timeout: float = 20.0) -> tuple[CheckState, str]:
+    if not math.isfinite(timeout) or not 0 < timeout <= MAX_BIONET_READINESS_SECONDS:
+        raise ValueError("BioNet readiness checks require a finite timeout of at most 60 seconds.")
     executable = Path(python_executable).expanduser()
     if not executable.is_file():
         return CheckState.FAIL, f"Python executable not found: {executable}"
-    result = probe_simulator_runtime(executable, timeout=20.0)
+    result = probe_simulator_runtime(executable, timeout=timeout)
     if result.error:
         return CheckState.FAIL, f"BMTK BioNet runtime probe failed: {result.error}"
     if not result.has_bmtk:

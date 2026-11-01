@@ -1,0 +1,291 @@
+from dataclasses import replace
+import json
+
+import pytest
+
+from digifly_app.core.circuit import CircuitSpec
+from digifly_app.core.connectomes import NeuronRecord
+from digifly_app.core.morphology import load_swc, locate_soma
+from digifly_app.core.swc_quality import analyze_swc
+from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+from digifly_app.engines.generic_experiment import _nearest_node_id
+from digifly_app.workers import generic_experiment_worker as worker
+
+
+@pytest.fixture
+def fragments(tmp_path):
+    source = tmp_path / "1.swc"
+    source.write_text("# units: um\n1 1 0 0 0 1 -1\n2 1 2 0 0 1 1\n3 2 4 0 0 0.9 2\n20 2 20 0 0 0.8 -1\n21 2 22 0 0 0.7 20\n")
+    record = NeuronRecord("1", "MN", "fixture", str(source), "custom:fixture")
+    return source, record
+
+
+def test_adaptive_join_preserves_every_original_point_radius_and_real_edge(fragments):
+    source, record = fragments
+    original = source.read_bytes()
+    before = load_swc(record, allow_forest_preview=True)
+    plan = plan_fragment_join(analyze_swc(source))
+    assert plan.added_compartments > 1
+    for bridge in plan.bridges:
+        assert bridge["maximum_compartment_length_um"] <= bridge["reference_maximum_length_um"]
+        assert bridge["maximum_compartment_volume_bound_um3"] <= bridge["reference_maximum_volume_um3"]
+    joined = save_fragment_join(plan)
+    assert source.read_bytes() == original
+    after = load_swc(replace(record, swc_path=str(joined)))
+    by_id = {node.node_id: node for node in after.nodes}
+    for old in before.nodes:
+        new = by_id[old.node_id]
+        assert (old.swc_type, old.x, old.y, old.z, old.radius) == (new.swc_type, new.x, new.y, new.z, new.radius)
+        assert new.parent_id == plan.parent_changes.get(old.node_id, old.parent_id)
+    assert sum(node.parent_id == -1 for node in after.nodes) == 1
+    assert locate_soma(before) == locate_soma(after)
+    # A point on the invented bridge must not become a new anatomical contact anchor.
+    assert _nearest_node_id(after, (12, 0, 0)) in {node.node_id for node in before.nodes}
+    note = json.loads(joined.with_suffix(".swc.quality.json").read_text())
+    assert note["source_unchanged"] is True
+    assert note["plan"]["biological_reconstruction"] is False
+    assert note["output_sha256"] == after.coordinate_transform["source_sha256"]
+
+
+def test_normalization_and_regional_sites_keep_fillers_out_of_soma_ais(fragments, tmp_path):
+    source, _record = fragments
+    original_rows = worker._swc_rows(source)
+    joined = save_fragment_join(plan_fragment_join(analyze_swc(source)))
+    joined_rows = worker._swc_rows(joined)
+    for rostral in (True, False):
+        assert worker._target_soma_node(original_rows, prefer_rostral=rostral) == worker._target_soma_node(joined_rows, prefer_rostral=rostral)
+    data = worker._regional_cell_data(CircuitSpec(neuron_ids=("1",)).to_dict(), "1", {row[0]:row[0] for row in joined_rows})
+    before = worker._regional_plan(original_rows, data)
+    after = worker._regional_plan(joined_rows, data)
+    for region in ("soma", "ais"):
+        assert [s["node_id"] for s in worker._regional_sites(before, region, data)] == [s["node_id"] for s in worker._regional_sites(after, region, data)]
+        assert all(not s["is_filler"] for s in worker._regional_sites(after, region, data))
+    output = tmp_path / "normalized"
+    output.mkdir()
+    normalized, _mapping, _digest = worker._normalize_swc(joined, output)
+    normalized_rows = worker._swc_rows(normalized)
+    assert len(normalized_rows.filler_metadata["synthetic_node_ids"]) == len(joined_rows.filler_metadata["synthetic_node_ids"])
+    assert normalized_rows.filler_metadata["normalized"] is True
+
+
+def test_changed_source_and_existing_copy_are_never_overwritten(fragments):
+    source, _record = fragments
+    plan = plan_fragment_join(analyze_swc(source))
+    joined = save_fragment_join(plan)
+    kept = joined.read_bytes()
+    with pytest.raises(FileExistsError):
+        save_fragment_join(plan)
+    assert joined.read_bytes() == kept
+    source.write_text(source.read_text() + "# changed\n")
+    with pytest.raises(ValueError, match="changed"):
+        save_fragment_join(plan)
+
+
+def test_invalid_or_unbounded_filler_is_refused_without_writing(fragments, monkeypatch):
+    import digifly_app.core.swc_fragments as module
+    source, _record = fragments
+    monkeypatch.setattr(module, "MAX_FILLER_COMPARTMENTS", 1)
+    with pytest.raises(ValueError, match="budget"):
+        plan_fragment_join(analyze_swc(source))
+    assert not source.with_name("1_fragment_healed.swc").exists()
+
+
+def test_tampered_plan_and_existing_sidecar_refuse_without_overwriting(fragments):
+    source, _record = fragments
+    plan = plan_fragment_join(analyze_swc(source))
+    with pytest.raises(ValueError, match="differs"):
+        save_fragment_join(replace(plan, parent_changes={20: 1}))
+    sidecar = source.with_name("1_fragment_healed.swc.quality.json")
+    sidecar.write_text("unrelated earlier record")
+    with pytest.raises(FileExistsError):
+        save_fragment_join(plan)
+    assert sidecar.read_text() == "unrelated earlier record"
+    assert not source.with_name("1_fragment_healed.swc").exists()
+
+
+def test_concurrent_copy_creation_preserves_other_writer_and_rolls_back_owned_sidecar(fragments, monkeypatch):
+    import digifly_app.core.swc_fragments as module
+    source, _record = fragments
+    plan = plan_fragment_join(analyze_swc(source))
+    publish = module._publish_new_text
+    def concurrent(path, text):
+        if path.suffix == ".swc":
+            path.write_text("another writer's copy")
+        publish(path, text)
+    monkeypatch.setattr(module, "_publish_new_text", concurrent)
+    with pytest.raises(FileExistsError):
+        save_fragment_join(plan)
+    assert source.with_name("1_fragment_healed.swc").read_text() == "another writer's copy"
+    assert not source.with_name("1_fragment_healed.swc.quality.json").exists()
+    assert not tuple(source.parent.glob(".fragment-check-*"))
+
+
+def test_old_radius_review_does_not_suppress_fragment_choice(fragments):
+    from digifly_app.core.swc_quality import fragments_reviewed, record_review_decision
+    source, _record = fragments
+    report = analyze_swc(source, manifest=source.parent / "manifest.json")
+    assert report.component_count == 2 and report.needs_review
+    record_review_decision(report, action="keep")
+    assert not fragments_reviewed(report)
+    record_review_decision(report, action="keep", fragments_reviewed=True)
+    assert fragments_reviewed(report)
+
+
+@pytest.mark.parametrize("rows,reason", [
+    ("1 1 0 0 0 1 -1\n2 3 0 0 0 1 -1\n", "Coincident"),
+    ("1 1 0 0 0 1 -1\n2 3 10 0 0 1 -1\n", "adjoining"),
+    ("1 1 0 0 0 1 -1\n2 3 1 0 0 0 -1\n", "positive-radius"),
+    ("1 1 0 0 0 1 -1\n2 3 1 0 0 1 3\n3 3 2 0 0 1 2\n", "acyclic"),
+])
+def test_unsupported_geometry_refuses_without_silent_alteration(tmp_path, rows, reason):
+    source = tmp_path / "invalid.swc"
+    source.write_text(rows)
+    with pytest.raises(ValueError, match=reason):
+        plan_fragment_join(analyze_swc(source))
+    assert source.read_text() == rows
+    assert list(tmp_path.iterdir()) == [source]
+
+
+def test_joined_raw_voxel_copy_keeps_physical_units_once_only(fragments):
+    import hashlib
+    source, record = fragments
+    source.write_text(source.read_text().replace("# units: um\n", ""))
+    original = source.read_bytes()
+    master = {"provider":"neuprint", "server":"https://neuprint.janelia.org", "dataset":"manc:v1.2.1",
+        "files":[{"path":source.name, "sha256":hashlib.sha256(original).hexdigest()}]}
+    (source.parent / "digifly-resource.json").write_text(json.dumps(master))
+    before = load_swc(record, allow_forest_preview=True)
+    plan = plan_fragment_join(analyze_swc(source))
+    assert plan.coordinate_transform["scale_to_um"] == .008
+    joined = save_fragment_join(plan)
+    after = load_swc(replace(record, swc_path=str(joined)))
+    assert after.coordinate_transform["scale_to_um"] == .008
+    assert next(n for n in after.nodes if n.node_id == 21).x == pytest.approx(.176)
+    assert locate_soma(after) == locate_soma(before)
+    assert source.read_bytes() == original
+    output = source.parent / "run"
+    output.mkdir()
+    normalized, _, _ = worker._normalize_swc(joined, output, coordinate_transform=after.coordinate_transform)
+    assert max(row[2] for row in worker._swc_rows(normalized)) == pytest.approx(.176)
+
+
+def test_reviewed_plan_accepts_only_report_sum_roundoff_not_geometry_or_material_changes(fragments):
+    import copy
+    import math
+    import os
+    from digifly_app.core.swc_fragments import _same_reviewed_plan,verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source,_=fragments
+    committed={os.path.normcase(os.path.abspath(source)):sha256_file(source)}
+    joined=save_fragment_join(plan_fragment_join(analyze_swc(source)))
+    sidecar=joined.with_suffix('.swc.quality.json')
+    record=json.loads(sidecar.read_text());original=copy.deepcopy(record)
+    for name in ('original_length_um','original_volume_um3','added_volume_fraction'):
+        record['plan'][name]=math.nextafter(record['plan'][name],math.inf)
+    sidecar.write_text(json.dumps(record))
+    assert verified_fragment_source(joined,committed)==source
+    changed=copy.deepcopy(record['plan']);changed['filler_nodes'][0][2]=math.nextafter(changed['filler_nodes'][0][2],math.inf)
+    assert not _same_reviewed_plan(changed,record['plan'])
+    record['plan']['original_volume_um3']*=1+1e-8
+    sidecar.write_text(json.dumps(record))
+    with pytest.raises(ValueError,match='plan differs'):
+        verified_fragment_source(joined,committed)
+    sidecar.write_text(json.dumps(original))
+    joined.write_bytes(joined.read_bytes()+b'# changed\n')
+    with pytest.raises(ValueError,match='bytes.*changed'):
+        verified_fragment_source(joined,committed)
+
+
+def test_axon_aware_copy_uses_bounded_intact_support_and_keeps_previous_copy(tmp_path):
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source = tmp_path / '1.swc'
+    source.write_text('# units: um\n1 2 0 0 0 2 -1\n2 2 2 0 0 2 1\n3 2 4 0 0 2 2\n4 2 6 0 0 .25 3\n'
+                      '20 2 26 0 0 .25 -1\n21 2 28 0 0 2 20\n22 2 30 0 0 2 21\n23 2 32 0 0 2 22\n')
+    original = source.read_bytes()
+    report = analyze_swc(source)
+    baseline = plan_fragment_join(report)
+    kept = save_fragment_join(baseline)
+    kept_bytes = kept.read_bytes()
+    candidate = plan_fragment_join(report, policy='adjoining_cable_profile_v1')
+    assert candidate.to_dict()['policy'] == 'adjoining_cable_profile_v1'
+    bridge = candidate.bridges[0]
+    assert bridge['endpoint_radii_um'] == [.25, .25]
+    assert bridge['local_profile']['support_node_ids'] == [[3, 2, 1], [21, 22, 23]]
+    assert bridge['local_profile']['estimated_radii_um'] == [2, 2]
+    assert max(row[5] for row in candidate.filler_nodes) == 2
+    assert bridge['axial_resistance_MOhm_at_100_ohm_cm'] < 0.3 * (
+        100 * bridge['length_um'] * .01 / (3.141592653589793 * .25**2))
+    assert bridge['maximum_compartment_length_um'] <= bridge['reference_maximum_length_um']
+    assert bridge['maximum_compartment_volume_bound_um3'] <= bridge['reference_maximum_volume_um3']
+    joined = save_fragment_join(candidate)
+    assert joined.name == '1_axon_aware_fragment_healed.swc'
+    assert source.read_bytes() == original and kept.read_bytes() == kept_bytes
+    assert verified_fragment_source(joined, {os.path.normcase(os.path.abspath(source)):sha256_file(source)}) == source
+    before = load_swc(NeuronRecord('1','DN','fixture',str(source),'custom:test'), allow_forest_preview=True)
+    after = load_swc(NeuronRecord('1','DN','fixture',str(joined),'custom:test'))
+    indexed = {n.node_id:n for n in after.nodes}
+    for node in before.nodes:
+        new = indexed[node.node_id]
+        assert (node.x,node.y,node.z,node.radius,node.swc_type) == (new.x,new.y,new.z,new.radius,new.swc_type)
+        assert new.parent_id == candidate.parent_changes.get(node.node_id,node.parent_id)
+    assert _nearest_node_id(after, (16,0,0)) in {n.node_id for n in before.nodes}
+    with pytest.raises(FileExistsError):
+        save_fragment_join(candidate)
+
+
+def test_unknown_or_tampered_bridge_policy_refuses_without_replacing(fragments):
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source, _ = fragments
+    with pytest.raises(ValueError, match='policy'):
+        plan_fragment_join(analyze_swc(source), policy='guess_until_it_spikes')
+    joined = save_fragment_join(plan_fragment_join(analyze_swc(source), policy='adjoining_cable_profile_v1'))
+    kept = joined.read_bytes()
+    sidecar = joined.with_suffix('.swc.quality.json')
+    record = json.loads(sidecar.read_text())
+    record['plan']['policy'] = 'guess_until_it_spikes'
+    sidecar.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match='policy'):
+        verified_fragment_source(joined, {os.path.normcase(os.path.abspath(source)):sha256_file(source)})
+    assert joined.read_bytes() == kept
+
+
+def test_axon_aware_report_roundoff_is_portable_but_geometry_remains_exact(fragments):
+    import copy
+    import math
+    import os
+    from digifly_app.core.swc_fragments import verified_fragment_source
+    from digifly_app.core.swc_quality import sha256_file
+    source,_=fragments
+    committed={os.path.normcase(os.path.abspath(source)):sha256_file(source)}
+    joined=save_fragment_join(plan_fragment_join(analyze_swc(source),policy='adjoining_cable_profile_v1'))
+    sidecar=joined.with_suffix('.swc.quality.json')
+    record=json.loads(sidecar.read_text())
+    for key in ('original_length_um','original_volume_um3','added_volume_fraction','added_volume_um3'):
+        record['plan'][key]=math.nextafter(record['plan'][key],math.inf)
+    for bridge in record['plan']['bridges']:
+        for key in ('volume_um3','axial_resistance_MOhm_at_100_ohm_cm'):
+            bridge[key]=math.nextafter(bridge[key],math.inf)
+    sidecar.write_text(json.dumps(record))
+    assert verified_fragment_source(joined,committed)==source
+    changed=copy.deepcopy(record)
+    changed['plan']['filler_nodes'][0][2]=math.nextafter(changed['plan']['filler_nodes'][0][2],math.inf)
+    sidecar.write_text(json.dumps(changed))
+    with pytest.raises(ValueError,match='plan differs'):
+        verified_fragment_source(joined,committed)
+    changed=copy.deepcopy(record)
+    changed['plan']['bridges'][0]['volume_um3']*=1+1e-8
+    sidecar.write_text(json.dumps(changed))
+    with pytest.raises(ValueError,match='plan differs'):
+        verified_fragment_source(joined,committed)
+
+
+def test_native_roundoff_fixture_uses_production_guard_and_preserves_geometry(tmp_path):
+    from digifly_app.ui.fragment_review_check import check_fragment_record_roundoff
+    result=check_fragment_record_roundoff(tmp_path)
+    assert result['ok'] and result['report_only_roundoff_accepted']
+    assert result['one_bit_filler_geometry_change_refused']
+    assert result['material_summary_change_refused'] and result['unknown_policy_refused']

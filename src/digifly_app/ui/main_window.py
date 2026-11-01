@@ -9,7 +9,7 @@ import time
 from threading import Event
 from typing import Any, Mapping
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QThread, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QThread, Qt, QTimer, QUrl, Signal, Slot, QStandardPaths
 from digifly_app.core.app_settings import app_settings as QSettings
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
@@ -127,14 +127,18 @@ from .style import (
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .circuit_viewport import (
     CircuitViewport,
+    composite_native_viewports,
     DISPLAY_MODE_FULL_SKELETONS,
     DISPLAY_MODE_SOMA_POINTS,
 )
 from .data_library import DataLibraryPage
 from .experiment_builder import ExperimentBuilderPage
+from .current_plot import CurrentPlotWidget
+from .result_loading import ResultLoadWorker, read_recorded_morphologies, recorded_neuron_id
 from .netpyne_model_editor import NetPyNEModelEditor
 from .pdcm_replication_panel import PDCMReplicationPanel
 from .runtime_setup import RuntimeSetupDialog
+from .runtime_readiness import WorkspaceReadinessWorker
 from .result_playback import (
     ActivityFlowTrack,
     MorphologyVoltageTrack,
@@ -389,7 +393,10 @@ def _path_row(line_edit: QLineEdit, parent: QWidget, title: str, *, file_mode: b
 
 
 def _browse_file(line_edit: QLineEdit, parent: QWidget, title: str) -> None:
-    selected, _ = QFileDialog.getOpenFileName(parent, title, line_edit.text())
+    # Resolving a venv's bin/python link selects the base interpreter instead.
+    # Qt maps this option to the native macOS panel's resolvesAliases flag.
+    selected, _ = QFileDialog.getOpenFileName(
+        parent, title, line_edit.text(), '', '', QFileDialog.Option.DontResolveSymlinks)
     if selected:
         line_edit.setText(selected)
 
@@ -568,9 +575,15 @@ class _FullResolutionFigureDialog(QDialog):
 
 class OverviewPage(QWidget):
     settings_changed = Signal()
+    readiness_started = Signal()
+    readiness_ready = Signal(object)
+    readiness_invalidated = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._doctor_worker: WorkspaceReadinessWorker | None = None
+        self._last_readiness_report: dict | None = None
+        self.readiness_block_reason = lambda: ""
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         content = QWidget()
@@ -695,6 +708,7 @@ class OverviewPage(QWidget):
             self.netpyne_python_edit,
         ):
             editor.textChanged.connect(self.settings_changed)
+            editor.textChanged.connect(self._readiness_inputs_changed)
 
     def open_runtime_setup(self) -> None:
         dialog = RuntimeSetupDialog(
@@ -758,24 +772,60 @@ class OverviewPage(QWidget):
     def workspace(self) -> DigiflyWorkspace:
         return DigiflyWorkspace(self.workspace_edit.text())
 
-    def refresh(self) -> None:
-        self.doctor_button.setEnabled(False)
-        self.doctor_summary.setText("Inspecting source trees and runtimes…")
-        QApplication.processEvents()
-        workspace = self.workspace()
-        base = workspace.base_preflight()
+    def readiness_snapshot(self) -> tuple[str, ...]:
+        return tuple(editor.text().strip() for editor in (
+            self.workspace_edit, self.output_edit, self.python_edit,
+            self.arbor_python_edit, self.bmtk_python_edit, self.netpyne_python_edit,
+        ))
+
+    @property
+    def readiness_active(self) -> bool:
         try:
-            probes = workspace.probe_engines(
-                self.python_edit.text(),
-                self.arbor_python_edit.text(),
-                self.bmtk_python_edit.text(),
-                self.netpyne_python_edit.text(),
-            )
-            resources = capture_resources(self.output_edit.text())
-        except Exception as exc:  # GUI boundary: show diagnostic rather than crash.
-            self.doctor_summary.setText(f"Doctor failed: {exc}")
-            self.doctor_button.setEnabled(True)
+            return self._doctor_worker is not None and self._doctor_worker.isRunning()
+        except RuntimeError:
+            return False
+
+    def cached_readiness_report(self) -> dict | None:
+        report = self._last_readiness_report
+        return report if report and report["snapshot"] == self.readiness_snapshot() else None
+
+    @Slot()
+    def _readiness_inputs_changed(self) -> None:
+        self._last_readiness_report = None
+        clear_layout(self.engine_grid)
+        message = ("Choices changed; finishing the earlier check. Run Doctor again afterward."
+                   if self._doctor_worker is not None else "Choices changed; run Doctor to check them.")
+        self.doctor_summary.setText(message)
+        self.readiness_invalidated.emit(message)
+
+    def refresh(self) -> None:
+        if self._doctor_worker is not None:
+            self.doctor_summary.setText("A readiness check is already in progress; other pages remain available.")
             return
+        reason = self.readiness_block_reason()
+        if reason:
+            self.doctor_summary.setText(reason)
+            return
+        self._last_readiness_report = None
+        self.doctor_button.setEnabled(False)
+        self.doctor_button.setText("Checking runtimes…")
+        self.doctor_summary.setText("Checking selected runtimes in the background. BioNet imports have a 60-second limit.")
+        clear_layout(self.engine_grid)
+        self.readiness_started.emit()
+        worker = WorkspaceReadinessWorker(self.readiness_snapshot(), self)
+        self._doctor_worker = worker
+        worker.succeeded.connect(self._readiness_succeeded, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._readiness_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._readiness_finished, Qt.ConnectionType.QueuedConnection)
+        worker.start()
+
+    @Slot(object)
+    def _readiness_succeeded(self, report: dict) -> None:
+        if report["snapshot"] != self.readiness_snapshot():
+            self._readiness_inputs_changed()
+            return
+        self._last_readiness_report = report
+        base, probes, resources = report["base"], report["probes"], report["resources"]
         self._set_resources(resources)
         clear_layout(self.engine_grid)  # type: ignore[arg-type]
         for index, probe in enumerate(probes):
@@ -790,7 +840,27 @@ class OverviewPage(QWidget):
         else:
             self.doctor_summary.setText("Workspace markers are incomplete; review the configured root.")
         self.engine_hint.setText(f"Checked {len(probes)} integration lanes")
-        self.doctor_button.setEnabled(True)
+        self.doctor_summary.setText(self.doctor_summary.text() + f" · checked {report['checked_at']}")
+        self.readiness_ready.emit(report)
+
+    @Slot(object)
+    def _readiness_failed(self, report: dict) -> None:
+        if report["snapshot"] != self.readiness_snapshot():
+            self._readiness_inputs_changed()
+            return
+        message = f"Doctor failed: {report['error']}"
+        self.doctor_summary.setText(message)
+        self.readiness_invalidated.emit(message)
+
+    @Slot()
+    def _readiness_finished(self) -> None:
+        worker = self.sender()
+        if worker is self._doctor_worker:
+            self._doctor_worker = None
+            self.doctor_button.setText("Run workspace doctor")
+            self.doctor_button.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
 
     def _set_resources(self, resources: ResourceSnapshot) -> None:
         self.resource_labels["cpu"].setText(f"{resources.logical_cores} cores")
@@ -1443,12 +1513,29 @@ class ResultsPage(QWidget):
         overview: OverviewPage,
         experiment: ExperimentBuilderPage,
         parent: QWidget | None = None,
+        *, morphology_candidates=None,
     ):
         super().__init__(parent)
         self.overview = overview
         self.experiment = experiment
+        self._morphology_candidates = morphology_candidates or (lambda: ())
         self._pixmap: QPixmap | None = None
         self._current_result_name = "digifly-result"
+        self._result_load_worker = None
+        self._result_load_generation = 0
+        self._pending_result_load = None
+        self._pending_result_loader = None
+        self._displayed_result_loader = None
+        self._pending_result_discovery = None
+        self._displayed_result_discovery = None
+        self._displayed_result = None
+        self._voltage_table = None
+        self.load_stats = {}
+        self._prepared_result = None
+        self._keeping_result_display = False
+        self._pending_result_started = None
+        self._last_result_operation = None
+        self._kept_activity_state = None
         self._activity_tracks: tuple[ActivityFlowTrack | MorphologyVoltageTrack, ...] = ()
         self._flow_tracks: tuple[ActivityFlowTrack, ...] = ()
         self._morphology_voltage_tracks: tuple[MorphologyVoltageTrack, ...] = ()
@@ -1485,6 +1572,25 @@ class ResultsPage(QWidget):
         self.result_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addLayout(action_row)
         layout.addWidget(self.result_status)
+        loading_row = QHBoxLayout()
+        self.result_load_note = QLabel('')
+        self.result_load_note.setWordWrap(True)
+        self.result_load_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.result_load_progress = QProgressBar()
+        self.result_load_progress.setAccessibleName('Saved result loading progress')
+        self.result_load_button = QPushButton('Cancel loading')
+        self.result_load_button.clicked.connect(self._result_load_clicked)
+        loading_row.addWidget(self.result_load_note, 2)
+        loading_row.addWidget(self.result_load_progress, 1)
+        loading_row.addWidget(self.result_load_button)
+        layout.addLayout(loading_row)
+        for control in (self.result_load_note,self.result_load_progress,self.result_load_button):
+            # Keep the replay surface at a stable size when progress appears
+            # or disappears. Native surface resizes can block presentation.
+            policy=control.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            control.setSizePolicy(policy)
+            control.hide()
 
         checks_card = Card()
         checks_layout = QVBoxLayout(checks_card)
@@ -1527,6 +1633,8 @@ class ResultsPage(QWidget):
         self.artifact_rows = QVBoxLayout()
         self.artifact_rows.addWidget(_muted_label("No artifacts loaded."))
         artifact_layout.addLayout(self.artifact_rows)
+        self._pending_artifacts = ()
+        self.artifact_section.toggle_button.toggled.connect(self._populate_artifacts)
         layout.addWidget(self.artifact_section)
 
         preview_card = Card()
@@ -1609,6 +1717,11 @@ class ResultsPage(QWidget):
         self.spike_raster_button.setObjectName("ViewModeButton")
         self.spike_raster_button.setCheckable(True)
         self.spike_raster_button.setEnabled(False)
+        self.current_traces_button = QPushButton("Current traces")
+        self.current_traces_button.setObjectName("ViewModeButton")
+        self.current_traces_button.setCheckable(True)
+        self.current_traces_button.setEnabled(False)
+        self.current_traces_button.setToolTip("Recorded currents in nA, synchronized with the voltage replay. Old voltage-only results are unchanged.")
         self.voltage_mode_group = QButtonGroup(self)
         self.voltage_mode_group.setExclusive(True)
         for index, button in enumerate((
@@ -1616,17 +1729,21 @@ class ResultsPage(QWidget):
             self.voltage_3d_button,
             self.voltage_morphology_button,
             self.spike_raster_button,
+            self.current_traces_button,
         )):
             self.voltage_mode_group.addButton(button)
             voltage_mode_row.addWidget(button, 1 + index // 2, index % 2)
-        self.voltage_2d_button.clicked.connect(
-            lambda: self._set_voltage_plot_mode(MODE_2D)
+        self.voltage_2d_button.toggled.connect(
+            lambda checked: self._set_voltage_plot_mode(MODE_2D) if checked else None
         )
-        self.voltage_3d_button.clicked.connect(
-            lambda: self._set_voltage_plot_mode(MODE_3D_STACK)
+        self.voltage_3d_button.toggled.connect(
+            lambda checked: self._set_voltage_plot_mode(MODE_3D_STACK) if checked else None
         )
-        self.voltage_morphology_button.clicked.connect(self._set_morphology_voltage_mode)
-        self.spike_raster_button.clicked.connect(self._show_spike_raster)
+        self.voltage_morphology_button.toggled.connect(
+            lambda checked: self._set_morphology_voltage_mode() if checked else None)
+        self.spike_raster_button.toggled.connect(
+            lambda checked: self._show_spike_raster() if checked else None)
+        self.current_traces_button.toggled.connect(lambda checked: self._show_current_traces() if checked else None)
         figure_layout.addLayout(voltage_mode_row)
         self.voltage_plot = VoltagePlotWidget()
         self.voltage_plot.status_message.connect(self.status_message)
@@ -1652,6 +1769,10 @@ class ResultsPage(QWidget):
         self.spike_raster = SpikeRasterWidget()
         self.spike_raster.status_message.connect(self.status_message)
         self.figure_stack.addWidget(self.spike_raster)
+        self.current_plot = CurrentPlotWidget()
+        self.current_plot.time_selected.connect(self._voltage_time_selected)
+        self.current_plot.status_message.connect(self.status_message)
+        self.figure_stack.addWidget(self.current_plot)
         self.figure_stack.setCurrentWidget(self.image_scroll)
         figure_layout.addWidget(self.figure_stack, 1)
         self.preview_splitter.addWidget(self.figure_panel)
@@ -1662,7 +1783,7 @@ class ResultsPage(QWidget):
         circuit_layout.setContentsMargins(0, 0, 0, 0)
         circuit_layout.setSpacing(7)
         circuit_header = QHBoxLayout()
-        circuit_title = QLabel("Recorded circuit")
+        circuit_title = QLabel("Run circuit")
         circuit_title.setObjectName("Strong")
         circuit_header.addWidget(circuit_title)
         circuit_header.addStretch(1)
@@ -1684,11 +1805,11 @@ class ResultsPage(QWidget):
         ):
             self.result_circuit_mode_group.addButton(button)
             circuit_modes.addWidget(button)
-        self.result_soma_points_button.clicked.connect(
-            lambda: self._set_result_circuit_mode(DISPLAY_MODE_SOMA_POINTS)
+        self.result_soma_points_button.toggled.connect(
+            lambda checked: self._set_result_circuit_mode(DISPLAY_MODE_SOMA_POINTS) if checked else None
         )
-        self.result_full_skeletons_button.clicked.connect(
-            lambda: self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS)
+        self.result_full_skeletons_button.toggled.connect(
+            lambda checked: self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS) if checked else None
         )
         self.save_result_visualization_button = QPushButton("Save snapshot…")
         self.save_result_visualization_button.setObjectName(
@@ -1731,7 +1852,7 @@ class ResultsPage(QWidget):
         self.circuit_identity_scroll.setWidget(self.circuit_identity)
         circuit_layout.addWidget(self.circuit_identity_scroll)
         self.result_viewport = CircuitViewport(camera_only=True)
-        self.result_viewport.setAccessibleName("Recorded circuit visualization")
+        self.result_viewport.setAccessibleName("Run circuit visualization")
         self.result_viewport.setMinimumSize(280, 430)
         self.result_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
         self.result_viewport.status_message.connect(self.status_message)
@@ -1800,6 +1921,13 @@ class ResultsPage(QWidget):
         experiment.result_ready.connect(self.display_result)
 
     def _set_trace_view_expanded(self, expanded: bool) -> None:
+        # View changes can restore the split directly, without a button toggle.
+        # Keep the next click and accessible state aligned with that layout.
+        previous = self.expand_trace_button.blockSignals(True)
+        try:
+            self.expand_trace_button.setChecked(expanded)
+        finally:
+            self.expand_trace_button.blockSignals(previous)
         self.circuit_panel.setVisible(not expanded)
         self.expand_trace_button.setText(
             "Restore split" if expanded else "Expand traces"
@@ -1818,9 +1946,19 @@ class ResultsPage(QWidget):
         )
 
     def load_latest(self) -> None:
-        output_root = Path(self.overview.output_edit.text()).expanduser().resolve()
+        requested_at = time.perf_counter()
+        output_root = Path(self.overview.output_edit.text()).expanduser().absolute()
+        previous = self._prepared_result
+        record = previous.get('result_record') if previous is not None else None
+        record = record or self._pending_summary_record(output_root/'loading-summary.json')
+        self.display_result(record,requested_at=requested_at,result_loader=self._load_result,
+            result_discovery=lambda check:self._find_latest_summary(output_root,check))
+
+    @staticmethod
+    def _find_latest_summary(output_root: Path, check=lambda: None) -> Path:
         candidates: list[Path] = []
         for job_dir in sorted((output_root / "jobs").glob("*"), reverse=True):
+            check()
             status_path = job_dir / "status.json"
             plan_path = job_dir / "resolved_plan.json"
             if not status_path.is_file() or not plan_path.is_file():
@@ -1834,6 +1972,7 @@ class ResultsPage(QWidget):
             if status.get("state") == "completed" and summary.is_file():
                 candidates.append(summary)
         for run_dir in (output_root / "experiments").glob("*"):
+            check()
             manifest_path = run_dir / "run_manifest.json"
             summary = run_dir / "summary.json"
             if not manifest_path.is_file() or not summary.is_file():
@@ -1846,17 +1985,10 @@ class ResultsPage(QWidget):
                 candidates.append(summary)
         candidates.extend((output_root / "replication_views").glob("*/summary.json"))
         if not candidates:
-            QMessageBox.information(
-                self,
-                "No result found",
-                "No completed job with an existing summary was found under the configured output root.",
-            )
-            return
+            raise ValueError('No completed job with an existing summary was found under the configured output root.')
         candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
-        try:
-            self.display_result(self._load_result(candidates[0]))
-        except Exception as exc:
-            QMessageBox.critical(self, "Could not load result", str(exc))
+        check()
+        return candidates[0]
 
     def open_summary(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -1867,12 +1999,31 @@ class ResultsPage(QWidget):
         )
         if not selected:
             return
+        requested_at = time.perf_counter()
         try:
-            result = self._load_result(Path(selected))
+            self._request_result(Path(selected), requested_at=requested_at)
         except Exception as exc:
             QMessageBox.critical(self, "Invalid summary", str(exc))
             return
-        self.display_result(result)
+
+    def _request_result(self, path: Path, *, requested_at) -> None:
+        # An already prepared result has a complete saved-input snapshot. Let
+        # its worker verify that snapshot before reusing its metadata, rather
+        # than resolving hundreds of artifact paths again on the window thread.
+        # Changed inputs re-read the summary in the worker before preparation.
+        previous = self._prepared_result
+        record = previous.get('result_record') if previous is not None else None
+        if (record is not None and previous.get('request_metadata_checked',False)
+                and str(path.expanduser().absolute()) == record.summary_path):
+            self.display_result(record, requested_at=requested_at, result_loader=self._load_result)
+        else:
+            self.display_result(self._pending_summary_record(path.expanduser().absolute()), requested_at=requested_at,
+                                result_loader=self._load_result)
+
+    @staticmethod
+    def _pending_summary_record(path):
+        return ResultRecord(summary_path=str(path),status='loading',completed_at='',
+            title='Opening saved result',metadata={},artifacts=())
 
     @staticmethod
     def _load_result(path: Path) -> ResultRecord:
@@ -1892,13 +2043,57 @@ class ResultsPage(QWidget):
             payload.get("backend") == "arbor"
             or payload.get("recipe") == "ablation_notebook_arbor_comparison_v1"
         )
-        return (
-            load_arbor_ablation_result(path)
-            if is_arbor
-            else load_escape_siz_result(path)
+        if is_arbor:
+            return load_arbor_ablation_result(path)
+        # Historical Escape-SIZ summaries have no workflow identifier. Require
+        # their identifying fields, rather than accepting every JSON document.
+        # The legacy reader still reports missing/invalid scientific evidence.
+        if not payload.get("workflow") and {
+            "contact_count_policy", "visible_contact_counts"
+        }.issubset(payload):
+            return load_escape_siz_result(path)
+        raise ValueError(
+            "Choose a supported run summary JSON, not a project, settings file "
+            "or other JSON document."
         )
 
-    def display_result(self, result: ResultRecord) -> None:
+    def display_result(self, result: ResultRecord, *, requested_at=None, result_loader=None,
+                       result_discovery=None) -> None:
+        requested_at = time.perf_counter() if requested_at is None else requested_at
+        keep = (not self.loading and not self.current_plot.loading and self._voltage_table is not None
+                and self._displayed_result == result and self._prepared_result is not None)
+        self.cancel_loading(quiet=True, preserve_current=keep)
+        self._keeping_result_display = keep
+        if keep:
+            self._stop_activity_playback()
+            controls=(self.activity_slider,self.activity_play_button,self.activity_condition_combo)
+            self._kept_activity_state = (
+                tuple((control,control.isEnabled()) for control in controls),
+                self.activity_method.text(),self.activity_method.toolTip())
+            for control in controls:
+                control.setEnabled(False)
+            # The visible loading note already explains the pause. Replacing
+            # wrapped replay help also moves/resizes the scene unnecessarily.
+            self.activity_method.setToolTip('Previous view paused while saved files are checked')
+        else:
+            self._reset_result_display(result)
+        self._pending_result_load = result
+        self._pending_result_loader = result_loader
+        self._displayed_result_loader = result_loader
+        self._pending_result_discovery = result_discovery
+        self._displayed_result_discovery = result_discovery
+        self._pending_result_started = requested_at
+        self._start_pending_result_load()
+
+    def _reset_result_display(self, result):
+        self._kept_activity_state = None
+        self._displayed_result = result
+        self._voltage_table = None
+        self.voltage_plot.set_traces(())
+        self.current_plot.clear_run()
+        self._reset_activity_playback()
+        for control in (self.voltage_2d_button,self.voltage_3d_button,self.current_traces_button):
+            control.setEnabled(False)
         is_pdcm = "PDCM" in result.title
         is_netpyne = str(result.metadata.get("Engine", "")).casefold() == "netpyne"
         is_point_network = is_pdcm or is_netpyne
@@ -1943,20 +2138,9 @@ class ResultsPage(QWidget):
             self.artifact_section.set_status("all pass", "pass")
         else:
             self.artifact_section.set_status("no artifacts", "info")
-        for artifact in result.artifacts:
-            row = Card(inset=True)
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(11, 8, 11, 8)
-            row_layout.addWidget(StatusPill(CheckState.PASS if artifact.exists else CheckState.WARNING))
-            label = QLabel(f"{artifact.label}  ·  {artifact.kind}\n{artifact.path}")
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            row_layout.addWidget(label, 1)
-            reveal = QPushButton("Reveal")
-            reveal.setEnabled(artifact.exists)
-            reveal.clicked.connect(lambda _=False, path=artifact.path: _reveal(path))
-            row_layout.addWidget(reveal)
-            self.artifact_rows.addWidget(row)
+        self._pending_artifacts = result.artifacts
+        if self.artifact_section.is_expanded:
+            self._populate_artifacts(True)
         image = result.primary_image
         if image:
             pixmap = QPixmap(str(image))
@@ -1975,8 +2159,9 @@ class ResultsPage(QWidget):
             self._clear_figure_preview(
                 "No existing PNG artifact was recorded in this summary."
             )
-        self._display_recorded_circuit(result)
-        self._configure_voltage_plot(result)
+        self.result_viewport.clear()
+        self.circuit_info.setText('Preparing recorded circuit…')
+        self.circuit_identity.setText('')
         self.expand_trace_button.setVisible(not is_point_network)
         self.circuit_panel.setVisible(not is_point_network and not self.expand_trace_button.isChecked())
         for control in (
@@ -1992,12 +2177,192 @@ class ResultsPage(QWidget):
             self.spike_raster.set_run(result.summary_path)
             self.figure_stack.setCurrentWidget(self.spike_raster)
             if not is_pdcm:
-                self.spike_raster_button.setChecked(True)
+                self._check_voltage_view_button(self.spike_raster_button)
             self.image_info.setText("Interactive spikes · zoom and filter populations")
             self.save_trace_button.setEnabled(True)
         else:
             self.spike_raster.clear_run()
-        self.status_message.emit(f"Loaded result: {Path(result.summary_path).name}")
+
+    def _populate_artifacts(self, expanded):
+        # Hundreds of hidden QWidget rows otherwise delay the initial Open
+        # before its progress/Cancel controls can be painted. Build on demand.
+        if not expanded or not self._pending_artifacts:
+            return
+        artifacts, self._pending_artifacts = self._pending_artifacts, ()
+        for artifact in artifacts:
+            row = Card(inset=True)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(11, 8, 11, 8)
+            row_layout.addWidget(StatusPill(CheckState.PASS if artifact.exists else CheckState.WARNING))
+            label = QLabel(f"{artifact.label}  ·  {artifact.kind}\n{artifact.path}")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            row_layout.addWidget(label, 1)
+            reveal = QPushButton("Open folder")
+            reveal.setEnabled(artifact.exists)
+            reveal.clicked.connect(lambda _=False, path=artifact.path: _reveal(path, self))
+            row_layout.addWidget(reveal)
+            self.artifact_rows.addWidget(row)
+
+    @property
+    def loading(self):
+        return self._result_load_worker is not None
+
+    def cancel_loading(self, *, quiet=False, preserve_current=False):
+        self._result_load_generation += 1
+        self._pending_result_load = None
+        self._pending_result_loader = None
+        self._pending_result_discovery = None
+        if self._result_load_worker is not None:
+            self._result_load_worker.cancel()
+        if not preserve_current:
+            self.current_plot.cancel_loading()
+        if not quiet:
+            if self._keeping_result_display:
+                self._reset_result_display(self._displayed_result)
+                self._keeping_result_display = False
+            self.result_load_note.setText('Loading cancelled. Saved data is unchanged.')
+            self.result_load_note.show()
+            self.result_load_progress.hide()
+            self.result_load_button.setText('Load recording')
+            self.result_load_button.show()
+            self.status_message.emit('Result loading cancelled; saved data is unchanged')
+
+    def _result_load_clicked(self):
+        if self.result_load_button.text() == 'Cancel loading':
+            if self._result_load_worker is None:
+                return  # A click queued just before completion cannot cancel a finished read.
+            self.cancel_loading()
+        elif self._displayed_result is not None:
+            self._pending_result_load = self._displayed_result
+            self._pending_result_loader = self._displayed_result_loader
+            self._pending_result_discovery = self._displayed_result_discovery
+            self._pending_result_started = time.perf_counter()
+            self._start_pending_result_load()
+
+    def _start_pending_result_load(self):
+        result = self._pending_result_load
+        if result is None:
+            return
+        if self._result_load_worker is not None:
+            self.result_load_note.setText('Stopping the previous load…')
+            self.result_load_note.show()
+            self.result_load_progress.setRange(0,100)
+            self.result_load_progress.setValue(0)
+            self.result_load_progress.setFormat('Working…')
+            self.result_load_progress.show()
+            self.result_load_button.setText('Cancel loading')
+            self.result_load_button.show()
+            return
+        self._pending_result_load = None
+        result_loader, self._pending_result_loader = self._pending_result_loader, None
+        result_discovery, self._pending_result_discovery = self._pending_result_discovery, None
+        generation = self._result_load_generation
+        settings_root = os.environ.get('DIGIFLY_WORKSTATION_SETTINGS_ROOT')
+        cache_root = (Path(settings_root)/'result-cache-v1' if settings_root else
+                      Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation))/'recordings-v1')
+        worker = ResultLoadWorker(Path(result.summary_path).parent,
+            (), cache_root, self, result=result,previous=self._prepared_result,
+            result_loader=result_loader,result_discovery=result_discovery,
+            reuse_morphologies=tuple(self._morphology_candidates()))
+        worker.requested_at = self._pending_result_started or time.perf_counter()
+        worker.started_at = time.perf_counter()
+        self._last_result_operation = dict(requested_at=worker.requested_at,
+            started_at=worker.started_at,summary=result.summary_path)
+        worker.operation = self._last_result_operation
+        self._pending_result_started = None
+        self._result_load_worker = worker
+        self.result_load_button.setText('Cancel loading')
+        for control in (self.result_load_note,self.result_load_progress,self.result_load_button):
+            control.show()
+        self._result_loading_progress(generation,
+            'Checking saved files; previous view is paused' if self._keeping_result_display
+            else 'Opening saved recording',-1)
+        worker.progress.connect(lambda label,percent: self._result_loading_progress(generation,label,percent))
+        worker.succeeded.connect(lambda prepared: self._result_loaded(generation,result,prepared))
+        worker.failed.connect(lambda error: self._result_load_failed(generation,error))
+        worker.invalidated_cache.connect(lambda actual:self._result_cache_invalidated(generation,actual))
+        worker.finished.connect(self._result_load_finished)
+        worker.start()
+
+    def _result_cache_invalidated(self, generation, result):
+        if generation != self._result_load_generation or not self._keeping_result_display:
+            return
+        self._reset_result_display(result)
+        self._keeping_result_display = False
+        self.result_load_note.setText('Display data changed. Reopening the unchanged saved recording…')
+        self.result_load_note.show()
+
+    def _result_loading_progress(self,generation,label,percent):
+        if generation != self._result_load_generation:
+            return
+        self.result_load_note.setText(label + ('…' if percent < 0 else f' · {percent}%'))
+        # A busy QProgressBar continuously repaints the enclosing OpenGL
+        # window on macOS even when no recording frame changes. Keep unknown
+        # progress static and honest; update percentages only when known.
+        self.result_load_progress.setRange(0,100)
+        self.result_load_progress.setFormat('Working…' if percent < 0 else '%p%')
+        self.result_load_progress.setValue(0 if percent < 0 else percent)
+
+    def _result_loaded(self,generation,result,prepared):
+        if generation != self._result_load_generation:
+            return  # Cancelled/replaced loads can never color another run.
+        commit_started = time.perf_counter()
+        result = prepared.get('result_record') or result
+        keep = self._keeping_result_display and prepared.get('prepared_reused',False)
+        if (self._keeping_result_display and not keep) or self._displayed_result != result:
+            self._reset_result_display(result)
+        self._keeping_result_display = False
+        if keep and self._kept_activity_state is not None:
+            controls,label,help_text=self._kept_activity_state
+            for control,enabled in controls:
+                control.setEnabled(enabled)
+            self.activity_method.setText(label)
+            self.activity_method.setToolTip(help_text)
+            self._kept_activity_state = None
+        self._prepared_result = prepared
+        self._voltage_table = prepared['table']
+        self.load_stats = {key: prepared[key] for key in ('seconds','table_seconds','cache_hit')}
+        self.load_stats['bindings_cache_hit'] = prepared.get('bindings_cache_hit',False)
+        self.load_stats['prepared_reused'] = prepared.get('prepared_reused',False)
+        self.load_stats.update(samples=prepared['table'].sample_count,traces=len(prepared['traces']),
+            shared_geometry_nodes=prepared.get('shared_geometry_nodes',0),
+            shared_geometry_segments=prepared.get('shared_geometry_segments',0),
+            materialized_trace_records=getattr(prepared['table'].series,'materialized_count',len(prepared['table'].series)))
+        if not keep:
+            self._display_recorded_circuit(result,prepared=prepared)
+            self._configure_activity_playback(Path(result.summary_path).resolve().parent,
+                tuple(self.result_viewport.morphologies.values()),self._activity_stimulus_ids,prepared=prepared)
+            self._configure_voltage_plot(result,prepared=prepared)
+            self._update_recording_scope(result)
+        self.load_stats['display_reused'] = keep
+        self.load_stats['ui_commit_seconds'] = time.perf_counter()-commit_started
+        self.result_load_note.setText(f"Loaded {prepared['table'].sample_count:,} voltage samples in {prepared['seconds']:.1f} s"
+                                      + (' · reusable display data' if prepared['cache_hit'] else ''))
+        self.result_load_progress.hide()
+        self.result_load_button.hide()
+        warnings = prepared['warnings']
+        if prepared['table'].cache_note:
+            warnings = warnings + [prepared['table'].cache_note]
+        self.status_message.emit(' · '.join(warnings) if warnings else 'Saved recording and measured replay ready')
+
+    def _result_load_failed(self,generation,error):
+        if generation != self._result_load_generation:
+            return
+        if self._keeping_result_display:
+            self._reset_result_display(result=self._displayed_result)
+            self._keeping_result_display = False
+        self.result_load_note.setText(f'Could not load recording: {error}')
+        self.result_load_progress.hide()
+        self.result_load_button.setText('Load recording')
+        self.status_message.emit('Saved data is unchanged; recording could not be loaded')
+
+    def _result_load_finished(self):
+        worker = self._result_load_worker
+        self._result_load_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._start_pending_result_load()
 
     def _open_full_resolution(self) -> None:
         if self._pixmap is None or self._pixmap.isNull():
@@ -2018,6 +2383,11 @@ class ResultsPage(QWidget):
         dialog.activateWindow()
 
     def _save_voltage_trace(self) -> None:
+        if self.figure_stack.currentWidget() is self.current_plot:
+            if self.current_plot.plot.trace_count:
+                save_image_with_dialog(self, self.current_plot.plot.render_high_resolution(),
+                    title="Save current plot", default_name=f"{self._current_result_name}-current-traces.png")
+            return
         if self.figure_stack.currentWidget() is self.spike_raster:
             self.spike_raster.save_current_view()
             return
@@ -2040,17 +2410,29 @@ class ResultsPage(QWidget):
                 f"Saved {image.width()} × {image.height()} PNG: {output}"
             )
 
-    def _configure_voltage_plot(self, result: ResultRecord) -> None:
+    def _configure_voltage_plot(self, result: ResultRecord, *, prepared=None) -> None:
         run_root = Path(result.summary_path).expanduser().resolve().parent
+        self.figure_title.setText("Voltage traces")
         neuron_labels = {
             neuron_id: f"{morphology.record.neuron_type} · body {neuron_id}"
             for neuron_id, morphology in self.result_viewport.morphologies.items()
         }
-        traces = load_voltage_traces(
-            run_root / "voltage_traces.csv",
-            neuron_labels=neuron_labels,
-        )
-        self.voltage_plot.set_traces(traces)
+        try:
+            has_currents = (self.current_plot.set_prepared(prepared['currents'],neuron_labels)
+                            if prepared is not None else self.current_plot.load_run(run_root, neuron_labels))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.current_plot.clear_run()
+            has_currents = False
+            self.status_message.emit(f"Saved current could not be read: {exc}")
+        self.current_traces_button.setEnabled(has_currents)
+        try:
+            traces = prepared['traces'] if prepared is not None else load_voltage_traces(
+                run_root / "voltage_traces.csv", neuron_labels=neuron_labels,
+            )
+        except (OSError, EOFError, ValueError) as exc:
+            traces = ()
+            self.status_message.emit(f"Saved voltage could not be read: {exc}")
+        self.voltage_plot.set_traces(traces,prepared=prepared.get('plot_data') if prepared is not None else None)
         interactive = bool(traces)
         self.voltage_2d_button.setEnabled(interactive)
         self.voltage_3d_button.setEnabled(interactive)
@@ -2058,7 +2440,7 @@ class ResultsPage(QWidget):
             interactive or bool(self._pixmap is not None and not self._pixmap.isNull())
         )
         if interactive:
-            self.voltage_2d_button.setChecked(True)
+            self._check_voltage_view_button(self.voltage_2d_button)
             self.voltage_plot.set_mode(MODE_2D)
             self.figure_stack.setCurrentWidget(self.voltage_plot)
             self.image_info.setText(
@@ -2067,6 +2449,34 @@ class ResultsPage(QWidget):
             )
         else:
             self.figure_stack.setCurrentWidget(self.image_scroll)
+            if has_currents:
+                self._show_current_traces()
+
+    def _show_current_traces(self) -> None:
+        if not self.current_plot.indices:
+            return
+        self.current_plot.ensure_selected()
+        if self._morphology_voltage_tracks and not self._morphology_voltage_active:
+            self._morphology_voltage_active = True
+            self._select_playback_tracks()
+        self.figure_stack.setCurrentWidget(self.current_plot)
+        self.figure_title.setText("Current traces")
+        self._check_voltage_view_button(self.current_traces_button)
+        self.image_info.setText("Recorded current (nA) · " + (
+            "synchronized with measured voltage replay" if self._morphology_voltage_tracks
+            else "no measured voltage replay in this result"))
+        self.save_trace_button.setEnabled(True)
+
+    def _check_voltage_view_button(self, selected: QPushButton) -> None:
+        # Sync the exclusive group's display without recursively dispatching
+        # a second view change. User and accessible state changes use toggled.
+        buttons = self.voltage_mode_group.buttons()
+        states = [button.blockSignals(True) for button in buttons]
+        try:
+            selected.setChecked(True)
+        finally:
+            for button, previous in zip(buttons, states):
+                button.blockSignals(previous)
 
     def _set_voltage_plot_mode(self, mode: str) -> None:
         if not self.voltage_plot.trace_count:
@@ -2076,9 +2486,10 @@ class ResultsPage(QWidget):
             self._select_playback_tracks()
         self.voltage_plot.set_mode(mode)
         self.figure_stack.setCurrentWidget(self.voltage_plot)
+        self.figure_title.setText("Voltage traces")
+        self.image_info.setText(f"{self.voltage_plot.trace_count:,} membrane-voltage traces (mV) · {self.voltage_plot.sample_count:,} samples")
         is_3d = mode == MODE_3D_STACK
-        self.voltage_2d_button.setChecked(not is_3d)
-        self.voltage_3d_button.setChecked(is_3d)
+        self._check_voltage_view_button(self.voltage_3d_button if is_3d else self.voltage_2d_button)
         self.status_message.emit(
             "Voltage plot switched to 3-D trace stack"
             if is_3d
@@ -2089,7 +2500,10 @@ class ResultsPage(QWidget):
         if not self._morphology_voltage_tracks:
             return
         self._morphology_voltage_active = True
-        self.voltage_morphology_button.setChecked(True)
+        self.figure_stack.setCurrentWidget(self.voltage_plot)
+        self.figure_title.setText("Voltage traces")
+        self.image_info.setText(f"{self.voltage_plot.trace_count:,} membrane-voltage traces (mV) · measured morphology replay")
+        self._check_voltage_view_button(self.voltage_morphology_button)
         self._set_trace_view_expanded(False)
         self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS)
         self._select_playback_tracks()
@@ -2101,7 +2515,8 @@ class ResultsPage(QWidget):
             self.figure_stack.setCurrentWidget(self.spike_raster)
             return
         self.figure_stack.setCurrentWidget(self.spike_raster)
-        self.spike_raster_button.setChecked(True)
+        self._check_voltage_view_button(self.spike_raster_button)
+        self.figure_title.setText("Spike raster")
         self.image_info.setText("Interactive spikes · zoom and filter populations")
         self.status_message.emit("Showing interactive NetPyNE spike raster")
 
@@ -2142,86 +2557,23 @@ class ResultsPage(QWidget):
         in ``worker_request.json``; older runs used that ID as the folder name.
         """
 
-        exact_label_matches = [
-            str(neuron_id)
-            for neuron_id in record_payloads
-            if artifact.label == f"Normalized morphology · {neuron_id}"
-        ]
-        if len(exact_label_matches) == 1:
-            return exact_label_matches[0]
-        if len(record_payloads) == 1:
-            return str(next(iter(record_payloads)))
-        parent_name = Path(artifact.path).expanduser().resolve().parent.name.strip()
-        if parent_name in record_payloads:
-            return parent_name
-        label_suffix = artifact.label.rsplit("·", 1)[-1].strip()
-        if label_suffix in record_payloads:
-            return label_suffix
-        return parent_name or label_suffix
+        return recorded_neuron_id(artifact,record_payloads)
 
-    def _display_recorded_circuit(self, result: ResultRecord) -> None:
+    def _display_recorded_circuit(self, result: ResultRecord, *, prepared=None) -> None:
         """Load the immutable, run-packaged SWCs associated with a result."""
 
-        run_root = Path(result.summary_path).expanduser().resolve().parent
-        request = self._read_result_object(run_root / "worker_request.json")
-        circuit = self._read_result_object(run_root / "circuit.json")
-        experiment = self._read_result_object(run_root / "experiment.json")
-
-        raw_records = request.get("morphologies")
-        record_payloads = dict(raw_records) if isinstance(raw_records, dict) else {}
-        raw_connectome = circuit.get("connectome")
-        connectome = dict(raw_connectome) if isinstance(raw_connectome, dict) else {}
-        connectome_key = str(connectome.get("key") or connectome.get("dataset") or "")
-
-        stimulus_ids: set[str] = set()
-        raw_stimuli = experiment.get("stimuli")
-        if isinstance(raw_stimuli, list):
-            for stimulus in raw_stimuli:
-                if not isinstance(stimulus, dict) or not stimulus.get("enabled", True):
-                    continue
-                raw_targets = stimulus.get("target_neuron_ids")
-                if isinstance(raw_targets, list):
-                    stimulus_ids.update(str(value) for value in raw_targets)
-
-        morphology_artifacts = [
-            artifact
-            for artifact in result.artifacts
-            if artifact.kind == "morphology"
-            and artifact.exists
-            and Path(artifact.path).suffix.casefold() == ".swc"
-        ]
-        morphologies: list[Morphology] = []
-        failures: list[str] = []
-        for artifact in morphology_artifacts:
-            swc_path = Path(artifact.path).expanduser().resolve()
-            neuron_id = self._recorded_neuron_id(artifact, record_payloads)
-            raw_record = record_payloads.get(neuron_id)
-            record_values = dict(raw_record) if isinstance(raw_record, dict) else {}
-            neuron_type = str(record_values.get("neuron_type") or "Unknown")
-            family = str(record_values.get("family") or "")
-            if not family and len(neuron_type) >= 2:
-                candidate = neuron_type[:2].upper()
-                if candidate in {"AN", "DN", "IN", "MN", "SN"}:
-                    family = candidate
-            try:
-                morphologies.append(
-                    load_swc(
-                        NeuronRecord(
-                            neuron_id=neuron_id,
-                            family=family,
-                            neuron_type=neuron_type,
-                            swc_path=str(swc_path),
-                            connectome_key=connectome_key,
-                        )
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                failures.append(f"{neuron_id}: {exc}")
+        if prepared is None:
+            morphologies,failures,stimulus_ids,morphology_artifacts = read_recorded_morphologies(result)
+            geometry = None
+        else:
+            morphologies,failures,stimulus_ids,morphology_artifacts = (prepared[name] for name in
+                ('morphologies','failures','stimulus_ids','has_morphology_artifacts'))
+            geometry = prepared['geometry']
 
         if not morphologies:
             self._reset_activity_playback()
             self.result_viewport.clear()
-            self.circuit_info.setText("No recorded morphology loaded")
+            self.circuit_info.setText("No run morphology loaded")
             self.circuit_identity.setText(
                 "This result does not include a readable run-packaged SWC."
                 if morphology_artifacts
@@ -2233,7 +2585,7 @@ class ResultsPage(QWidget):
                 self.circuit_identity.setToolTip("")
             return
 
-        self.result_viewport.set_morphologies(morphologies)
+        self.result_viewport.set_morphologies(morphologies,prepared_geometry=geometry)
         large_circuit = len(morphologies) > 64
         display_mode = (
             DISPLAY_MODE_SOMA_POINTS if large_circuit else DISPLAY_MODE_FULL_SKELETONS
@@ -2254,24 +2606,50 @@ class ResultsPage(QWidget):
         self.save_result_visualization_button.setEnabled(True)
         segment_count = sum(len(morphology.segments) for morphology in morphologies)
         self.circuit_info.setText(
-            f"{len(morphologies)} recorded neuron(s) · {segment_count:,} SWC segments · "
+            f"{len(morphologies)} circuit neuron(s) · {segment_count:,} SWC segments · "
             "loaded from this saved run"
             + (" · soma-point view selected for responsiveness" if large_circuit else "")
         )
-        identity_lines = []
-        for morphology in morphologies:
-            record = morphology.record
-            role = "STIMULATED" if record.neuron_id in visible_stimulus_ids else "recorded"
-            identity_lines.append(
-                f"● {record.neuron_type} · body {record.neuron_id} · {role}"
-            )
-        self.circuit_identity.setText("\n".join(identity_lines))
+        # Recording labels are populated only after this result's voltage
+        # table is loaded; never use the previous result's trace membership.
+        self.circuit_identity.setText("")
         self.circuit_identity.setToolTip("\n".join(failures))
-        self._configure_activity_playback(
-            run_root,
-            morphologies,
-            visible_stimulus_ids,
-        )
+        self._activity_stimulus_ids = visible_stimulus_ids
+
+    def _update_recording_scope(self, result: ResultRecord) -> None:
+        morphologies = self.result_viewport.morphologies
+        if not morphologies:
+            return
+        run_root = Path(result.summary_path).expanduser().resolve().parent
+        experiment = self._read_result_object(run_root / "experiment.json")
+        recording = experiment.get("recording")
+        known_scope = isinstance(recording, dict)
+        targets: set[str] = set()
+        if known_scope and (recording.get("record_voltage", True) or recording.get("detect_spikes", True)):
+            raw_targets = recording.get("target_neuron_ids")
+            targets = ({str(value) for value in raw_targets} if isinstance(raw_targets, list) and raw_targets
+                       else set(morphologies)) & set(morphologies)
+        voltage_ids = {trace.neuron_id for trace in self.voltage_plot.traces} & set(morphologies)
+        scope = f"{len(targets)} recording target(s)" if known_scope else "recording targets not saved"
+        segments = sum(len(m.segments) for m in morphologies.values())
+        self.circuit_info.setText(
+            f"{len(morphologies)} circuit neuron(s) · {scope} · {len(voltage_ids)} with saved voltage · "
+            f"{segments:,} SWC segments · loaded from this saved run"
+            + (" · soma-point view selected for responsiveness" if len(morphologies) > 64 else ""))
+        lines = []
+        for body, morphology in morphologies.items():
+            roles = []
+            if body in self._activity_stimulus_ids:
+                roles.append("stimulus target")
+            if body in voltage_ids:
+                roles.append("recorded voltage")
+            elif known_scope:
+                roles.append("recording target" if body in targets else "not a recording target")
+            else:
+                roles.append("recording scope not saved")
+            record = morphology.record
+            lines.append(f"● {record.neuron_type} · body {body} · {' · '.join(roles)}")
+        self.circuit_identity.setText("\n".join(lines))
 
     def _set_result_circuit_mode(self, mode: str) -> None:
         if not self.result_viewport.neuron_count:
@@ -2283,24 +2661,31 @@ class ResultsPage(QWidget):
         )
         label = "soma points" if mode == DISPLAY_MODE_SOMA_POINTS else "full skeletons"
         self._activity_frame_changed(self.activity_slider.value())
-        self.status_message.emit(f"Recorded circuit view changed to {label}")
+        self.status_message.emit(f"Run circuit view changed to {label}")
 
     def _configure_activity_playback(
         self,
         run_root: Path,
         morphologies: list[Morphology],
         stimulus_ids: set[str],
+        *,
+        prepared=None,
     ) -> None:
         self._stop_activity_playback()
-        self._flow_tracks = load_activity_flow_tracks(run_root)
+        try:
+            self._flow_tracks = prepared['flow'] if prepared is not None else load_activity_flow_tracks(run_root)
+        except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
+            self._flow_tracks = ()
+            self.status_message.emit(f"Saved activity could not be read: {exc}")
         self._morphology_voltage_active = False
         try:
-            self._morphology_voltage_tracks = load_morphology_voltage_tracks(run_root, morphologies)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._morphology_voltage_tracks = (prepared['morphology'] if prepared is not None
+                                               else load_morphology_voltage_tracks(run_root, morphologies))
+        except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
             self._morphology_voltage_tracks = ()
             self.status_message.emit(f"Morphology voltage unavailable: {exc}")
         self.voltage_morphology_button.setEnabled(bool(self._morphology_voltage_tracks))
-        self._activity_distances = {
+        self._activity_distances = prepared['distances'] if prepared is not None else {
             morphology.record.neuron_id: segment_distances_from_soma(morphology)
             for morphology in morphologies
         }
@@ -2338,6 +2723,7 @@ class ResultsPage(QWidget):
             self.activity_method.setText(
                 "Activity playback unavailable · no readable saved soma spikes"
             )
+            self.activity_method.setToolTip(self.activity_method.text())
 
     def _reset_activity_playback(self) -> None:
         self._stop_activity_playback()
@@ -2355,9 +2741,11 @@ class ResultsPage(QWidget):
         self.activity_slider.setEnabled(False)
         self.activity_time_label.setText("— ms")
         self.voltage_plot.set_time_cursor(None)
+        self.current_plot.plot.set_time_cursor(None)
         self.activity_method.setText(
             "Activity playback unavailable · load a run with saved soma spikes"
         )
+        self.activity_method.setToolTip(self.activity_method.text())
         self.save_result_visualization_button.setEnabled(False)
         self.result_soma_points_button.setEnabled(False)
         self.result_full_skeletons_button.setEnabled(False)
@@ -2387,6 +2775,7 @@ class ResultsPage(QWidget):
         time_ms = track.frame_times_ms[index]
         self.activity_time_label.setText(f"{time_ms:.2f} ms")
         self.voltage_plot.set_time_cursor(time_ms)
+        self.current_plot.plot.set_time_cursor(time_ms)
         if isinstance(track, MorphologyVoltageTrack):
             if self.result_viewport.display_mode != DISPLAY_MODE_FULL_SKELETONS:
                 self.result_viewport.set_display_mode(DISPLAY_MODE_FULL_SKELETONS)
@@ -2440,6 +2829,8 @@ class ResultsPage(QWidget):
         self.full_resolution_button.setEnabled(False)
         self.save_trace_button.setEnabled(False)
         self.voltage_plot.set_traces(())
+        self.current_plot.clear_run()
+        self.current_traces_button.setEnabled(False)
         self.voltage_2d_button.setEnabled(False)
         self.voltage_3d_button.setEnabled(False)
         self.figure_stack.setCurrentWidget(self.image_scroll)
@@ -2497,6 +2888,10 @@ class EnginesPage(QWidget):
         self.cards = QVBoxLayout()
         self.cards.setSpacing(12)
         adapter_layout.addLayout(self.cards)
+        if mode in {"both", "adapters"}:
+            overview.readiness_started.connect(self._readiness_started)
+            overview.readiness_ready.connect(self._show_readiness_report)
+            overview.readiness_invalidated.connect(self._readiness_invalidated)
         note = Card()
         note_layout = QVBoxLayout(note)
         note_layout.setContentsMargins(17, 15, 17, 15)
@@ -2936,24 +3331,33 @@ class EnginesPage(QWidget):
             self._netpyne_worker = None
         self.netpyne_run_button.setEnabled(self.netpyne_editor.refresh_validation())
 
-    def refresh(self) -> None:
+    def refresh(self, use_cached: bool = False) -> None:
+        report = self.overview.cached_readiness_report() if use_cached else None
+        if report is not None:
+            self._show_readiness_report(report)
+        else:
+            self.overview.refresh()
+
+    def _readiness_started(self) -> None:
+        self._readiness_invalidated("Checking selected runtimes in the background…")
+
+    def _readiness_invalidated(self, message: str) -> None:
         clear_layout(self.cards)
-        QApplication.processEvents()
-        try:
-            probes = self.overview.workspace().probe_engines(
-                self.overview.python_edit.text(),
-                self.overview.arbor_python_edit.text(),
-                self.overview.bmtk_python_edit.text(),
-                self.overview.netpyne_python_edit.text(),
-            )
-        except Exception as exc:
-            self.cards.addWidget(_muted_label(f"Engine probe failed: {exc}"))
-            return
-        for probe in probes:
+        self.cards.addWidget(_muted_label(message))
+
+    def _show_readiness_report(self, report: dict) -> None:
+        clear_layout(self.cards)
+        self.cards.addWidget(_muted_label(f"Last checked {report['checked_at']}. Refresh to check again."))
+        for probe in report["probes"]:
             self.cards.addWidget(EngineCard(probe))
 
 
 class MainWindow(QMainWindow):
+    def grab(self,rectangle=None):
+        # Qt's ordinary widget capture omits embedded native windows.
+        pixmap=super().grab() if rectangle is None else super().grab(rectangle)
+        return composite_native_viewports(self,pixmap,rectangle)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APPLICATION_NAME)
@@ -3052,6 +3456,7 @@ class MainWindow(QMainWindow):
         right.addWidget(topbar)
         self.pages = QStackedWidget()
         self.overview_page = OverviewPage()
+        self.overview_page.readiness_block_reason = self._readiness_block_reason
         self.data_library_page = DataLibraryPage()
         self.circuit_builder_page = CircuitBuilderPage(self.overview_page)
         self.experiment_page = ExperimentBuilderPage(
@@ -3079,7 +3484,8 @@ class MainWindow(QMainWindow):
         self.overview_page.workspace_edit.textChanged.connect(
             self.experiment_page.set_digifly_public_root
         )
-        self.results_page = ResultsPage(self.overview_page, self.experiment_page)
+        self.results_page = ResultsPage(self.overview_page, self.experiment_page,
+            morphology_candidates=lambda: tuple(self.circuit_builder_page.loaded_morphologies.values()))
         self.netpyne_page = EnginesPage(self.overview_page, mode="netpyne")
         self.netpyne_page.runtime_busy = lambda: (
             self.experiment_page._process is not None or self.netpyne_page.replication_panel.active
@@ -3093,6 +3499,9 @@ class MainWindow(QMainWindow):
             self.netpyne_page.replication_panel.active or self.netpyne_page._pdcm_worker is not None
             or self.netpyne_page._netpyne_worker is not None
         )
+        self.experiment_page.unapplied_circuit_settings = lambda: (
+            self.circuit_builder_page.unapplied_settings_message()
+            if self.circuit_builder_page.has_unapplied_settings() else '')
         self.engines_page = EnginesPage(self.overview_page, mode="adapters")
         for page in (
             self.overview_page,
@@ -3140,6 +3549,7 @@ class MainWindow(QMainWindow):
         for label in self.findChildren(QLabel):
             make_label_copyable(label)
         self.show_page(0)
+        self._mark_project_clean()
 
     def _open_library_circuit(self, dataset):
         self.circuit_builder_page.refresh_connectomes()
@@ -3209,6 +3619,8 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if not self.netpyne_page.netpyne_editor.confirm_unsaved_changes("installing the update"):
+            return
         try:
             target = installation_root()
             cache = update_cache_root().resolve()
@@ -3216,6 +3628,7 @@ class MainWindow(QMainWindow):
             transaction = Path(tempfile.mkdtemp(prefix="install-", dir=cache))
             draft = transaction / "recovered-draft.digifly.json"
             self._save_update_draft(draft)
+            self._update_saved_state = self._update_state_identity()
         except Exception as exc:
             self._update_failed(str(exc))
             return
@@ -3231,12 +3644,30 @@ class MainWindow(QMainWindow):
     def _update_busy(self) -> bool:
         replication = getattr(self.netpyne_page, "replication_panel", None)
         pdcm = self.netpyne_page._pdcm_worker
-        return bool((replication is not None and replication.active) or
-                    (pdcm is not None and pdcm.isRunning()) or self.data_library_page.import_in_progress or
+        model = self.netpyne_page._netpyne_worker
+        return bool(self.results_page.loading or self.results_page.current_plot.loading or
+                    (replication is not None and replication.active) or
+                    (pdcm is not None and pdcm.isRunning()) or
+                    (model is not None and model.isRunning()) or self.overview_page.readiness_active or
+                    self.data_library_page.import_in_progress or
                     getattr(self.experiment_page, "_process", None) is not None)
+
+    def _readiness_block_reason(self) -> str:
+        if not self.update_button.isEnabled():
+            return "Wait for the update check or preparation to finish before checking runtimes."
+        for name in ("_update_worker", "_update_cleanup_worker"):
+            worker = getattr(self, name, None)
+            try:
+                if worker is not None and worker.isRunning():
+                    return "Wait for update work to finish before checking runtimes."
+            except RuntimeError:
+                pass
+        return ""
 
     def _save_update_draft(self, destination: Path) -> None:
         # Separate file: never overwrite the user's open project on restart.
+        if self.circuit_builder_page.has_unapplied_settings():
+            raise ValueError(self.circuit_builder_page.unapplied_settings_message())
         current = self.pages.currentWidget()
         editor = current if current in (self.circuit_builder_page, self.experiment_page) else self._last_editor_page
         DigiflyProject(
@@ -3244,6 +3675,9 @@ class MainWindow(QMainWindow):
             digifly_public_root=self.overview_page.workspace_edit.text(),
             output_root=self.overview_page.output_edit.text(),
             python_executable=self.overview_page.python_edit.text(),
+            arbor_python_executable=self.overview_page.arbor_python_edit.text(),
+            bmtk_python_executable=self.overview_page.bmtk_python_edit.text(),
+            netpyne_python_executable=self.overview_page.netpyne_python_edit.text(),
             selected_engine=self.circuit_builder_page.selected_engine_key(),
             selected_workflow=CIRCUIT_BUILDER_WORKFLOW if editor is self.circuit_builder_page else EXPERIMENT_BUILDER_WORKFLOW,
             circuit=self.circuit_builder_page.circuit_spec().to_dict(),
@@ -3274,6 +3708,10 @@ class MainWindow(QMainWindow):
 
     def _update_prepared(self, result: object) -> None:
         request_path = Path(str(result))
+        if (getattr(self, "_update_saved_state", None) is None
+                or self._update_saved_state != self._update_state_identity()):
+            self._update_failed("The editor changed after its recovery copy was saved. Installation was cancelled; your edits and current app are unchanged.")
+            return
         try:
             self._update_installer = start_helper(request_path)
         except Exception as exc:
@@ -3286,7 +3724,10 @@ class MainWindow(QMainWindow):
             if marker.is_file():
                 self._update_ready_timer.stop()
                 valid = json.loads(marker.read_text("utf-8")).get("token") == read_request(request_path)["token"]
-                if not valid or self._update_busy() or not self.close():
+                same_state = self._update_saved_state == self._update_state_identity()
+                self._closing_saved_update = bool(valid and same_state)
+                if not valid or not same_state or self._update_busy() or not self.close():
+                    self._closing_saved_update = False
                     (request_path.parent / "cancel").touch(exist_ok=False)
                     self._update_failed("Installation cancelled because Digifly could not close safely. Your app is unchanged.")
             elif self._update_installer.poll() is not None or time.monotonic() > deadline:
@@ -3297,6 +3738,8 @@ class MainWindow(QMainWindow):
         self._update_ready_timer.start(200)
 
     def _update_failed(self, message: str) -> None:
+        self._closing_saved_update = False
+        self._update_saved_state = None
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
         QMessageBox.warning(self, "Update could not finish", message)
@@ -3357,7 +3800,7 @@ class MainWindow(QMainWindow):
         if current is self.experiment_page:
             self._sync_experiment_circuit(self.circuit_builder_page.circuit_spec())
         if current is self.engines_page:
-            self.engines_page.refresh()
+            self.engines_page.refresh(use_cached=True)
         if current is self.data_library_page:
             self.data_library_page.refresh()
 
@@ -3403,7 +3846,65 @@ class MainWindow(QMainWindow):
             "The local architecture guide was not included in this build. See the repository's docs/ARCHITECTURE.md.",
         )
 
+    def _project_replacement_allowed(self) -> bool:
+        if self._update_busy():
+            QMessageBox.warning(
+                self, "Work is still active",
+                "Finish the current task, or use its Stop or Cancel control, before opening or starting another project. "
+                "The current project and running worker have not been changed.",
+            )
+            return False
+        for name in ("_update_worker", "_update_cleanup_worker"):
+            worker = getattr(self, name, None)
+            try:
+                running = worker is not None and worker.isRunning()
+            except RuntimeError:  # a completed Qt worker may already be deleted
+                running = False
+            if running:
+                QMessageBox.warning(self, "Update work is active",
+                                    "Wait for update preparation or cleanup before replacing the project.")
+                return False
+        return True
+
+    def _project_state_identity(self) -> str | None:
+        """Persisted content only: page/camera changes do not dirty a document."""
+        if self.circuit_builder_page.has_unapplied_settings():
+            return None
+        try:
+            return json.dumps({
+                "paths": self.overview_page.readiness_snapshot(),
+                "engine": self.circuit_builder_page.selected_engine_key(),
+                "circuit": self.circuit_builder_page.circuit_spec().to_dict(),
+                "experiment": self.experiment_page.config().to_dict(),
+            }, sort_keys=True, allow_nan=False)
+        except (ValueError, TypeError):
+            # Invalid edited controls still require an explicit discard decision.
+            return None
+
+    def _mark_project_clean(self) -> None:
+        self._clean_project_state = self._project_state_identity()
+
+    def _confirm_project_changes(self) -> bool:
+        state = self._project_state_identity()
+        if state is not None and state == self._clean_project_state:
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved project changes", "Save changes to this project before continuing?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_project()
+        return answer == QMessageBox.StandardButton.Discard
+
+    def _update_state_identity(self) -> tuple[str, str] | None:
+        project = self._project_state_identity()
+        model = self.netpyne_page.netpyne_editor.document_identity()
+        return (project, model) if project is not None and model is not None else None
+
     def new_project(self) -> None:
+        if not self._project_replacement_allowed() or not self._confirm_project_changes():
+            return
         self.current_project_path = None
         self._project_workflow = None
         self.project_label.setText("Unsaved project")
@@ -3411,8 +3912,11 @@ class MainWindow(QMainWindow):
         self.experiment_page.reset()
         self._last_editor_page = self.circuit_builder_page
         self.show_page(0)
+        self._mark_project_clean()
 
     def open_project(self, selected: str | None = None) -> None:
+        if not self._project_replacement_allowed():
+            return
         if not selected:
             selected, _ = QFileDialog.getOpenFileName(
                 self, "Open Digifly project", str(_workspace_home()),
@@ -3425,9 +3929,18 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
             return
+        if not self._confirm_project_changes():
+            return
         self.overview_page.workspace_edit.setText(project.digifly_public_root)
         self.overview_page.output_edit.setText(project.output_root)
         self.overview_page.python_edit.setText(project.python_executable)
+        for value, editor in (
+            (project.arbor_python_executable, self.overview_page.arbor_python_edit),
+            (project.bmtk_python_executable, self.overview_page.bmtk_python_edit),
+            (project.netpyne_python_executable, self.overview_page.netpyne_python_edit),
+        ):
+            if value is not None:
+                editor.setText(value)
         try:
             circuit_spec = CircuitSpec.from_dict(project.circuit or {})
             experiment_spec = ExperimentSpec.from_dict(project.experiment or {})
@@ -3460,8 +3973,12 @@ class MainWindow(QMainWindow):
         self.project_label.setText(project.name)
         self.statusBar().showMessage(f"Opened {self.current_project_path}")
         self.show_page(self.pages.indexOf(target_page))
+        self._mark_project_clean()
 
-    def save_project(self, *, save_as: bool = False) -> None:
+    def save_project(self, *, save_as: bool = False) -> bool:
+        if self.circuit_builder_page.has_unapplied_settings():
+            QMessageBox.warning(self, 'Unapplied settings', self.circuit_builder_page.unapplied_settings_message())
+            return False
         current = self.pages.currentWidget()
         editor = current if current in (self.circuit_builder_page, self.experiment_page) else self._last_editor_page
         try:
@@ -3469,7 +3986,7 @@ class MainWindow(QMainWindow):
             experiment = self.experiment_page.config().to_dict()
         except Exception as exc:
             QMessageBox.warning(self, "Invalid project", f"Fix the project controls before saving:\n{exc}")
-            return
+            return False
         if editor is self.circuit_builder_page:
             selected_workflow = CIRCUIT_BUILDER_WORKFLOW
         else:
@@ -3485,7 +4002,7 @@ class MainWindow(QMainWindow):
                 "Digifly projects (*.digifly.json)",
             )
             if not selected:
-                return
+                return False
             destination = Path(selected)
             if not str(destination).endswith(".digifly.json"):
                 destination = Path(str(destination) + ".digifly.json")
@@ -3494,6 +4011,9 @@ class MainWindow(QMainWindow):
             digifly_public_root=self.overview_page.workspace_edit.text(),
             output_root=self.overview_page.output_edit.text(),
             python_executable=self.overview_page.python_edit.text(),
+            arbor_python_executable=self.overview_page.arbor_python_edit.text(),
+            bmtk_python_executable=self.overview_page.bmtk_python_edit.text(),
+            netpyne_python_executable=self.overview_page.netpyne_python_edit.text(),
             selected_engine=selected_engine,
             selected_workflow=selected_workflow,
             circuit=circuit,
@@ -3503,11 +4023,13 @@ class MainWindow(QMainWindow):
             project.save(destination)
         except Exception as exc:
             QMessageBox.critical(self, "Could not save project", str(exc))
-            return
+            return False
         self.current_project_path = destination.resolve()
         self._project_workflow = selected_workflow
         self.project_label.setText(project.name)
         self.statusBar().showMessage(f"Saved {self.current_project_path}")
+        self._mark_project_clean()
+        return True
 
     def _restore_settings(self) -> None:
         saved_workspace = self.settings.value("workspace_root")
@@ -3618,6 +4140,11 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: Any) -> None:
+        if self.results_page.loading or self.results_page.current_plot.loading:
+            self.results_page.cancel_loading()
+            self.statusBar().showMessage('Stopping result loading; please close again in a moment.')
+            event.ignore()
+            return
         cleanup = getattr(self, "_update_cleanup_worker", None)
         if cleanup is not None:
             try:
@@ -3656,6 +4183,14 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        model_worker = self.netpyne_page._netpyne_worker
+        if model_worker is not None and model_worker.isRunning():
+            QMessageBox.warning(
+                self, "A NetPyNE model is still running",
+                "Return to NetPyNE and use Stop. Digifly will record the run as cancelled before closing.",
+            )
+            event.ignore()
+            return
         if self.data_library_page.import_in_progress:
             QMessageBox.warning(
                 self,
@@ -3675,6 +4210,22 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        if self.overview_page.readiness_active:
+            QMessageBox.warning(
+                self, "Readiness check is still running",
+                "Let the read-only runtime check finish before closing. Other pages remain available; "
+                "BioNet imports are limited to 60 seconds per check.",
+            )
+            event.ignore()
+            return
+        saved_update = (getattr(self, "_closing_saved_update", False)
+                        and getattr(self, "_update_saved_state", None) == self._update_state_identity()
+                        and self._update_state_identity() is not None)
+        if not saved_update:
+            if (not self._confirm_project_changes()
+                    or not self.netpyne_page.netpyne_editor.confirm_unsaved_changes("closing Digifly")):
+                event.ignore()
+                return
         self.settings.setValue("workspace_root", self.overview_page.workspace_edit.text())
         self.settings.setValue("output_root", self.overview_page.output_edit.text())
         self.settings.setValue("neuron_python", self.overview_page.python_edit.text())
@@ -3773,7 +4324,13 @@ def _muted_label(text: str) -> QLabel:
     return make_label_copyable(label)
 
 
-def _reveal(raw: str) -> None:
+def _reveal(raw: str, parent: QWidget | None = None) -> bool:
     path = Path(raw).expanduser()
-    target = path if path.exists() else path.parent
-    QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+    target = path if path.is_dir() else path.parent
+    if not target.is_dir():
+        QMessageBox.warning(parent, "Folder unavailable", f"The containing folder is unavailable:\n{target}")
+        return False
+    if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))):
+        QMessageBox.warning(parent, "Could not open folder", f"Open this folder manually:\n{target}")
+        return False
+    return True

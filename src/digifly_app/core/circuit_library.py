@@ -18,9 +18,24 @@ def source_folders(source):
 
 def library_sources(profile, releases, legacy=()):
     """One choice per exact release/server, including not-yet-saved releases."""
-    saved = (profile_saved_sources(profile) if profile else
-             tuple(SavedSource(Path(s.root), canonical_dataset(s.dataset)) for s in legacy
-                   if canonical_dataset(s.dataset)))
+    saved = list(profile_saved_sources(profile)) if profile else []
+    # A freshly selected legacy workspace can differ from (or predate) the
+    # saved machine profile. Its discovered roots must reach the same release
+    # choices, not remain stranded in an invisible raw-source list. Retain an
+    # existing explicit server binding instead of inventing an official alias.
+    for source in legacy:
+        dataset = canonical_dataset(source.dataset)
+        if not dataset or not source.root:
+            continue
+        root = Path(source.root).expanduser().resolve()
+        declared = [s for s in saved if s.root.resolve() == root
+                    and canonical_dataset(s.dataset) == dataset]
+        if declared and not source.server:
+            continue
+        server = _server(source.server)
+        if any(_server(s.server) == server for s in declared):
+            continue
+        saved.append(SavedSource(root, dataset, server))
     output = []
     for dataset in releases:
         matching = [s for s in saved if canonical_dataset(s.dataset) == dataset]

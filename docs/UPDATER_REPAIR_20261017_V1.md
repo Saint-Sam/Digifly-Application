@@ -1,15 +1,30 @@
 # Windows updater completion gate
 
-## Update downloads from build20261023.6
+## October23 digest-only release downloads
 
-The updater discovers versioned apps across release pages and checks downloaded
-bytes against GitHub's asset digest. Separate checksum downloads are no longer
-needed. Missing or invalid integrity metadata blocks installation. Draft releases
-and historical versions cannot replace a newer installed app.
+The human requests removing public checksum sidecars and publishing a new release.
+The updater now reads the release list, ignores drafts and requires a valid
+GitHub asset digest when no legacy sidecar is present. Downloaded bytes must
+match that digest before installation. GitHub documents this metadata in the
+[release asset API](https://docs.github.com/rest/releases/assets).
 
-Older versions need one manual installation because their updater expects the
-discontinued checksum files. Native package checks cover the actual verifier,
-installation, draft restoration and recovery after an injected startup failure.
+The native gate now exercises the actual verifier with transport isolated to
+the checked archive, then install/restart, legacy journal and rollback. Each
+modern install/rollback case must retain its digest-download record with no
+sidecar request or creation. The legacy-journal case deliberately supplies the
+historical sidecar and exercises the unchanged legacy cleanup identification.
+The paired validator requires those records for this successor. Missing/invalid
+digests and mismatched bytes have separate refusal controls. Source tests alone
+are not completed packaged acceptance. Older updaters need one manual bootstrap.
+
+Actual23.5 native install failed after download because prepare_install still
+read a sidecar. Failure details and verified-download bytes remain preserved.
+Successor23.6 carries the reviewed expected digest in memory from selection
+through download and preparation, repeats verification before extraction, and
+journals optional legacy checksum cleanup only when such a file exists. Added
+source controls cover the real UI handoff, valid/no-sidecar preparation, invalid
+or wrong carried digests, and exact no-sidecar cleanup. No old target was replaced
+by the failed23.5 attempt and no failed candidate is called delivered.
 
 ## October19 current public paired delivery
 
@@ -81,6 +96,32 @@ and concurrent builds make them different quantities. This manual release-folder
 repair is not a periodic sweep or permission for one.
 
 Evidence: `workstation_active_v1.json:shared_fix_delivery.repair_20261019`.
+
+Measured Mac delivery: current20261019.1, archive SHA256
+`b17248cddbf7470c9d802bb12b848003dc44d4ff3bc1997983029d040f4d72aa`,
+executable SHA256 `a72ddcbd20b339de8009558a84dd9d9daf461ce70555ccbfdb56f4785d5feab7`.
+All3086archive/installed files,140source inputs and2897unchanged runtime files
+checked. Packaged Data Library saved-simulator fixture, normal/legacy cleanup,
+failed-startup recovery and historical-catalog refusal pass. An additional
+disposable actual-app test feeds the exact old archive that caused the failure;
+the app refuses before helper creation or replacement and retains its full tree.
+The real human profile remains byte-identical with17bindings; native Refresh,
+SWC-registration and neuPrint-dialog controls open correctly, and actual public
+Check for updates says `This build is current.` No neuron download or simulator
+run occurred. Only the intended current app remains open on Data Library.
+
+Thirty retired expanded app copies were removed from `dist` after exact retained
+archive checks. Four unmatched/failed copies were preserved in new checked
+recovery ZIPs before removal, rather than erasing their changed bytes. One
+redundant pre-repair backup was also archive-checked. Seven finished disposable
+app test copies were separately removed; all small records/images remain. Current
+app, checked20261019.1 and fallback20261018.5 remain. Logical removed file sizes
+are not presented as net filesystem savings. Local194source cases:190pass,
+4platform skips;38focused harness cases pass. Windows counterpart source3a5d94b
+is queued at run39280615048 with no windows-2022 runner assigned, no pending
+deployment approvals and no diagnostic annotation. It is not accepted or
+published; both-platform completion remains open rather than reusing stale
+Windows source evidence. Existing published Windows20261018.4 is unchanged.
 
 ## October18 cleanup override — current repair
 

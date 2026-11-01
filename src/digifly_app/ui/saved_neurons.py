@@ -304,7 +304,14 @@ class SavedNeuronBrowser(Card):
             self.row_layout.addWidget(button)
         self.row_layout.addStretch()
         self.row_list.verticalScrollBar().setValue(0)
-        self.page_label.setText(f'{start + 1 if rows else 0}–{min(start + self.PAGE_SIZE, len(rows))} of {len(rows):,}' if rows else 'No saved neurons here yet')
+        if rows:
+            page_text = f'{start + 1}–{min(start + self.PAGE_SIZE, len(rows))} of {len(rows):,}'
+        elif query:
+            page_text = ('No neuron IDs match this filter' if self._selected_type
+                         else 'No types match this filter')
+        else:
+            page_text = 'No saved neurons here yet'
+        self.page_label.setText(page_text)
         self.previous.setEnabled(self._page > 0)
         self.next.setEnabled(start + self.PAGE_SIZE < len(rows))
 

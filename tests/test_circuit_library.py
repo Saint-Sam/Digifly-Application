@@ -107,6 +107,28 @@ def test_distinct_servers_never_merge_body_ids(tmp_path):
         'https://neuprint.janelia.org': {'1'}, 'https://another.example': {'2'}}
 
 
+def test_new_workspace_roots_reach_release_choices_without_profile_rewrite(tmp_path):
+    from dataclasses import replace
+    profile, roots = fixture(tmp_path)
+    new_root = tmp_path/'new-workspace/Phase 1/manc_v1.2.1/export_swc'
+    swc = new_root/'MN/TTMn/10068/10068.swc'; swc.parent.mkdir(parents=True); swc.write_text(SWC)
+    legacy = ConnectomeRef('manc:v1.2.1','MANC',str(new_root),'manc_v1.2.1')
+    original = profile.to_dict()
+    choices = library_sources(profile,RELEASES,(legacy,))
+    source = next(s for s in choices if s.key=='library:manc:v1.2.1')
+    assert set(ConnectomeCatalog.scan(source).by_id)=={'10068'}
+    assert profile.to_dict()==original and swc.read_text()==SWC
+    # The same declared root on a custom server must not gain an official alias
+    # merely because legacy discovery did not carry the server label.
+    binding = profile.resources[-1]
+    custom = replace(binding,metadata={**binding.metadata,'server':'https://another.example'})
+    profile = replace(profile,resources=(*profile.resources[:-1],custom))
+    old = ConnectomeRef('legacy','Legacy',str(roots[1]),'male-cns_v0.9')
+    sources = library_sources(profile,RELEASES,(old,))
+    official = next(s for s in sources if s.key=='library:male-cns:v0.9')
+    assert set(ConnectomeCatalog.scan(official).by_id)=={'1'}
+
+
 def test_missing_family_ttmn_name_reaches_experiment_without_hiding_copy_choice(tmp_path):
     from digifly_app.core.saved_neurons import SavedSource
     from digifly_app.core.morphology import load_swc

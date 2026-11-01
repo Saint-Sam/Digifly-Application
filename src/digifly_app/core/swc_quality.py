@@ -68,10 +68,11 @@ class SwcQualityReport:
     warnings: tuple[str, ...] = ()
     manifest: str = ""
     instance: str = ""
+    component_count: int = 1
 
     @property
     def needs_review(self) -> bool:
-        return bool(self.findings or self.errors)
+        return bool(self.findings or self.errors or self.component_count > 1)
 
     @property
     def can_heal(self) -> bool:
@@ -344,6 +345,10 @@ def analyze_swc(
     source = Path(path).expanduser().resolve()
     _lines, nodes, parse_errors = _parse_swc(source)
     scale, source_unit, unit_warning = _source_scale_to_um(nodes, provider=provider, path=source)
+    from .swc_units import source_coordinate_contract
+    contract = source_coordinate_contract(source)
+    if contract["rule"] in {"male_cns_v09_neuprint_raw", "neuprint_8nm_raw"}:
+        scale, source_unit, unit_warning = contract["scale_to_um"], "8nm voxel units", None
     topology_errors, topology_warnings = _topology_issues(nodes)
     findings = _adaptive_radius_findings(nodes, scale=scale)
     warnings = list(topology_warnings)
@@ -363,6 +368,7 @@ def analyze_swc(
         warnings=tuple(warnings),
         manifest=str(Path(manifest).expanduser().resolve()) if manifest else "",
         instance=str(instance),
+        component_count=sum(node.parent_id < 0 for node in nodes),
     )
 
 
@@ -538,6 +544,8 @@ def heal_swc(
     source = Path(report.path).resolve()
     if sha256_file(source) != report.sha256:
         raise ValueError("SWC changed after audit; run the checker again")
+    from .swc_units import source_coordinate_contract
+    original_coordinate_transform = source_coordinate_contract(source)
     lines, before_nodes, parse_errors = _parse_swc(source)
     if parse_errors:
         raise ValueError("SWC no longer parses cleanly")
@@ -564,6 +572,7 @@ def heal_swc(
     if set(verified_ids) != set(intended_ids):
         raise ValueError("post-write verification found unexpected radius changes")
     after_hash = sha256_file(output)
+    coordinate_transform = {**original_coordinate_transform, "source_sha256": after_hash}
     provenance_path = output.with_suffix(output.suffix + ".quality.json")
     result_without_report = {
         "input_path": str(source),
@@ -578,6 +587,7 @@ def heal_swc(
         "schema_version": QUALITY_SCHEMA_VERSION,
         "generated_utc": _utc_text(),
         "operation": "radius-only SWC healing",
+        "coordinate_transform": coordinate_transform,
         "audit": report.to_dict(),
         "result": result_without_report,
         "verification": {
@@ -626,11 +636,26 @@ def reviewed_hashes(report: SwcQualityReport) -> set[str]:
     return hashes
 
 
+def fragments_reviewed(report: SwcQualityReport) -> bool:
+    """Old radius-only choices never silently approve a new topology repair."""
+    path = decision_path(report)
+    if path is None or not path.is_file():
+        return False
+    try:
+        records = json.loads(path.read_text(encoding="utf-8")).get("decisions", ())
+        return any(isinstance(row, Mapping) and row.get("source_sha256") == report.sha256
+                   and row.get("fragments_reviewed") is True for row in records)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def record_review_decision(
     report: SwcQualityReport,
     *,
     action: str,
     healing_result: HealingResult | None = None,
+    fragments_reviewed: bool = False,
+    joined_copy: str = "",
 ) -> Path | None:
     """Remember an explicit UI choice so the same immutable import is not nagged twice."""
 
@@ -663,6 +688,8 @@ def record_review_decision(
             "action": action,
             "finding_count": len(report.findings),
             "result": healing_result.to_dict() if healing_result is not None else None,
+            "fragments_reviewed": fragments_reviewed,
+            "joined_copy": joined_copy,
         }
     )
     payload["decisions"] = decisions

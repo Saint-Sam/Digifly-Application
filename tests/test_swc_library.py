@@ -47,6 +47,149 @@ def graph_ref(path, dataset='male-cns:v1.0', server=SERVER):
     return next(s for s in library_sources(ResourceProfile.load(path), (dataset,)) if s.server == server)
 
 
+class LocatedGraphClient(GrowingGraphClient):
+    def fetch_contact_sites_between(self,sources,targets,**kwargs):
+        from digifly_app.core.neuprint_contacts import ChemicalContact, METHOD_SOURCE, THRESHOLD_SOURCE
+        rows=[]
+        for (a,b),w in self.rows.items():
+            if a not in sources or b not in targets:continue
+            for j in range(w):
+                rows.append(ChemicalContact(a,b,a*100000+b*100+j,a*100000+b*100+j+50000,
+                    .1,.2,.3,.4,.5,.6,.9,.8))
+        return tuple(rows),{'schema':'digifly-neuprint-contact-method-v1',
+            'coordinates_rounded':False,'confidence_threshold':.5,'roi_filter':None,
+            'electrical_anatomy_inferred':False,'coordinate_units':'native_dataset_space',
+            'confidence_comparison':'strict_greater_when_nonzero',
+            'method_source':METHOD_SOURCE,'threshold_source':THRESHOLD_SOURCE}
+
+
+def test_located_contacts_share_one_growing_file_and_frozen_revisions(state):
+    import sqlite3
+    from digifly_app.core.pair_graph import validated_manifest,sha
+    profile,path=state
+    c=LocatedGraphClient({(1,2):2,(2,1):1,(1,3):2,(3,2):1})
+    first=grow_graph(profile,path,c,(1,2),'sites1',include_contact_sites=True)
+    frozen=graph_ref(path); first_hash=sha(Path(frozen.pair_graph_index))
+    a=validated_manifest(frozen)
+    assert a['contact_rows']==3 and a['contact_covered_body_ids']==[1,2]
+    assert a['contact_coordinates_in_file'] is True
+    second=grow_graph(profile,path,c,(3,),'sites2',include_contact_sites=True)
+    current=graph_ref(path); b=validated_manifest(current)
+    assert first.root==second.root and b['contact_rows']==6
+    assert b['contact_covered_body_ids']==[1,2,3]
+    assert sha(Path(frozen.pair_graph_index))==first_hash
+    grow_graph(profile,path,c,(1,2),'sites3',include_contact_sites=True)
+    last=validated_manifest(graph_ref(path));assert last['contact_rows']==6
+    with sqlite3.connect(second.root/'connectivity/connectivity.sqlite') as db:
+        assert db.execute('SELECT COUNT(*) FROM pairs').fetchone()==(4,)
+        assert db.execute('SELECT COUNT(*) FROM contacts').fetchone()==(6,)
+        assert db.execute('SELECT pre_x,post_z FROM contacts LIMIT 1').fetchone()==(.1,.6)
+    from digifly_app.core.pair_graph import selected_contact_sites
+    assert len(selected_contact_sites(current, (1,2,3))[1]) == 6
+    assert len(selected_contact_sites(frozen, (1,2))[1]) == 3
+    with pytest.raises(ValueError, match='unknown'):
+        selected_contact_sites(frozen, (1,3))
+
+
+def test_wrong_contact_census_never_changes_committed_graph_or_profile(state):
+    from digifly_app.core.pair_graph import sha
+    profile,path=state;c=LocatedGraphClient({(1,2):2})
+    result=grow_graph(profile,path,c,(1,2),'good-sites',include_contact_sites=True)
+    graph=result.root/'connectivity/connectivity.sqlite'
+    before=sha(graph),path.read_bytes()
+    class MissingContact(LocatedGraphClient):
+        def fetch_contact_sites_between(self,*a,**kw):
+            rows,method=super().fetch_contact_sites_between(*a,**kw)
+            return rows[:-1],method
+    with pytest.raises(ValueError,match='census differs'):
+        grow_graph(profile,path,MissingContact(c.rows),(1,2),'bad-sites',include_contact_sites=True)
+    assert (sha(graph),path.read_bytes())==before
+
+
+def test_count_only_refresh_invalidates_affected_contact_coverage(state):
+    from digifly_app.core.pair_graph import validated_manifest
+    profile,path=state;c=LocatedGraphClient({(1,2):2})
+    grow_graph(profile,path,c,(1,2),'sites-before-counts',include_contact_sites=True)
+    grow_graph(profile,path,c,(1,),'counts-only-refresh')
+    m=validated_manifest(graph_ref(path))
+    assert m['contact_covered_body_ids']==[2] and m['contact_rows']==0
+    from digifly_app.core.pair_graph import selected_contact_sites
+    with pytest.raises(ValueError,match='have not been downloaded'):
+        selected_contact_sites(graph_ref(path),(1,2))
+
+
+def test_experiment_input_describes_actual_sites_not_an_aggregate_only_graph(state,monkeypatch):
+    from digifly_app.core.circuit import CircuitSpec
+    from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+    from PySide6.QtWidgets import QApplication
+    monkeypatch.setenv('QT_QPA_PLATFORM','offscreen')
+    app=QApplication.instance() or QApplication([])
+    profile,path=state; client=LocatedGraphClient({(1,2):3})
+    grow_graph(profile,path,client,(1,2),'ui-sites',include_contact_sites=True)
+    source=graph_ref(path)
+    page=ExperimentBuilderPage(output_root=path.parent/'runs')
+    try:
+        page.set_circuit_spec(CircuitSpec(connectome=source,neuron_ids=('1','2')))
+        assert '3 measured pre/post chemical sites' in page.circuit_detail.text()
+        assert 'Choose an explicit count-to-strength' not in page.circuit_detail.text()
+        assert 'soma-threshold release' in page.circuit_detail.text()
+        page.set_circuit_spec(CircuitSpec(connectome=source,neuron_ids=('1','2','3')))
+        assert 'not checked for every selected neuron' in page.circuit_detail.text()
+    finally:
+        page.close();app.processEvents()
+
+
+def test_downloaded_real_sites_feed_chemical_model_and_explicit_gf_ttmn_gaps(state,monkeypatch):
+    from digifly_app.core.circuit import CircuitSpec
+    from digifly_app.core.connectomes import ConnectomeCatalog
+    from digifly_app.core.morphology import load_swc
+    from digifly_app.core.mechanisms import GapJunctionPolicy
+    from digifly_app.engines.generic_experiment import GenericExperimentAdapter
+    from digifly_app.workers import generic_experiment_worker as common
+    from digifly_app.workers import bmtk_bionet_worker as bionet
+    import sys
+    monkeypatch.setattr(sys.modules[__name__],'SWC',b'1 1 0 0 0 5 -1\n2 3 0 0 10000 1 1\n')
+    profile,path=state
+    request=NeuPrintAcquisitionRequest(SERVER,'male-cns:v1.0','located','one',
+        NeuPrintSelection('name_list','DNp01, TTMn'),
+        (NeuPrintNeuron(1,'DNp01'),NeuPrintNeuron(2,'TTMn')),'fixture-secret',
+        include_connectivity=True,include_contact_sites=True)
+    result=acquire_neuprint_bundle(profile,path,request,
+        client=LocatedGraphClient({(1,2):2}),add_to_library=True)
+    source=graph_ref(path)
+    cells=tuple(load_swc(r) for r in ConnectomeCatalog.scan(source).records)
+    circuit=CircuitSpec(connectome=source,neuron_ids=('1','2'),
+        gap_junction_policy=GapJunctionPolicy(mode='ohmic',placement_policy='gf_ttmn_chemical_sites'))
+    edges=GenericExperimentAdapter({})._edge_manifest(circuit,cells)
+    assert len(edges['chemical_edges'])==2
+    gaps=edges['electrical_edges'][0]['contacts']; assert len(gaps)==2
+    for chem,gap in zip(edges['chemical_edges'],gaps):
+        assert chem['located_contact']==gap['located_contact']
+        assert chem['post_coordinate_um']==[.4*.008,.5*.008,.6*.008]
+        assert gap['pre_coordinate_um']==[.1*.008,.2*.008,.3*.008]
+        assert gap['modeled_electrical'] is True
+        assert gap['placement_assumption']['biological_electrical_contact'] is False
+        assert chem['post_source_edge_fraction']==gap['post_source_edge_fraction']
+    from test_generic_experiment import _experiment
+    common._validate_request_capabilities('neuron',circuit.to_dict(),_experiment('neuron').to_dict(),edges)
+    bionet._validate_contacts(edges,circuit.neuron_ids)
+    common._validate_edge_source_identity(edges)
+    captured={}
+    report_budget=common._regional_report_budget
+    def observe_plans(plans,experiment):
+        captured.update(plans)
+        return report_budget(plans,experiment)
+    monkeypatch.setattr(common,'_regional_report_budget',observe_plans)
+    report=GenericExperimentAdapter({}).validate(circuit,_experiment('neuron'),cells,output_root=path.parent/'runs')
+    placement=next(check for check in report.checks if check.key=='located_contact_mapping')
+    assert '2 measured chemical sites' in placement.detail and 'soma-threshold' in placement.detail
+    assert all(plan['estimated_nseg']==33 for plan in captured.values())
+    changed=json.loads(json.dumps(edges['chemical_edges'][0]))
+    changed['post_coordinate_um'][0]+=1
+    with pytest.raises(ValueError,match='coordinates were changed'):
+        common._validate_located_contact(changed)
+
+
 def test_cumulative_two_batches_cross_edges_update_delete_and_frozen_circuit(state):
     from digifly_app.core.pair_graph import pair_rows, validated_manifest
     profile, path = state
@@ -498,6 +641,30 @@ def test_duplicate_files_in_tree_do_not_choose_an_arbitrary_replacement(state):
     extra.write_bytes(SWC)
     with pytest.raises(ValueError, match="multiple files"):
         inspect_existing_swcs(profile, SERVER, DATASET, (42,))
+
+
+def test_contact_refresh_keeps_raw_swc_and_its_exact_reviewed_joined_copy(state):
+    from digifly_app.core.swc_fragments import plan_fragment_join,save_fragment_join
+    from digifly_app.core.swc_quality import analyze_swc
+    profile,path=state
+    forest=b'1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n'
+    result=_download(profile,path,data=forest)
+    before=inspect_existing_swcs(profile,SERVER,DATASET,(42,))
+    raw=result.root/before['42']['path']
+    joined=save_fragment_join(plan_fragment_join(analyze_swc(raw)))
+    original=raw.read_bytes(),joined.read_bytes(),joined.with_suffix('.swc.quality.json').read_bytes()
+    assert inspect_existing_swcs(profile,SERVER,DATASET,(42,))==before
+    client=LocatedGraphClient({})
+    request=NeuPrintAcquisitionRequest(SERVER,DATASET,'contact-refresh','two',
+        NeuPrintSelection('name_list','DNp01'),(NeuPrintNeuron(42,'DNp01'),),'fixture',
+        include_connectivity=True,include_contact_sites=True,library_review=before)
+    acquire_neuprint_bundle(profile,path,request,client=client,add_to_library=True)
+    assert client.skeletons==[]
+    assert (raw.read_bytes(),joined.read_bytes(),joined.with_suffix('.swc.quality.json').read_bytes())==original
+    assert inspect_existing_swcs(profile,SERVER,DATASET,(42,))==before
+    joined.write_bytes(joined.read_bytes()+b'# tampered\n')
+    with pytest.raises(ValueError,match='changed after review'):
+        inspect_existing_swcs(profile,SERVER,DATASET,(42,))
 
 
 @pytest.mark.parametrize('relative', ['/export_swc/42.swc', '../export_swc/42.swc',

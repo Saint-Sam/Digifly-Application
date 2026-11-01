@@ -18,6 +18,58 @@ import time
 from digifly_app.core.update_installer import DISPOSABLE_TEST_ENV, executable_in, file_hash, tree_inventory
 
 
+def _case_processes() -> str:
+    return subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True,
+                          text=True, check=True).stdout
+
+
+def retire_checked_case(case: Path, transaction: dict, application: Path, *, timeout=10) -> dict:
+    """Test-only teardown AFTER preservation checks; never normal updater cleanup."""
+    case, application = case.resolve(), application.resolve()
+    marker_path=case / '.digifly-updater-disposable.json'
+    if not marker_path.is_file() or transaction.get('retirement_status') not in {'installed','rolled_back'}:
+        raise ValueError('Retirement requires a verified disposable updater case')
+    marker = json.loads(marker_path.read_text())
+    target = Path(transaction['target'])
+    if (marker.get('disposable') is not True or marker.get('target') != str(target)
+            or target.parent != case or target.name != application.name or not target.is_dir()):
+        raise ValueError('Retirement requires the exact disposable updater marker')
+    targets = [(target, transaction['original'] if transaction['retirement_status']=='rolled_back'
+                else transaction['candidate_inventory']),
+               (Path(transaction['failed']), transaction['candidate_inventory']),
+               (Path(transaction['backup']), transaction['original']),
+               (Path(transaction['helper']), transaction['original'])]
+    if (Path(transaction['failed']) != target.with_name(target.name+'.failed-'+transaction['token'])
+            or Path(transaction['backup']) != target.with_name(target.name+'.rollback-'+transaction['token'])):
+        raise ValueError('Unsafe disposable updater sibling path')
+    for path, _ in targets:
+        if (path.resolve()!=path or not path.is_relative_to(case) or path==case
+                or path==application or path.is_relative_to(application)
+                or application.is_relative_to(path) or path.is_symlink()):
+            raise ValueError('Retirement target leaves the disposable case')
+    deadline=time.monotonic()+timeout
+    while True:
+        commands=_case_processes().splitlines()
+        if not any(str(path) in line for path,_ in targets for line in commands):break
+        if time.monotonic()>=deadline:
+            raise ValueError('A disposable updater app is still running; nothing retired')
+        time.sleep(.15)
+    records=[]
+    for path, expected in targets:
+        if not path.exists():continue
+        actual=tree_inventory(path)
+        if actual!=expected:
+            raise ValueError('Disposable updater copy changed; nothing retired')
+        records.append({'path':str(path),'bytes':sum(v.get('bytes',0) for v in actual.values()),
+                        'inventory_sha256':hashlib.sha256(json.dumps(actual,sort_keys=True).encode()).hexdigest()})
+    record={'scope':'Verified disposable test copies only; production failed-update retention is unchanged',
+            'copies':records,'removed_bytes':sum(r['bytes'] for r in records),
+            'retained_recovery_source':str(application)}
+    (case/'verified-test-copy-retirement.json').write_text(json.dumps(record,indent=2))
+    for item in records:shutil.rmtree(item['path'])
+    return record
+
+
 def validate_evidence(receipt_path: Path, archive: Path, executable: Path) -> dict:
     return validate_release_evidence(receipt_path, archive_sha256=file_hash(archive),
                                      executable_sha256=file_hash(executable), system=platform.system())
@@ -79,10 +131,12 @@ def validate_release_evidence(receipt_path: Path, *, archive_sha256: str, execut
     return record
 
 
-def check(application: Path, archive: Path, output: Path) -> dict:
+def check(application: Path, archive: Path, output: Path, *, retire_test_copies=False) -> dict:
     application, archive, output = application.resolve(), archive.resolve(), output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
     system = platform.system()
+    if retire_test_copies and system!='Darwin':
+        raise ValueError('Bounded native test-copy retirement is currently qualified only on macOS')
+    output.mkdir(parents=True, exist_ok=False)
     before = tree_inventory(application)
     record = {"schema": "digifly-native-updater-gate-v1", "ok": False,
               "cleanup_policy": "after_verified_startup",
@@ -102,11 +156,16 @@ def check(application: Path, archive: Path, output: Path) -> dict:
         raise ValueError("The engineering route did not refuse the unmarked original app.")
     record["unmarked_original_app_refused"] = True
     for name, failure in (("install", False), ("legacy_install", False), ("rollback", True)):
+        if retire_test_copies:
+            required=2*sum(v.get('bytes',0) for v in before.values())+2*archive.stat().st_size+2*1024**3
+            if shutil.disk_usage(output).free<required:
+                raise ValueError('Insufficient space for bounded updater copies and the2GiB reserve')
         case = output / name
         case.mkdir()
         target = case / application.name
         if system == "Darwin":
-            subprocess.run(["/usr/bin/ditto", str(application), str(target)], check=True)
+            subprocess.run((["/bin/cp", "-cR"] if retire_test_copies else ["/usr/bin/ditto"])
+                           + [str(application), str(target)], check=True)
         else:
             shutil.copytree(application, target)
         original_directory_id = target.stat().st_ino
@@ -191,6 +250,9 @@ def check(application: Path, archive: Path, output: Path) -> dict:
                 "transaction": str(request_path), "screenshot": name + "-window.png"}
         record["cases"][name]["actual_directory_identity_transition_verified"] = True
         record["cases"][name]["screenshot_sha256"] = file_hash(output / (name + "-window.png"))
+        if retire_test_copies:
+            record['cases'][name]['test_copy_retirement']=retire_checked_case(
+                case,{**transaction,'retirement_status':result['status']},application)
     if tree_inventory(application) != before:
         raise ValueError("The supplied original app was modified by the gate.")
     record["original_app_unchanged"] = record["ok"] = True
@@ -204,5 +266,8 @@ if __name__ == "__main__":
     parser.add_argument("--application", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument('--retire-checked-test-copies',action='store_true',
+                        help='Mac-only: after each verified case, retire its closed disposable app copies')
     arguments = parser.parse_args()
-    print(json.dumps(check(arguments.application, arguments.archive, arguments.output), indent=2))
+    print(json.dumps(check(arguments.application, arguments.archive, arguments.output,
+                           retire_test_copies=arguments.retire_checked_test_copies), indent=2))

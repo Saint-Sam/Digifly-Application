@@ -204,8 +204,9 @@ def _effective_hh(circuit: CircuitSpec, neuron_id: str) -> HodgkinHuxleySpec:
 
 
 def _nearest_node_id(morphology: Morphology, point: tuple[float, float, float]) -> int:
+    synthetic = set((morphology.filler_metadata or {}).get("synthetic_node_ids", ()))
     return min(
-        morphology.nodes,
+        (node for node in morphology.nodes if node.node_id not in synthetic),
         key=lambda node: (
             (node.x - point[0]) ** 2
             + (node.y - point[1]) ** 2
@@ -764,6 +765,16 @@ class GenericExperimentAdapter:
                 blocking=True,
             )
         )
+        located = [row for row in (candidate_manifest or {}).get('chemical_edges',()) if row.get('located_contact')]
+        if located:
+            projection = max(row['located_contact']['mapping'][end]['projection_distance_um']
+                             for row in located for end in ('pre','post'))
+            checks.append(_check('located_contact_mapping','Measured contact placement',CheckState.INFO,
+                f'{len(located):,} measured chemical sites. Maximum distance to the original skeleton cable: '
+                f'{projection:.6g} µm. Source points stay unchanged; no contact is assigned to filler. '
+                'The shared local CV mesh adds its own reported discretization offset (target spacing2.5µm). '
+                'Missing branches are not reconstructed. Release uses the declared soma-threshold model, '
+                'not a locally measured terminal event. Inspect these assumptions before biological interpretation.'))
 
         if engine == "bmtk":
             electrical_count = (
@@ -780,7 +791,8 @@ class GenericExperimentAdapter:
                     "bmtk_connectivity",
                     "BMTK BioNet connectivity subset",
                     CheckState.PASS if bmtk_connectivity_ok else CheckState.FAIL,
-                    "BioNet preserves chemical SONATA edges and exact imported electrical sites through a run-owned Digifly serial extension; no electrical contacts are omitted."
+                    f"BioNet preserves chemical SONATA edges and {electrical_count:,} electrical contact(s) through a run-owned Digifly serial extension; no contacts are omitted. "
+                    "Placement follows the declared source or model. Chemical-site gaps are explicit model additions, not measured electrical anatomy."
                     if bmtk_connectivity_ok
                     else "This electrical policy is unsupported. Choose none, ohmic, rectifying or heterotypic rectifying; contacts are never silently dropped or approximated.",
                     blocking=True,
@@ -956,13 +968,15 @@ class GenericExperimentAdapter:
                 neuron_id = morphology.record.neuron_id
                 try:
                     nodes = morphology.nodes
-                    rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes]
+                    rows = regional_worker._SwcRows([(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in nodes], morphology.filler_metadata)
                     data = regional_worker._regional_cell_data(circuit.to_dict(), neuron_id, {n.node_id:n.node_id for n in nodes})
+                    data['electrical_contact_run_node_ids'] = regional_worker._electrical_contact_run_nodes(
+                        candidate_manifest or {},neuron_id,{n.node_id:n.node_id for n in nodes})
                     data["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
                     plan = regional_worker._regional_plan(rows, data)
                     regional_plans[neuron_id] = plan
                     regions = []
-                    if neuron_id in (experiment.recording.target_neuron_ids or circuit.neuron_ids):
+                    if (experiment.recording.record_voltage or experiment.recording.detect_spikes) and neuron_id in (experiment.recording.target_neuron_ids or circuit.neuron_ids):
                         regions.append(experiment.recording.target_region)
                     regions.extend(s.target_region for s in experiment.stimuli if s.enabled and neuron_id in (s.target_neuron_ids or circuit.neuron_ids))
                     for region in regions:
@@ -1029,7 +1043,7 @@ class GenericExperimentAdapter:
 
         recording_ok = (
             experiment.recording.target_region in {"soma", "all", "ais", "selected_compartments"}
-            and (experiment.recording.record_voltage or experiment.recording.detect_spikes)
+            and (experiment.recording.record_voltage or experiment.recording.detect_spikes or experiment.recording.current_tracking != "off")
         )
         checks.append(
             _check(
@@ -1044,6 +1058,16 @@ class GenericExperimentAdapter:
         )
 
         sample_ratio = experiment.duration_ms / experiment.recording.sample_dt_ms
+        from digifly_app.workers.current_tracking import check_mode
+        try:
+            check_mode(asdict(experiment.recording), engine, experiment.workers, experiment.integration_dt_ms)
+            current_detail = "Off: existing voltage/spike recording is unchanged." if experiment.recording.current_tracking == "off" else (
+                "Native NEURON currents, explicit compartment identities and lossless compression. Full includes every electrical compartment of the target neurons; Sparse includes distributed, edited and connection sites. Current traces use nA, separately from voltage.")
+            current_ok = True
+        except ValueError as exc:
+            current_detail, current_ok = str(exc), False
+        checks.append(_check("current_tracking", "Current recording", CheckState.PASS if current_ok else CheckState.FAIL,
+                             current_detail, blocking=True))
         nearest_sample = round(sample_ratio)
         if math.isclose(sample_ratio, nearest_sample, rel_tol=0.0, abs_tol=1e-12):
             sample_ratio = float(nearest_sample)
@@ -1169,6 +1193,94 @@ class GenericExperimentAdapter:
             runtime_safe_fields=("experiment",),
         )
 
+    def _aggregate_chemical_rows(self, circuit, morphology_by_id):
+        """Materialize declared model sites, never anatomical contact locations."""
+        from digifly_app.core.pair_graph import selected_subgraph, sha
+        from digifly_app.workers import generic_experiment_worker as mapping
+
+        if not circuit.connectome.pair_graph_path:
+            raise ValueError("Aggregate placement requires a selected downloaded/imported pair graph")
+        manifest, pairs = selected_subgraph(circuit.connectome, circuit.neuron_ids)
+        if len(circuit.neuron_ids) == 1 and any(row['preId'] == row['postId'] for row in pairs):
+            raise ValueError("A single-cell aggregate autapse requires the network execution path; not supported yet")
+        policy = circuit.chemical_synapse_policy
+        sites = {}
+        rows = []
+        for pair in pairs:
+            post = str(pair['postId'])
+            if post not in sites:
+                morphology = morphology_by_id[post]
+                swc = mapping._SwcRows([(n.node_id, n.swc_type, n.x, n.y, n.z, n.radius, n.parent_id) for n in morphology.nodes], morphology.filler_metadata)
+                cell = mapping._regional_cell_data(circuit.to_dict(), post, {n.node_id:n.node_id for n in morphology.nodes})
+                cell['prefer_rostral_soma'] = morphology.record.family.upper().startswith('DN')
+                sites[post] = mapping._geometric_pair_site(swc, cell,
+                    'ais_pair' if policy.placement_policy == 'aggregate_post_ais' else 'soma_pair')
+            site = sites[post]
+            rows.append({
+                'source_edge_rowid': len(rows) + 1,
+                'source_edge_id': f"aggregate-pair-{pair['preId']}-{pair['postId']}",
+                'pre_id': str(pair['preId']), 'post_id': post,
+                **{f'post_{axis}': value for axis, value in zip('xyz', site['coordinate_um'])},
+                'model_post_source_node_id': site['source_node_id'],
+                'aggregate_connection_count': pair['total_weight'],
+                'neurotransmitter': pair.get('preNt'),
+                'placement_assumption': {
+                    'policy': policy.placement_policy, 'biological_contact': False,
+                    'selection': site['selection'], 'source_count_is_location': False,
+                    'source_count': pair['total_weight'],
+                    'note': 'One modeled Exp2Syn per directed pair at a geometric edge midpoint; transmitter labels do not override the declared reversal.',
+                },
+            })
+        index = Path(circuit.connectome.pair_graph_index).expanduser().resolve()
+        manifest_path = index.parent / 'manifest.json'
+        sources = []
+        for path, expected in ((Path(circuit.connectome.pair_graph_path).expanduser().resolve(), manifest['source_sha256']),
+                               (index, manifest['index_sha256'])):
+            if any(source['path'] == str(path) for source in sources):
+                continue
+            sources.append({'kind': 'sha256_files', 'path': str(path), 'sha256': expected,
+                'manifest_path': str(manifest_path), 'manifest_sha256': sha(manifest_path),
+                'source_scope': manifest.get('source_scope', 'Selected aggregate pair rows only'),
+                'electrical_data': 'not_supplied_by_chemical_count_graph'})
+        return tuple(rows), sources
+
+    def _located_download_rows(self, circuit, morphology_by_id):
+        from digifly_app.core.pair_graph import selected_contact_sites, sha
+        from digifly_app.core.contact_mapping import project_contact
+        manifest, sites = selected_contact_sites(circuit.connectome, circuit.neuron_ids)
+        convention = manifest['contact_coordinate_convention']
+        scale = convention['scale_to_um']
+        rows = []
+        work = sum(len(morphology_by_id[str(row[end+'_body_id'])].segments)
+                   for row in sites for end in ('source','target'))
+        if work > 25_000_000:
+            raise ValueError('Contact mapping exceeds the bounded 25-million cable comparison budget; select fewer neurons')
+        for serial, site in enumerate(sites, 1):
+            mappings = {}
+            for end, body in (('pre','source_body_id'), ('post','target_body_id')):
+                morphology = morphology_by_id[str(site[body])]
+                frame = (morphology.coordinate_transform or {}).get('coordinate_frame')
+                if frame != convention['frame']:
+                    raise ValueError('Contact and skeleton coordinate frames differ; no unit or frame guess is permitted')
+                point = [site[f'{end}_{axis}']*scale for axis in 'xyz']
+                mappings[end] = project_contact(morphology, point)
+            rows.append({'source_edge_rowid':serial,
+                'source_edge_id':f"neuprint-{site['source_body_id']}-{site['target_body_id']}-{site['pre_synapse_id']}-{site['post_synapse_id']}",
+                'pre_id':str(site['source_body_id']), 'post_id':str(site['target_body_id']),
+                **{f'{end}_{axis}':value for end in ('pre','post')
+                   for axis,value in zip('xyz',mappings[end]['measured_coordinate_um'])},
+                'located_contact':{'schema':'digifly-neuprint-located-contact-v1',
+                    'native_site':site, 'coordinate_convention':convention, 'mapping':mappings,
+                    'electrical_anatomy':False},
+                'confidence':{'pre':site['pre_confidence'],'post':site['post_confidence']}})
+        index = Path(circuit.connectome.pair_graph_index).expanduser().resolve()
+        record = index.parent/'manifest.json'
+        sources = [{'kind':'sha256_files','path':str(index),'sha256':manifest['index_sha256'],
+            'manifest_path':str(record),'manifest_sha256':sha(record),
+            'source_scope':manifest.get('source_scope'), 'contact_rows':len(sites),
+            'electrical_data':'Chemical sites only; any colocated gaps are explicitly modeled'}]
+        return tuple(rows), sources
+
     def _edge_manifest(
         self,
         circuit: CircuitSpec,
@@ -1194,7 +1306,10 @@ class GenericExperimentAdapter:
         exact_node_ids: dict[str, dict[tuple[float, float, float], int]] = {}
         for neuron_id, morphology in morphology_by_id.items():
             coordinates: dict[tuple[float, float, float], int] = {}
+            synthetic = set((morphology.filler_metadata or {}).get("synthetic_node_ids", ()))
             for node in morphology.nodes:
+                if node.node_id in synthetic:
+                    continue
                 point = (node.x, node.y, node.z)
                 previous = coordinates.get(point)
                 if previous is None or node.node_id < previous:
@@ -1223,8 +1338,15 @@ class GenericExperimentAdapter:
         edge_catalog = self._edge_catalog(circuit)
         sources: list[dict[str, Any]] = []
         chemical_rows: tuple[dict[str, Any], ...] = ()
+        chemical_policy = circuit.chemical_synapse_policy
         try:
-            if edge_catalog.is_male_cns and not circuit.connectome.pair_graph_path:
+            if chemical_policy.is_aggregate:
+                chemical_rows, aggregate_sources = self._aggregate_chemical_rows(circuit, morphology_by_id)
+                sources.extend(aggregate_sources)
+            elif circuit.connectome.pair_graph_path:
+                chemical_rows, located_sources = self._located_download_rows(circuit, morphology_by_id)
+                sources.extend(located_sources)
+            elif edge_catalog.is_male_cns and not circuit.connectome.pair_graph_path:
                 chemical_rows = self._male_cns_chemical_contacts(
                     edge_catalog, neuron_ids
                 )
@@ -1241,10 +1363,9 @@ class GenericExperimentAdapter:
                 )
                 for first, second in selected_pairs
             )
-            if len(neuron_ids) > 1 and not all_pairs_disabled:
+            if chemical_policy.is_aggregate or (len(neuron_ids) > 1 and not all_pairs_disabled):
                 raise ValueError(str(exc)) from exc
 
-        chemical_policy = circuit.chemical_synapse_policy
         global_kinetics = chemical_policy.kinetics_policy == "global_override"
         chemical_edges: list[dict[str, Any]] = []
         for row in chemical_rows:
@@ -1266,6 +1387,13 @@ class GenericExperimentAdapter:
             source_tau1 = _optional_finite_float(row.get("tau1_ms"))
             source_tau2 = _optional_finite_float(row.get("tau2_ms"))
             source_reversal = _optional_finite_float(row.get("syn_e_rev_mV"))
+            count_factor = (
+                int(row["aggregate_connection_count"])
+                if chemical_policy.is_aggregate and chemical_policy.weight_policy == "count_times_default"
+                else 1
+            )
+            if chemical_policy.is_aggregate and not math.isfinite(chemical_policy.default_weight_uS * chemical_policy.weight_scale * count_factor):
+                raise ValueError("Aggregate synapse strength overflows; reduce the declared model weight or multiplier")
             effective_delay = (
                 chemical_policy.base_release_delay_ms
                 + math.dist(
@@ -1287,13 +1415,14 @@ class GenericExperimentAdapter:
                     "source_edge_id": str(row.get("source_edge_id") or ""),
                     "pre_id": pre_id,
                     "post_id": post_id,
-                    "post_source_node_id": nearest_node_id(
+                    "post_source_node_id": int(row["model_post_source_node_id"]) if chemical_policy.is_aggregate else int(row['located_contact']['mapping']['post']['source_node_id']) if row.get('located_contact') else nearest_node_id(
                         post_id, (post_point[0], post_point[1], post_point[2])
                     ),
                     "post_coordinate_um": list(post_point),
                     "weight_uS": float(
                         (source_weight if source_weight is not None else chemical_policy.default_weight_uS)
                         * chemical_policy.weight_scale
+                        * count_factor
                     ),
                     "delay_ms": float(effective_delay),
                     "tau1_ms": float(
@@ -1308,7 +1437,7 @@ class GenericExperimentAdapter:
                         else chemical_policy.reversal_mV
                     ),
                     "parameter_sources": {
-                        "weight": "connectome_row" if source_weight is not None else "circuit_policy",
+                        "weight": "declared_aggregate_policy" if chemical_policy.is_aggregate else "connectome_row" if source_weight is not None else "circuit_policy",
                         "delay": (
                             "circuit_policy_geometric"
                             if chemical_policy.use_geometric_delay
@@ -1330,15 +1459,47 @@ class GenericExperimentAdapter:
                             "neurotransmitter_probabilities"
                         ),
                     },
+                    **({
+                        "post_source_edge_fraction": 0.5,
+                        "source_connection_count": int(row["aggregate_connection_count"]),
+                        "placement_assumption": row["placement_assumption"],
+                        "weight_assumption": {
+                            "policy": chemical_policy.weight_policy,
+                            "default_weight_uS": chemical_policy.default_weight_uS,
+                            "weight_scale": chemical_policy.weight_scale,
+                            "source_count_is_conductance": False,
+                        },
+                    } if chemical_policy.is_aggregate else {}),
+                    **({'located_contact':row['located_contact'],
+                        'pre_source_node_id':row['located_contact']['mapping']['pre']['source_node_id'],
+                        'pre_coordinate_um':row['located_contact']['mapping']['pre']['measured_coordinate_um'],
+                        'pre_source_edge_fraction':row['located_contact']['mapping']['pre']['source_edge_fraction'],
+                        'post_source_edge_fraction':row['located_contact']['mapping']['post']['source_edge_fraction'],
+                        'release_model':'Declared soma-threshold events; measured pre location retained, not a local release recording'}
+                       if row.get('located_contact') else {}),
                 }
             )
 
         electrical_rows: tuple[dict[str, str], ...] = ()
         gap_policy = circuit.gap_junction_policy
+        modeled_gaps = gap_policy.placement_policy == 'gf_ttmn_chemical_sites'
+        if chemical_policy.is_aggregate and circuit.connectome.pair_graph_path and gap_policy.mode != "none":
+            raise ValueError("The selected aggregate chemical graph supplies no electrical contacts. Choose gap-junction mode None; a native or historical gap source will not be substituted.")
         if len(neuron_ids) > 1 and gap_policy.mode != "none":
             try:
-                electrical_rows = edge_catalog.selected_gap_contacts(neuron_ids)
-                sources.append(edge_catalog.gap_source_record())
+                if modeled_gaps:
+                    if not circuit.connectome.pair_graph_path or chemical_policy.is_aggregate:
+                        raise ValueError('Modeled GF–TTMn gaps require downloaded actual chemical sites, not aggregate proxy sites')
+                    def gf_ttmn(row):
+                        names = {morphology_by_id[str(row[end+'_id'])].record.neuron_type.casefold()
+                                 for end in ('pre','post')}
+                        return 'ttmn' in names and bool(names & {'dnp01','gf','gfc2'})
+                    electrical_rows = tuple(row for row in chemical_rows if row.get('located_contact') and gf_ttmn(row))
+                    if not electrical_rows:
+                        raise ValueError('No measured GF/DNp01–TTMn chemical sites exist in this selected set')
+                else:
+                    electrical_rows = edge_catalog.selected_gap_contacts(neuron_ids)
+                    sources.append(edge_catalog.gap_source_record())
             except ValueError as exc:
                 all_pairs_disabled = all(
                     (
@@ -1374,7 +1535,7 @@ class GenericExperimentAdapter:
                 for neuron_id in (neuron_a, neuron_b):
                     if neuron_id not in geometric_sites:
                         morphology = morphology_by_id[neuron_id]
-                        swc_rows = [(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes]
+                        swc_rows = shared_mapping._SwcRows([(n.node_id,n.swc_type,n.x,n.y,n.z,n.radius,n.parent_id) for n in morphology.nodes], morphology.filler_metadata)
                         cell = shared_mapping._regional_cell_data(circuit.to_dict(),neuron_id,{n.node_id:n.node_id for n in morphology.nodes})
                         cell["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
                         geometric_sites[neuron_id] = shared_mapping._geometric_pair_site(swc_rows,cell,gap_policy.placement_policy)
@@ -1411,8 +1572,8 @@ class GenericExperimentAdapter:
                         "source_edge_rowid": str(row.get("source_edge_rowid") or ""),
                         "pre_id": pre_id,
                         "post_id": post_id,
-                        "pre_source_node_id": nearest_node_id(pre_id, pre_point),
-                        "post_source_node_id": nearest_node_id(post_id, post_point),
+                        "pre_source_node_id": row['located_contact']['mapping']['pre']['source_node_id'] if modeled_gaps else nearest_node_id(pre_id, pre_point),
+                        "post_source_node_id": row['located_contact']['mapping']['post']['source_node_id'] if modeled_gaps else nearest_node_id(post_id, post_point),
                         "pre_coordinate_um": list(pre_point),
                         "post_coordinate_um": list(post_point),
                         "coordinate_sources": {
@@ -1421,6 +1582,15 @@ class GenericExperimentAdapter:
                         },
                         "source_g_uS": float(row.get("g_uS") or 0.0),
                         "effective_g_uS": float(per_contact_g),
+                        **({'located_contact':row['located_contact'],
+                            'pre_source_edge_fraction':row['located_contact']['mapping']['pre']['source_edge_fraction'],
+                            'post_source_edge_fraction':row['located_contact']['mapping']['post']['source_edge_fraction'],
+                            'modeled_electrical':True,
+                            'placement_assumption':{'policy':'gf_ttmn_chemical_sites','biological_electrical_contact':False,
+                                'chemical_site_id':row['source_edge_id'],
+                                'note':'User-selected modeled GF/DNp01–TTMn gap at both measured chemical endpoints. '
+                                       'Chemical coordinates do not establish electrical anatomy or strength.'}}
+                           if modeled_gaps else {}),
                     }
                 )
             electrical_edges.append(
@@ -1456,9 +1626,13 @@ class GenericExperimentAdapter:
             "chemical_synapse_policy": chemical_policy.to_dict(),
             "gap_junction_policy": gap_policy.to_dict(),
             "mapping_policy": {
-                "chemical": "Map each imported post_xyz coordinate to the nearest source SWC node.",
+                "chemical": ("Measured downloaded coordinates retained; project onto the nearest original real SWC cable, "
+                             "never filler. Shared contact CV mapping and its discretization offset are reported."
+                             if any(row.get('located_contact') for row in chemical_rows) else
+                             "Map each imported post_xyz coordinate to the nearest source SWC node."),
                 "electrical": (
-                    f"One explicitly synthetic geometric {gap_policy.placement_policy} midpoint per imported connected pair; no anatomical contact claim."
+                    "Modeled GF/DNp01–TTMn gaps at the same measured chemical endpoints; not measured electrical anatomy."
+                    if modeled_gaps else f"One explicitly synthetic geometric {gap_policy.placement_policy} midpoint per imported connected pair; no anatomical contact claim."
                     if gap_policy.placement_policy != "imported_contact_sites" else
                     "Map imported pre_xyz to the presynaptic source SWC and imported post_xyz "
                     "to the postsynaptic source SWC; only a missing endpoint falls back to its peer."
@@ -1503,7 +1677,7 @@ class GenericExperimentAdapter:
             "arbor_channel_translator": {
                 "path": str(worker_path("arbor_channel_translation.py")),
                 "sha256": _file_sha256(worker_path("arbor_channel_translation.py")),
-            } if experiment.engine == "arbor" and any(m.active_channels for m in _effective_membrane_specs(circuit)) else {},
+            } if experiment.engine == "arbor" else {},
             "native_builder": {
                 "path": str(self.neuron_gap_builder_path),
                 "sha256": _file_sha256(self.neuron_gap_builder_path),

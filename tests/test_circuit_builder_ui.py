@@ -65,6 +65,30 @@ class _OverviewStub:
         self.workspace_edit = QLineEdit(str(root))
 
 
+def test_gap_policy_status_distinguishes_modeled_chemical_sites_from_imported_electrical(tmp_path):
+    application=QApplication.instance() or QApplication([])
+    page=CircuitBuilderPage(_OverviewStub(tmp_path))
+    messages=[]
+    page.status_message.connect(messages.append)
+    try:
+        page.gap_mode_combo.setCurrentIndex(page.gap_mode_combo.findData('ohmic'))
+        page.gap_placement_combo.setCurrentIndex(page.gap_placement_combo.findData('gf_ttmn_chemical_sites'))
+        page.apply_gap_policy()
+        assert page.spec.gap_junction_policy.placement_policy=='gf_ttmn_chemical_sites'
+        assert 'modeled GF–TTMn' in messages[-1] and 'chemical endpoints' in messages[-1]
+        assert 'Run will validate' in messages[-1] and 'no measured electrical anatomy' in messages[-1]
+        assert 'connectivity is not loaded' not in messages[-1]
+        page.gap_placement_combo.setCurrentIndex(page.gap_placement_combo.findData('imported_contact_sites'))
+        page.apply_gap_policy()
+        assert 'imported electrical contacts' in messages[-1] and 'before attaching gaps' in messages[-1]
+        page.gap_mode_combo.setCurrentIndex(page.gap_mode_combo.findData('none'))
+        page.apply_gap_policy()
+        assert messages[-1]=='Cleared the all-electrical-edge gap-junction policy'
+    finally:
+        page.close()
+        application.processEvents()
+
+
 def _await_saved_inventory(page):
     # New connectome-wide indexing is deliberately asynchronous; a disabled
     # Load button cannot be bypassed by calling its slot in a unit fixture.
@@ -90,6 +114,128 @@ def test_chemical_kinetics_choice_roundtrips_explicit_source_precedence(tmp_path
         page._set_chemical_policy(type(policy).from_dict(policy.to_dict()))
         assert page.chemical_kinetics_policy.currentData() == "global_override"
         assert "Override every contact" in page.chemical_kinetics_policy.currentText()
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_explicit_downloaded_count_model_roundtrips_all_editable_choices(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        assert not page.chemical_aggregate_basis.isEnabled()
+        for placement in ("aggregate_post_soma", "aggregate_post_ais"):
+            page.chemical_placement.setCurrentIndex(page.chemical_placement.findData(placement))
+            for basis in ("count_times_default", "per_pair_default"):
+                page.chemical_aggregate_basis.setCurrentIndex(page.chemical_aggregate_basis.findData(basis))
+                page.chemical_default_weight.setValue(0.002)
+                page.apply_chemical_policy()
+                policy = page.spec.chemical_synapse_policy
+                assert policy.placement_policy == placement and policy.weight_policy == basis
+                assert policy.default_weight_uS == 0.002
+                assert policy.aggregation_policy == "one_exp2syn_per_pair"
+                assert page.chemical_aggregate_basis.isEnabled()
+                page._set_chemical_policy(type(policy).from_dict(policy.to_dict()))
+                assert page._read_chemical_policy() == policy
+        page.chemical_placement.setCurrentIndex(0)
+        assert page._read_chemical_policy().weight_policy == "source_or_default_per_contact"
+        assert not page.chemical_aggregate_basis.isEnabled()
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_fragment_preview_requires_separate_confirmation_and_keeps_original(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    path = tmp_path / "1.swc"
+    path.write_text("1 1 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 0.8 -1\n21 2 10 0 0 0.8 20\n")
+    original = path.read_bytes()
+    report = analyze_swc(path)
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    previews = []
+    def decline(message):
+        previews.append(message)
+        return module.QMessageBox.StandardButton.No
+    try:
+        monkeypatch.setattr(page, "_confirm_fragment_join", decline)
+        assert page._offer_fragment_join(report) == (True, "")
+        assert len(list(tmp_path.glob("*.swc"))) == 1
+        assert "total volume" in previews[0] and "change electrical conduction" in previews[0]
+        monkeypatch.setattr(page, "_confirm_fragment_join", lambda *args: module.QMessageBox.StandardButton.Yes)
+        reviewed, joined = page._offer_fragment_join(report)
+        assert reviewed and Path(joined).is_file()
+        assert path.read_bytes() == original
+        morphology = load_swc(NeuronRecord("1", "MN", "test", joined, "custom:test"))
+        assert sum(node.parent_id < 0 for node in morphology.nodes) == 1
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_explicit_axon_bridge_review_keeps_original_and_selects_only_requested_copy(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc, record_review_decision
+    from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    raw = tmp_path / 'DN/test/1/1.swc'
+    raw.parent.mkdir(parents=True)
+    raw.write_text('# units: um\n1 2 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n')
+    report = analyze_swc(raw)
+    old = save_fragment_join(plan_fragment_join(report))
+    record_review_decision(report, action='keep', fragments_reviewed=True, joined_copy=str(old))
+    kept = {path: path.read_bytes() for path in (raw, old)}
+    record = NeuronRecord('1','DN','test',str(old),'library:fixture')
+    morphology = load_swc(record)
+    source = ConnectomeRef(key='library:fixture', label='fixture', root=str(tmp_path), dataset='fixture:v1',
+        server='https://fixture.example', swc_paths={'1':str(old)})
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    try:
+        page.spec = CircuitSpec(connectome=source, neuron_ids=('1',), morphology_sha256={'1':hashlib.sha256(old.read_bytes()).hexdigest()})
+        page.loaded_records = {'1':record}
+        page.loaded_morphologies = {'1':morphology}
+        previews=[]
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('1',True))
+        monkeypatch.setattr(page,'_confirm_fragment_join',lambda message:(previews.append(message) or module.QMessageBox.StandardButton.Yes))
+        page.bridge_review_button.click()
+        assert len(previews)==1 and 'Axon-aware comparison' in previews[0]
+        assert 'calculated axial resistance' in previews[0]
+        chosen = Path(page.spec.connectome.swc_paths['1'])
+        assert chosen.name == '1_axon_aware_fragment_healed.swc' and chosen.is_file()
+        assert page.spec.morphology_sha256['1'] == hashlib.sha256(chosen.read_bytes()).hexdigest()
+        assert all(path.read_bytes()==data for path,data in kept.items())
+        assert page.spec.hh == CircuitSpec().hh and page.spec.neuron_ids == ('1',)
+    finally:
+        page.close()
+        application.processEvents()
+
+
+def test_axon_bridge_review_rejects_unknown_ids_and_existing_filler_edits(tmp_path, monkeypatch):
+    from digifly_app.core.swc_quality import analyze_swc
+    from digifly_app.core.swc_fragments import plan_fragment_join, save_fragment_join
+    from digifly_app.ui import circuit_builder as module
+    application = QApplication.instance() or QApplication([])
+    raw = tmp_path/'1.swc'
+    raw.write_text('# units: um\n1 2 0 0 0 1 -1\n2 2 2 0 0 1 1\n20 2 8 0 0 .8 -1\n21 2 10 0 0 .8 20\n')
+    old = save_fragment_join(plan_fragment_join(analyze_swc(raw)))
+    record = NeuronRecord('1','DN','test',str(old),'custom:fixture')
+    morph = load_swc(record)
+    page = CircuitBuilderPage(_OverviewStub(tmp_path))
+    messages=[]
+    page.status_message.connect(messages.append)
+    try:
+        page.spec = CircuitSpec(neuron_ids=('1',), morphology_sha256={'1':hashlib.sha256(old.read_bytes()).hexdigest()})
+        page.loaded_records={'1':record};page.loaded_morphologies={'1':morph}
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('missing',True))
+        page.bridge_review_button.click()
+        assert 'explicit IDs' in messages[-1]
+        filler = morph.filler_metadata['filler_edge_child_ids'][0]
+        page.spec.compartment_overrides={'1':{str(filler):{}}}
+        monkeypatch.setattr(module.QInputDialog,'getText',lambda *a,**k:('1',True))
+        page.bridge_review_button.click()
+        assert 'earlier filler' in messages[-1]
+        assert not raw.with_name('1_axon_aware_fragment_healed.swc').exists()
     finally:
         page.close()
         application.processEvents()
@@ -226,7 +372,7 @@ def _pair_ui_workspace(tmp_path: Path) -> Path:
     return public
 
 
-def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp_path):
+def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp_path, monkeypatch):
     swc = (
         tmp_path
         / "Phase 1"
@@ -316,6 +462,10 @@ def test_circuit_builder_assembles_local_swc_and_stores_compartment_override(tmp
         assert page.spec.gap_junction_policy.mode == "heterotypic_rectifying"
         assert "Arbor 0.12.2 equation translations" in page.mechanism_capability_label.text()
 
+        # This step deliberately replaces this owned fixture's edited cell set;
+        # ordinary users now get an explicit Cancel/Discard question first.
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, 'question', lambda *a: QMessageBox.StandardButton.Discard)
         page.query_edit.setText("99999")
         page.query_edit.textEdited.emit("99999")
         assert page.viewport.neuron_count == 0

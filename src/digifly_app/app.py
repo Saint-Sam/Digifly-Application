@@ -80,15 +80,47 @@ def main() -> int:
         parser = argparse.ArgumentParser()
         parser.add_argument("--library-ui-review", type=Path, required=True)
         parser.add_argument("--workspace", type=Path, required=True)
+        parser.add_argument("--existing-profile", type=Path)
         args = parser.parse_args()
-        return run_library_review(args.library_ui_review, args.workspace)
-    if len(sys.argv) > 1 and sys.argv[1] == "--package-library-test":
+        return run_library_review(args.library_ui_review, args.workspace,args.existing_profile)
+    if len(sys.argv) > 1 and sys.argv[1] in ("--package-library-test", "--package-results-test"):
         import argparse
         from digifly_app.ui.package_library_smoke import run_library_smoke
         parser = argparse.ArgumentParser()
-        parser.add_argument("--package-library-test", type=Path, required=True)
+        mode=sys.argv[1]
+        parser.add_argument(mode, dest='destination', type=Path, required=True)
         args = parser.parse_args()
-        return run_library_smoke(args.package_library_test)
+        from digifly_app.ui.student_readiness_check import capture_qt_callback_errors
+        with capture_qt_callback_errors() as callback_errors:
+            if mode=='--package-results-test':
+                from digifly_app.ui.package_results_smoke import run_results_smoke
+                result=run_results_smoke(args.destination)
+            else:
+                result=run_library_smoke(args.destination)
+            import json
+            import traceback
+            from digifly_app.ui.fragment_review_check import check_fragment_record_roundoff
+            receipt_path=args.destination/'receipt.json'
+            if not receipt_path.is_file():
+                return result or 1
+            receipt=json.loads(receipt_path.read_text())
+            if not result:
+                try:
+                    check_fragment_record_roundoff(args.destination)
+                    receipt['fragment_derived_roundoff_guard']=True
+                    from digifly_app.ui.student_readiness_check import check_student_safety
+                    receipt.update(check_student_safety(args.destination/'student-safety-check'))
+                except Exception:
+                    receipt['ok']=False
+                    receipt['error']=traceback.format_exc()
+                    result=1
+            receipt['qt_callback_errors']=callback_errors
+            receipt['student_no_unhandled_qt_callbacks']=not callback_errors
+            if callback_errors:
+                receipt['ok']=False
+                result=1
+            receipt_path.write_text(json.dumps(receipt,indent=2)+'\n')
+            return result
     if len(sys.argv) > 1 and sys.argv[1] == "--package-neuron-test":
         import argparse
         from digifly_app.ui.package_neuron_smoke import run_neuron_package_smoke

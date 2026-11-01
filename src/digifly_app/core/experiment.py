@@ -116,12 +116,15 @@ class RecordingSpec:
     sample_dt_ms: float = 0.05
     spike_threshold_mV: float = -20.0
     make_plots: bool = True
+    current_tracking: str = "off"
 
     def errors(self) -> list[str]:
         errors: list[str] = []
         if self.target_region not in {"all", "soma", "ais", "selected_compartments"}:
             errors.append(f"Unsupported recording region {self.target_region!r}.")
-        if not self.record_voltage and not self.detect_spikes:
+        if self.current_tracking not in {"off", "sparse", "full"}:
+            errors.append("Choose Off, Sparse or Full current tracking.")
+        if not self.record_voltage and not self.detect_spikes and self.current_tracking == "off":
             errors.append("Enable at least one recording output.")
         if self.sample_dt_ms <= 0:
             errors.append("Recording sample interval must be positive.")
@@ -178,12 +181,16 @@ class ExperimentSpec:
         fields = cls.__dataclass_fields__
         values = {key: value for key, value in payload.items() if key in fields}
         values["schema_version"] = version
-        values["stimuli"] = tuple(
-            StimulusSpec.from_dict(item) for item in payload.get("stimuli", ())
-        ) or _default_stimuli()
-        values["conditions"] = tuple(
-            ConditionSpec.from_dict(item) for item in payload.get("conditions", ())
-        ) or _default_conditions()
+        # Missing legacy fields receive defaults. Explicitly empty lists are
+        # unfinished drafts, not permission to enable a different experiment.
+        values["stimuli"] = (
+            tuple(StimulusSpec.from_dict(item) for item in payload["stimuli"])
+            if "stimuli" in payload else _default_stimuli()
+        )
+        values["conditions"] = (
+            tuple(ConditionSpec.from_dict(item) for item in payload["conditions"])
+            if "conditions" in payload else _default_conditions()
+        )
         raw_recording = payload.get("recording") or {}
         values["recording"] = RecordingSpec.from_dict(raw_recording)
         return cls(**values)
@@ -231,8 +238,10 @@ class ExperimentSpec:
         if len(names) != len(set(names)):
             errors.append("Condition names must be unique.")
         for stimulus in self.stimuli:
-            errors.extend(stimulus.errors())
-            if stimulus.enabled and stimulus.final_offset_ms > self.duration_ms:
+            stimulus_errors = stimulus.errors()
+            errors.extend(stimulus_errors)
+            if (stimulus.enabled and not stimulus_errors
+                    and stimulus.final_offset_ms > self.duration_ms):
                 errors.append(
                     f"Stimulus {stimulus.name!r} ends after the simulation duration."
                 )

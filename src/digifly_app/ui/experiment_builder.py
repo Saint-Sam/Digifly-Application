@@ -164,7 +164,12 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Cell-type names such as TTMn are not IDs; use Circuit Builder to select a type. "
         "Leave blank to record every circuit neuron."
     ),
-    "recording_region": "Morphological region from which signals will be sampled.",
+    "recording_region": (
+        "Morphological region from which signals will be sampled. All compartments "
+        "records each mapped SWC edge midpoint, not a copy of soma voltage. Large "
+        "recordings and maps are saved with lossless compression; sample interval "
+        "and numeric precision are unchanged."
+    ),
     "signals": "Choose which simulator signals and events are saved for analysis.",
     "record_voltage": "Record membrane voltage traces from the selected neurons and region.",
     "detect_spikes": "Detect and save spike-event times using the configured voltage threshold.",
@@ -465,7 +470,9 @@ class ExperimentBuilderPage(QWidget):
         self.pulse_width = _double_spin(
             0.000001, 10_000_000.0, 0.4, decimals=6, suffix=" ms"
         )
-        self.frequency = _double_spin(0.000001, 1_000_000.0, 100.0, suffix=" Hz")
+        self.frequency = _double_spin(
+            0.000001, 1_000_000.0, 100.0, decimals=6, suffix=" Hz"
+        )
         self.pulse_count = QSpinBox()
         self.pulse_count.setRange(1, 1_000_000)
         self.pulse_count.setValue(10)
@@ -598,6 +605,18 @@ class ExperimentBuilderPage(QWidget):
         self.record_voltage.setChecked(True)
         self.detect_spikes = QCheckBox("Spike events")
         self.detect_spikes.setChecked(True)
+        self.current_tracking = QComboBox()
+        self.current_tracking.setAccessibleName("Current tracking")
+        self.current_tracking.addItem("Off", "off")
+        self.current_tracking.addItem("Sparse · sample sites + connections", "sparse")
+        self.current_tracking.addItem("Full · every electrical compartment", "full")
+        self.current_tracking.setToolTip(
+            "NEURON: Sparse saves soma, up to seven distributed compartment centers, "
+            "edited compartments, and stimulation/connection sites in the target neurons. "
+            "Full saves every electrical compartment, regardless of the voltage target region. "
+            "Includes membrane, available ion/leak, capacitive, axial, injected and connection currents. "
+            "Uses the sample interval below. Old projects default to Off."
+        )
         outputs = QWidget()
         output_row = QHBoxLayout(outputs)
         output_row.setContentsMargins(0, 0, 0, 0)
@@ -624,6 +643,7 @@ class ExperimentBuilderPage(QWidget):
             self.recording_region,
         )
         add_help_row(recording_form, "signals", "Signals", outputs)
+        recording_form.addRow("Current tracking", self.current_tracking)
         add_help_row(recording_form, "sample_dt", "Sample interval", self.sample_dt)
         add_help_row(
             recording_form,
@@ -834,6 +854,7 @@ class ExperimentBuilderPage(QWidget):
             self.recording_region,
             self.record_voltage,
             self.detect_spikes,
+            self.current_tracking,
             self.sample_dt,
             self.spike_threshold,
             self.make_plots,
@@ -849,6 +870,11 @@ class ExperimentBuilderPage(QWidget):
             make_label_copyable(label)
 
     def _connect_change(self, control: QWidget) -> None:
+        if isinstance(control, QLineEdit):
+            # Accessibility clients also edit through setText, which does not
+            # emit textEdited. Bulk restore is already guarded by _restoring.
+            control.textChanged.connect(self._invalidate)
+            return
         for signal_name in (
             "textEdited",
             "valueChanged",
@@ -927,14 +953,43 @@ class ExperimentBuilderPage(QWidget):
             compartments = sum(
                 len(values) for values in self._circuit.compartment_overrides.values()
             )
+            chemical = self._circuit.chemical_synapse_policy
+            aggregate_note = (
+                f"Explicit model: {chemical.placement_policy}; "
+                f"{chemical.default_weight_uS:g} µS {'per source count' if chemical.weight_policy == 'count_times_default' else 'per directed pair'} "
+                f"× {chemical.weight_scale:g}; delay {chemical.default_delay_ms:g} ms; "
+                f"rise/decay {chemical.tau1_ms:g}/{chemical.tau2_ms:g} ms; reversal {chemical.reversal_mV:g} mV. "
+                "Sites/strengths are assumed, not measured. Electrical data is not supplied by this count graph. "
+                if chemical.is_aggregate else
+                "Choose an explicit count-to-strength and placement model in Circuit Builder’s Chemical-synapse policy before running. "
+            )
+            connectivity_note=''
+            if self._circuit.connectome.pair_graph_path:
+                source=self._circuit.connectome
+                prefix=f'\nConnectivity: {Path(source.pair_graph_path).name} · '
+                try:
+                    from digifly_app.core.pair_graph import graph_manifest_metadata
+                    info=graph_manifest_metadata(source)
+                    if info.get('contact_coordinates_in_file') is True:
+                        complete={int(n) for n in self._circuit.neuron_ids}.issubset(info.get('contact_covered_body_ids',()))
+                        connectivity_note=prefix+f"{info['contact_rows']:,} measured pre/post chemical sites in the saved revision. "
+                        connectivity_note+=(('Current chemical policy still uses the explicitly assumed aggregate model. '+aggregate_note)
+                            if chemical.is_aggregate else
+                            'Use measured-contact placement; original points are retained with cable/CV mapping offsets. '
+                            'Strength, kinetics and soma-threshold release remain declared models. ')
+                        if not complete:
+                            connectivity_note+='Locations are not checked for every selected neuron; refresh connectivity in Data Library. '
+                        connectivity_note+='Modeled chemical-site gaps are not measured electrical anatomy. '
+                    else:
+                        connectivity_note=prefix+'counts only; no measured chemical sites. '+aggregate_note
+                    connectivity_note+='Run preflight checks file identity, selected coverage and units. No other contact source will be substituted.'
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    connectivity_note=prefix+'source details unavailable: '+str(exc)+'. No other contact source will be substituted.'
             self.circuit_detail.setText(
                 f"Neuron IDs: {', '.join(self._circuit.neuron_ids[:12])}"
                 + (" …" if count > 12 else "")
                 + f"\nNeuron overrides: {overrides} · compartment overrides: {compartments} · design schema: {self._circuit.schema_version}"
-                + (f"\nConnectivity: {Path(self._circuit.connectome.pair_graph_path).name} · aggregate pair table. "
-                   "Connected simulation requires a weight, kinetics and placement policy; not implemented yet. "
-                   "No other contact source will be substituted."
-                   if self._circuit.connectome.pair_graph_path else "")
+                + connectivity_note
             )
         else:
             self.circuit_state.set_state(CheckState.WARNING, text="NO CIRCUIT")
@@ -1070,10 +1125,6 @@ class ExperimentBuilderPage(QWidget):
         return CircuitSpec.from_dict(self._circuit.to_dict())
 
     def config(self) -> ExperimentSpec:
-        raw_scales = self.mechanism_scales.text().strip() or "{}"
-        parsed_scales = json.loads(raw_scales)
-        if not isinstance(parsed_scales, dict):
-            raise ValueError("Mechanism scales must be a JSON object.")
         conditions: list[ConditionSpec] = []
         if self.control_enabled.isChecked():
             conditions.append(
@@ -1084,6 +1135,15 @@ class ExperimentBuilderPage(QWidget):
                 )
             )
         if self.manipulation_enabled.isChecked():
+            if self.manipulation_name.text().strip().casefold() == "control":
+                raise ValueError(
+                    "The comparison name 'Control' is reserved for the reference condition. "
+                    "Choose another comparison name."
+                )
+            raw_scales = self.mechanism_scales.text().strip() or "{}"
+            parsed_scales = json.loads(raw_scales)
+            if not isinstance(parsed_scales, dict):
+                raise ValueError("Mechanism scales must be a JSON object.")
             conditions.append(
                 ConditionSpec(
                     name=self.manipulation_name.text().strip(),
@@ -1119,6 +1179,7 @@ class ExperimentBuilderPage(QWidget):
             sample_dt_ms=self.sample_dt.value(),
             spike_threshold_mV=self.spike_threshold.value(),
             make_plots=self.make_plots.isChecked(),
+            current_tracking=str(self.current_tracking.currentData()),
         )
         return ExperimentSpec(
             name=self.name_edit.text().strip(),
@@ -1165,7 +1226,7 @@ class ExperimentBuilderPage(QWidget):
             self.frequency.setValue(stimulus.frequency_hz)
             self.pulse_count.setValue(stimulus.pulse_count)
             control = next(
-                (item for item in config.conditions if item.name.casefold() == "control"),
+                (item for item in config.conditions if item.name.strip().casefold() == "control"),
                 None,
             )
             manipulation = next(
@@ -1192,6 +1253,7 @@ class ExperimentBuilderPage(QWidget):
             )
             self.record_voltage.setChecked(recording.record_voltage)
             self.detect_spikes.setChecked(recording.detect_spikes)
+            self.current_tracking.setCurrentIndex(max(0, self.current_tracking.findData(recording.current_tracking)))
             self.sample_dt.setValue(recording.sample_dt_ms)
             self.spike_threshold.setValue(recording.spike_threshold_mV)
             self.make_plots.setChecked(recording.make_plots)
@@ -1205,6 +1267,11 @@ class ExperimentBuilderPage(QWidget):
 
     def validate_draft(self) -> None:
         self.validation_state.setToolTip("")
+        pending = getattr(self, 'unapplied_circuit_settings', lambda: '')()
+        if pending:
+            self.validation_state.setText(pending)
+            self.status_message.emit(pending)
+            return
         try:
             config = self.config()
             errors = config.errors(self._circuit)
@@ -1223,6 +1290,16 @@ class ExperimentBuilderPage(QWidget):
             )
         if errors:
             self.validation_state.setText(f"{len(errors)} issue(s) · {errors[0]}")
+            self.status_message.emit(self.validation_state.text())
+            return
+        matches = self._update_name_availability()
+        if matches:
+            self.validation_state.setText(
+                f"Name already used · rename {config.name!r} before running"
+            )
+            self.validation_state.setToolTip(
+                f"A saved job already uses this name: {matches[0]}. No files were changed."
+            )
             self.status_message.emit(self.validation_state.text())
             return
         self.validation_state.setText("Checking simulator readiness…")
@@ -1267,6 +1344,10 @@ class ExperimentBuilderPage(QWidget):
         self.status_message.emit(self.validation_state.text())
 
     def request_run(self) -> None:
+        pending = getattr(self, 'unapplied_circuit_settings', lambda: '')()
+        if pending:
+            self._show_not_ready(pending)
+            return
         if getattr(self, "runtime_busy", lambda: False)():
             QMessageBox.warning(self, "Scientific run already active", "Finish or safely stop the active replication run first.")
             return
@@ -1752,6 +1833,7 @@ class ExperimentBuilderPage(QWidget):
     def _invalidate(self, *_args: Any) -> None:
         if self._restoring:
             return
+        self._sync_setting_availability()
         self._update_stimulus_preview()
         self._update_target_region_preview()
         if self._process is not None:
@@ -1762,3 +1844,18 @@ class ExperimentBuilderPage(QWidget):
             self.experiment_changed.emit(self.config())
         except Exception:
             pass
+
+    def _sync_setting_availability(self) -> None:
+        """Inactive choices keep their editing values but cannot affect a run."""
+        for control in (self.control_gap_enabled, self.control_chemical_enabled):
+            control.setEnabled(self.control_enabled.isChecked())
+        for control in (
+            self.manipulation_name, self.manip_gap_enabled,
+            self.manip_chemical_enabled, self.disabled_neurons,
+            self.stimulus_scale, self.mechanism_scales,
+        ):
+            control.setEnabled(self.manipulation_enabled.isChecked())
+        pulse_train = self.waveform_combo.currentData() == "pulse_train"
+        self.frequency.setEnabled(pulse_train)
+        self.pulse_count.setEnabled(pulse_train)
+        self.spike_threshold.setEnabled(self.detect_spikes.isChecked())

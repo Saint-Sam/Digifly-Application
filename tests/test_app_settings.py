@@ -45,3 +45,18 @@ def test_native_runner_preserves_normal_child_outcome(monkeypatch):
     monkeypatch.setattr(subprocess, 'run', lambda *a, **k: expected)
     result, timed_out = run_child(['fixture'], '.', {})
     assert result is expected and not timed_out
+
+
+def test_native_fixture_failure_keeps_receipt_without_unsafe_timed_python_dump(tmp_path,monkeypatch):
+    import json
+    import faulthandler
+    from digifly_app.ui.package_library_smoke import run_library_smoke
+    import digifly_app.core.resource_profile as profiles
+    def refused(*args,**kwargs):raise AssertionError('Unsafe timed traceback was armed')
+    monkeypatch.setattr(faulthandler,'dump_traceback_later',refused)
+    def fail_profile(*args,**kwargs):raise ValueError('intentional profile failure')
+    monkeypatch.setattr(profiles,'make_standalone_profile',fail_profile)
+    destination=tmp_path/'fixture'
+    assert run_library_smoke(destination)==1
+    record=json.loads((destination/'receipt.json').read_text())
+    assert not record['ok'] and 'intentional profile failure' in record['error']

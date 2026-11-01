@@ -149,6 +149,13 @@ if [[ -e "$candidate_root" ]]; then
   echo "Refusing to overwrite stale release candidate at $candidate_root" >&2
   exit 2
 fi
+
+# Check the reviewed notice-only directory before copying or compiling. Validate
+# the same bytes again during final staging to catch changes while building.
+if [[ -n "${DIGIFLY_MAC_NOTICE_SOURCE:-}" ]]; then
+  "$source_python" "$project_dir/scripts/stage_macos_notices.py" \
+    --source "$DIGIFLY_MAC_NOTICE_SOURCE" --validate-only
+fi
 if [[ "$build_mode" == "developer-id" && -e "$release_zip" ]]; then
   echo "Refusing to overwrite existing Developer ID release archive at $release_zip" >&2
   exit 2
@@ -263,6 +270,10 @@ cp "$stage_root/src/digifly_app/assets/CONNECTOME_PICTURES.md" "$stage_bundle/Co
 # One-shot external scalable supervisor is executable source, not compiled UI.
 cp "$stage_root/src/digifly_app/workers/pair_graph_import_worker.py" \
   "$stage_bundle/Contents/MacOS/digifly_app/workers/pair_graph_import_worker.py"
+cp "$stage_root/src/digifly_app/workers/result_storage.py" \
+  "$stage_bundle/Contents/MacOS/digifly_app/workers/result_storage.py"
+cp "$stage_root/src/digifly_app/workers/current_tracking.py" \
+  "$stage_bundle/Contents/MacOS/digifly_app/workers/current_tracking.py"
 cp "$stage_root/src/digifly_app/workers/pdcm_bionet_scalable_app_worker.py" \
   "$stage_bundle/Contents/MacOS/digifly_app/workers/pdcm_bionet_scalable_app_worker.py"
 cp "$stage_root/src/digifly_app/workers/pdcm_bionet_5pct_app_worker.py" \
@@ -313,7 +324,11 @@ if [[ "$build_mode" == "developer-id" ]]; then
   /usr/bin/ditto "$stage_bundle" "$candidate_bundle"
   "$project_dir/scripts/sign_macos_app.sh" "$candidate_bundle"
 else
-  rsync -a "$stage_bundle/" "$candidate_bundle/"
+  # Staging and dist share the APFS volume already required by the environment
+  # clone above. Keep a separately signed candidate without another full copy
+  # of its unchanged libraries; the final signature and artifact audits still
+  # check that exact candidate before promotion.
+  /bin/cp -cR "$stage_bundle" "$candidate_bundle"
   # Ad-hoc signatures on some nested bundle resources are stored in extended
   # attributes that macOS's bundled rsync does not preserve with -a. Sign again
   # on the release filesystem, then verify that exact candidate.

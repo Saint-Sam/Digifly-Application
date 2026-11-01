@@ -15,7 +15,7 @@ from .connectomes import NeuronRecord, unwrapped_connectome_key
 from .swc_units import source_coordinate_contract
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SwcNode:
     node_id: int
     swc_type: int
@@ -26,7 +26,7 @@ class SwcNode:
     parent_id: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SwcSegment:
     child_id: int
     parent_id: int
@@ -43,6 +43,7 @@ class Morphology:
     segments: tuple[SwcSegment, ...]
     bounds: tuple[float, float, float, float, float, float]
     coordinate_transform: dict[str, Any] | None = None
+    filler_metadata: dict[str, Any] | None = None
 
     @property
     def center(self) -> tuple[float, float, float]:
@@ -86,6 +87,17 @@ def locate_soma(morphology: Morphology) -> SomaLocation:
     geometry fall back to an endpoint or the morphology center.
     """
 
+    if morphology.filler_metadata:
+        from dataclasses import replace
+        metadata = morphology.filler_metadata
+        synthetic = set(metadata["synthetic_node_ids"])
+        roots = set(metadata["original_root_ids"])
+        filler_edges = set(metadata["filler_edge_child_ids"])
+        return locate_soma(replace(morphology,
+            nodes=tuple(replace(n, parent_id=-1) if n.node_id in roots else n
+                        for n in morphology.nodes if n.node_id not in synthetic),
+            segments=tuple(s for s in morphology.segments if s.child_id not in filler_edges),
+            filler_metadata=None))
     nodes = morphology.nodes
     family = str(morphology.record.family).strip().upper()
     connectome_key = unwrapped_connectome_key(morphology.record.connectome_key)
@@ -158,7 +170,8 @@ def locate_soma(morphology: Morphology) -> SomaLocation:
 
 
 def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
-             allow_point_preview: bool = False) -> Morphology:
+             allow_point_preview: bool = False, check=lambda: None,
+             reuse_from: Morphology | None = None) -> Morphology:
     """Read an SWC without healing; execution remains single-root by default.
 
     A visualization caller may preserve disconnected release components. This
@@ -166,12 +179,40 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
     A separately opted-in point-only preview preserves a published skeleton
     with no branches; execution still requires drawable segments by default.
     """
+    # A saved-result reader may yield/cancel within one large neuron, not only
+    # between neurons. Ordinary morphology callers retain the no-op default.
+    check()
+    from digifly_app.workers.generic_experiment_worker import _read_filler_metadata
     path = Path(record.swc_path).expanduser().resolve()
     coordinate_transform = source_coordinate_contract(path)
     scale = float(coordinate_transform["scale_to_um"])
+    reusable_nodes = {}
+    reusable_segments = {}
+    if (type(reuse_from) is Morphology
+            and reuse_from.record.neuron_id == record.neuron_id
+            and reuse_from.record.connectome_key == record.connectome_key
+            and type(reuse_from.nodes) is tuple and type(reuse_from.segments) is tuple):
+        for index, node in enumerate(reuse_from.nodes):
+            if index % 256 == 0: check()
+            if type(node) is not SwcNode:
+                reusable_nodes.clear()
+                break
+            reusable_nodes[node.node_id] = node
+        if len(reusable_nodes) != len(reuse_from.nodes):
+            reusable_nodes.clear()
+        for index, segment in enumerate(reuse_from.segments):
+            if index % 256 == 0: check()
+            if type(segment) is not SwcSegment:
+                reusable_segments.clear()
+                break
+            reusable_segments[segment.child_id] = segment
+        if len(reusable_segments) != len(reuse_from.segments):
+            reusable_segments.clear()
     nodes: dict[int, SwcNode] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
+            if (line_number-1) % 256 == 0:
+                check()
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -184,15 +225,17 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
                 parent_id_value = float(fields[6])
                 if not node_id_value.is_integer() or not swc_type_value.is_integer() or not parent_id_value.is_integer():
                     raise ValueError("SWC identifiers and types must be integers")
-                node = SwcNode(
-                    node_id=int(node_id_value),
-                    swc_type=int(swc_type_value),
-                    x=float(fields[2]) * scale,
-                    y=float(fields[3]) * scale,
-                    z=float(fields[4]) * scale,
-                    radius=float(fields[5]) * scale,
-                    parent_id=int(parent_id_value),
-                )
+                values = (int(node_id_value), int(swc_type_value),
+                          float(fields[2])*scale, float(fields[3])*scale,
+                          float(fields[4])*scale, float(fields[5])*scale,
+                          int(parent_id_value))
+                node = reusable_nodes.get(values[0])
+                # Still parse and validate every saved value. Sharing is only
+                # an allocation optimization for exactly equal frozen rows;
+                # rounding differences simply receive a fresh saved-data row.
+                if node is None or (node.node_id,node.swc_type,node.x,node.y,node.z,
+                                     node.radius,node.parent_id) != values:
+                    node = SwcNode(*values)
             except ValueError as exc:
                 raise ValueError(f"Invalid SWC row at {path}:{line_number}") from exc
             if not all(math.isfinite(value) for value in (node.x, node.y, node.z, node.radius)):
@@ -209,18 +252,32 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
     if not nodes:
         raise ValueError(f"No valid SWC nodes found in {path}")
 
-    roots = [node.node_id for node in nodes.values() if node.parent_id == -1]
+    check()
+    roots = []
+    for index, node in enumerate(nodes.values()):
+        if index % 256 == 0:
+            check()
+        if node.parent_id == -1:
+            roots.append(node.node_id)
     if not roots or (len(roots) != 1 and not allow_forest_preview):
         raise ValueError(f"SWC must contain exactly one root; found {len(roots)} in {path}")
-    for node in nodes.values():
+    for index, node in enumerate(nodes.values()):
+        if index % 256 == 0:
+            check()
         if node.parent_id >= 0 and node.parent_id not in nodes:
             raise ValueError(f"SWC node {node.node_id} has missing parent {node.parent_id} in {path}")
     resolved = set(roots)
-    for node_id in nodes:
+    walk_steps = 0
+    for index, node_id in enumerate(nodes):
+        if index % 256 == 0:
+            check()
         current = node_id
         chain: list[int] = []
         local: set[int] = set()
         while current not in resolved:
+            if walk_steps % 256 == 0:
+                check()
+            walk_steps += 1
             if current in local:
                 raise ValueError(f"Cycle detected at SWC node {current} in {path}")
             local.add(current)
@@ -231,34 +288,49 @@ def load_swc(record: NeuronRecord, *, allow_forest_preview: bool = False,
             current = parent_id
         resolved.update(chain)
 
-    ordered = tuple(nodes[key] for key in sorted(nodes))
+    check()
+    ordered_nodes = []
+    for index, key in enumerate(sorted(nodes)):
+        if index % 256 == 0:
+            check()
+        ordered_nodes.append(nodes[key])
+    ordered = tuple(ordered_nodes)
+    del ordered_nodes
     segments: list[SwcSegment] = []
-    for child in ordered:
+    for index, child in enumerate(ordered):
+        if index % 256 == 0:
+            check()
         parent = nodes.get(child.parent_id)
         if parent is None:
             continue
-        segments.append(
-            SwcSegment(
-                child_id=child.node_id,
-                parent_id=parent.node_id,
-                child=(child.x, child.y, child.z),
-                parent=(parent.x, parent.y, parent.z),
-                radius=child.radius,
-                swc_type=child.swc_type,
-            )
-        )
+        values = (child.node_id, parent.node_id,
+                  (child.x,child.y,child.z), (parent.x,parent.y,parent.z),
+                  child.radius, child.swc_type)
+        segment = reusable_segments.get(child.node_id)
+        if segment is None or (segment.child_id,segment.parent_id,segment.child,
+                               segment.parent,segment.radius,segment.swc_type) != values:
+            segment = SwcSegment(*values)
+        segments.append(segment)
     if not segments and not allow_point_preview:
         raise ValueError(f"No drawable SWC segments found in {path}")
 
-    xs = [node.x for node in ordered]
-    ys = [node.y for node in ordered]
-    zs = [node.z for node in ordered]
+    check()
+    xs, ys, zs = [], [], []
+    for index, node in enumerate(ordered):
+        if index % 256 == 0:
+            check()
+        xs.append(node.x)
+        ys.append(node.y)
+        zs.append(node.z)
+    filler_metadata = _read_filler_metadata(path) or None
+    check()
     return Morphology(
         record=record,
         nodes=ordered,
         segments=tuple(segments),
         bounds=(min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)),
         coordinate_transform=coordinate_transform,
+        filler_metadata=filler_metadata,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections.abc import Mapping as MappingABC, Sequence
 import csv
 from dataclasses import dataclass
 from math import cos, isfinite, radians, sin
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -49,9 +51,14 @@ TRACE_COLORS = (
     "#a5b8d9",
 )
 HOVER_TRACE_LIMIT = 12
+LEGEND_PAGE_SIZE = 60
+# Dense regional recordings retain every sample, but draw one browsable page.
+# Drawing tens of thousands of antialiased curves blocks the GUI event loop.
+SIMULTANEOUS_TRACE_LIMIT = 240
+VOLTAGE_AXIS_LABEL = "membrane voltage (mV)"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class VoltageTrace:
     key: str
     label: str
@@ -62,42 +69,187 @@ class VoltageTrace:
     voltages_mV: tuple[float, ...]
     color: str
     compartment_id: str = ""
+    value_bounds: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTracePlot:
+    traces: tuple
+    keys: frozenset
+    by_key: dict
+    sample_count: int
+    time_bounds: tuple
+
+
+class _MappedTraceLookup(MappingABC):
+    def __init__(self, traces, lookup):
+        self.traces, self.lookup = traces, lookup
+
+    def __len__(self): return len(self.lookup)
+
+    def __iter__(self): return iter(self.lookup)
+
+    def __getitem__(self, key):
+        return self.traces.trace_for_row(self.lookup[key])
+
+
+class MappedVoltageTraces(Sequence):
+    """Stable lazy trace/selection view over complete primitive metadata."""
+    def __init__(self, store=None, metadata=None, *, root=None, rows=None):
+        self._root = root
+        if root is None:
+            self.store, self.metadata = store, metadata
+            self.key_to_row = {key:index for index,key in enumerate(metadata.columns[0])}
+        else:
+            self.store, self.metadata = root.store, root.metadata
+            self.key_to_row = root.key_to_row
+        self.rows = range(len(self.store)) if rows is None else rows
+
+    @property
+    def root(self): return self if self._root is None else self._root
+
+    def __len__(self): return len(self.rows)
+
+    def __eq__(self, other):
+        if not isinstance(other,Sequence):
+            return NotImplemented
+        if len(self) != len(other):
+            return False
+        if isinstance(other,MappedVoltageTraces):
+            a,b = self.store,other.store
+            if a is b and self.rows == other.rows and self.metadata.columns == other.metadata.columns:
+                return True
+            if (self.rows == other.rows and self.metadata.columns == other.metadata.columns
+                    and a.payload_sha256 and a.payload_sha256 == b.payload_sha256
+                    and a.cache_reference_unchanged() and b.cache_reference_unchanged()
+                    and a.keys_in_order == b.keys_in_order and a.offsets == b.offsets
+                    and a.clock_ids == b.clock_ids and a.clock_blocks == b.clock_blocks
+                    and a.bounds == b.bounds and a.unique == b.unique):
+                return True
+        return all(left == right for left,right in zip(self,other))
+
+    def __getitem__(self, index):
+        if isinstance(index,slice):
+            return MappedVoltageTraces(root=self.root,rows=self.rows[index])
+        return self.trace_for_row(self.rows[index])
+
+    def trace_for_row(self, row):
+        samples = self.store.row(row)
+        if samples.bind_prepared_trace_metadata(self.metadata,row):
+            return samples
+        fields = tuple(column[row] for column in self.metadata.columns)
+        key,label,condition,repetition,neuron_id,color,compartment_id = fields
+        return VoltageTrace(key,label,condition,repetition,neuron_id,
+                            samples.times,samples.values,color,compartment_id,samples.bounds)
+
+    def filtered(self, queries):
+        labels,conditions,neurons,repetitions = (self.metadata.columns[i] for i in (1,2,4,3))
+        matches = []
+        for row in self.rows:
+            haystack = ' '.join((labels[row],conditions[row],neurons[row],str(repetitions[row]))).casefold()
+            if any(query in haystack for query in queries):
+                matches.append(row)
+        return MappedVoltageTraces(root=self.root,rows=tuple(matches))
+
+    def selected_keys(self, keys):
+        rows = sorted(self.key_to_row[key] for key in keys
+                      if key in self.key_to_row and self.key_to_row[key] in self.rows)
+        return MappedVoltageTraces(root=self.root,rows=tuple(rows))
+
+    def prepare(self, check):
+        keys = {};count = 0;lower = upper = None
+        for index,row in enumerate(self.rows):
+            if index % 256 == 0: check()
+            key = self.metadata.columns[0][row]
+            keys[key] = row
+            clock = self.store.clocks[self.store.clock_ids[row]]
+            count += len(clock)
+            if clock:
+                lower = clock[0] if lower is None else min(lower,clock[0])
+                upper = clock[-1] if upper is None else max(upper,clock[-1])
+        check()
+        return PreparedTracePlot(self,frozenset(keys),_MappedTraceLookup(self.root,keys),
+                                 count,(lower,upper) if lower is not None else (0.,1.))
+
+
+def prepare_trace_plot(traces, *, check=lambda: None) -> PreparedTracePlot:
+    """Prepare full-record indices without constructing or touching Qt objects."""
+    if isinstance(traces,MappedVoltageTraces):
+        return traces.prepare(check)
+    traces=tuple(traces)
+    keys=set();by_key={};count=0;lower=upper=None
+    for index,trace in enumerate(traces):
+        if index%256==0:check()
+        keys.add(trace.key);by_key[trace.key]=trace;count+=len(trace.times_ms)
+        if trace.times_ms:
+            lower=trace.times_ms[0] if lower is None else min(lower,trace.times_ms[0])
+            upper=trace.times_ms[-1] if upper is None else max(upper,trace.times_ms[-1])
+    check()
+    return PreparedTracePlot(traces,frozenset(keys),by_key,count,
+                             (lower,upper) if lower is not None else (0.,1.))
 
 
 def load_voltage_traces(
     path: str | Path,
     *,
     neuron_labels: Mapping[str, str] | None = None,
+    table=None,
+    check=lambda: None,
 ) -> tuple[VoltageTrace, ...]:
     """Load long-form Digifly voltage CSV data without adding a NumPy dependency."""
 
-    source = Path(path).expanduser().resolve()
-    if not source.is_file():
+    from digifly_app.workers.result_storage import result_path, open_result_text, SampleSeries, MAX_PLAYBACK_VOLTAGE_SAMPLES
+    from digifly_app.core.result_voltage import MappedSamples, MappedTraceMetadata, MappedSeries
+    source = result_path(Path(path).expanduser().resolve())
+    if table is None and not source.is_file():
         return ()
-    grouped: dict[tuple[str, int, str, str], list[tuple[float, float]]] = {}
-    with source.open("r", encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            try:
-                time_ms = float(row.get("time_ms", ""))
-                voltage_mV = float(row.get("voltage_mV", ""))
-                repetition = int(float(row.get("repetition") or 0))
-            except (TypeError, ValueError):
-                continue
-            neuron_id = str(row.get("neuron_id") or "").strip()
-            condition = str(row.get("condition") or "Recorded run").strip()
-            compartment_id = str(row.get("compartment_id") or "").strip()
-            if neuron_id and isfinite(time_ms) and isfinite(voltage_mV):
-                grouped.setdefault((condition, repetition, neuron_id, compartment_id), []).append(
-                    (time_ms, voltage_mV)
-                )
+    grouped: dict[tuple[str, int, str, str], SampleSeries] = table.series if table is not None else {}
+    count = 0
+    if table is None:
+        with open_result_text(source) as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    time_ms = float(row.get("time_ms", ""))
+                    voltage_mV = float(row.get("voltage_mV", ""))
+                    repetition = int(float(row.get("repetition") or 0))
+                except (TypeError, ValueError):
+                    continue
+                neuron_id = str(row.get("neuron_id") or "").strip()
+                condition = str(row.get("condition") or "Recorded run").strip()
+                compartment_id = str(row.get("compartment_id") or "").strip()
+                if neuron_id and isfinite(time_ms) and isfinite(voltage_mV):
+                    count += 1
+                    if count > MAX_PLAYBACK_VOLTAGE_SAMPLES:
+                        raise ValueError("Voltage traces exceed the local sample budget")
+                    key = (condition, repetition, neuron_id, compartment_id)
+                    samples = grouped.get(key)
+                    if samples is None:
+                        samples = grouped[key] = SampleSeries()
+                    samples.append(time_ms, voltage_mV)
 
     repetition_counts: dict[str, set[int]] = {}
-    for condition, repetition, _neuron_id, _compartment_id in grouped:
+    for index,(condition, repetition, _neuron_id, _compartment_id) in enumerate(grouped):
+        if index%256==0:check()
         repetition_counts.setdefault(condition, set()).add(repetition)
     labels = {str(key): str(value) for key, value in dict(neuron_labels or {}).items()}
+    if isinstance(grouped,MappedSeries):
+        metadata = MappedTraceMetadata()
+        for index,(condition,repetition,neuron_id,compartment_id) in enumerate(grouped):
+            if index % 256 == 0: check()
+            neuron_label = labels.get(neuron_id,f'body {neuron_id}')
+            suffix = f' · rep {repetition}' if len(repetition_counts.get(condition,()))>1 else ''
+            compartment = f' · SWC {compartment_id}' if compartment_id else ''
+            key = f'{condition}\x1f{repetition}\x1f{neuron_id}' + (f'\x1f{compartment_id}' if compartment_id else '')
+            metadata.append((key,f'{condition} · {neuron_label}{compartment}{suffix}',
+                             condition,repetition,neuron_id,TRACE_COLORS[index%len(TRACE_COLORS)],compartment_id))
+        metadata.freeze();check()
+        return MappedVoltageTraces(grouped,metadata)
     traces: list[VoltageTrace] = []
+    metadata_owner = MappedTraceMetadata()
     for index, ((condition, repetition, neuron_id, compartment_id), samples) in enumerate(grouped.items()):
-        ordered = sorted(samples)
+        if index%256==0:check()
+        if isinstance(samples, SampleSeries):
+            samples.finish()
         neuron_label = labels.get(neuron_id, f"body {neuron_id}")
         repetition_suffix = (
             f" · rep {repetition}"
@@ -105,19 +257,29 @@ def load_voltage_traces(
             else ""
         )
         compartment_suffix = f" · SWC {compartment_id}" if compartment_id else ""
+        key = f"{condition}\x1f{repetition}\x1f{neuron_id}" + (f"\x1f{compartment_id}" if compartment_id else "")
+        label = f"{condition} · {neuron_label}{compartment_suffix}{repetition_suffix}"
+        color = TRACE_COLORS[index % len(TRACE_COLORS)]
+        if isinstance(samples, MappedSamples) and samples.bind_trace_metadata(
+                metadata_owner, key, label, condition, repetition, neuron_id, color, compartment_id):
+            traces.append(samples)
+            continue
         traces.append(
             VoltageTrace(
-                key=f"{condition}\x1f{repetition}\x1f{neuron_id}" + (f"\x1f{compartment_id}" if compartment_id else ""),
-                label=f"{condition} · {neuron_label}{compartment_suffix}{repetition_suffix}",
+                key=key,
+                label=label,
                 condition=condition,
                 repetition=repetition,
                 neuron_id=neuron_id,
-                times_ms=tuple(item[0] for item in ordered),
-                voltages_mV=tuple(item[1] for item in ordered),
-                color=TRACE_COLORS[index % len(TRACE_COLORS)],
+                times_ms=samples.times,
+                voltages_mV=samples.values,
+                color=color,
                 compartment_id=compartment_id,
+                value_bounds=getattr(samples, 'bounds', None),
             )
         )
+    check()
+    metadata_owner.freeze()
     return tuple(traces)
 
 
@@ -163,6 +325,8 @@ class _VoltageCanvas(QWidget):
         self._time_bounds = (0.0, 1.0)
         self._time_view = (0.0, 1.0)
         self._voltage_bounds = (-80.0, 40.0)
+        self.quantity_label = VOLTAGE_AXIS_LABEL
+        self.quantity_unit = "mV"
         self._press_position = QPointF()
         self._last_position = QPointF()
         self._dragged = False
@@ -173,17 +337,20 @@ class _VoltageCanvas(QWidget):
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt virtual name
         return QSize(780, 540)
 
-    def set_traces(self, traces: tuple[VoltageTrace, ...]) -> None:
-        self.traces = tuple(traces)
-        self.active_keys = {trace.key for trace in self.traces}
-        self.visible_keys = {trace.key for trace in self.traces}
-        self._visible_trace_cache = self.traces
+    def set_traces(self, traces: tuple[VoltageTrace, ...], *, prepared=None) -> None:
+        traces=traces if isinstance(traces,MappedVoltageTraces) else tuple(traces)
+        prepared=prepared if prepared is not None else prepare_trace_plot(traces)
+        if prepared.traces is not traces:
+            raise ValueError('Prepared plot belongs to a different recording')
+        self.traces = traces
+        self.active_keys = set(prepared.keys)
+        # The first paint is paged too; never scan/draw the complete recording
+        # before the widget installs its first legend page.
+        self._visible_trace_cache = (self.traces[:LEGEND_PAGE_SIZE]
+                                     if len(self.traces) > SIMULTANEOUS_TRACE_LIMIT else self.traces)
+        self.visible_keys = {trace.key for trace in self._visible_trace_cache}
         self._trace_style_revision += 1
-        times = [value for trace in traces for value in trace.times_ms]
-        if times:
-            self._time_bounds = (min(times), max(times))
-        else:
-            self._time_bounds = (0.0, 1.0)
+        self._time_bounds = prepared.time_bounds
         self._refit_voltage_bounds()
         self.reset_view(emit_status=False)
 
@@ -202,13 +369,16 @@ class _VoltageCanvas(QWidget):
         self._refresh_accessibility()
         self.update()
 
-    def set_visible_keys(self, keys: set[str]) -> None:
+    def set_visible_keys(self, keys: set[str], *, traces=None) -> None:
         """Restrict rendering to the traces matched by the legend filter."""
 
         self.visible_keys = set(keys)
-        self._visible_trace_cache = tuple(
-            trace for trace in self.traces if trace.key in self.visible_keys
-        )
+        if traces is not None:
+            self._visible_trace_cache = tuple(traces)
+        elif isinstance(self.traces,MappedVoltageTraces):
+            self._visible_trace_cache = tuple(self.traces.selected_keys(self.visible_keys))
+        else:
+            self._visible_trace_cache = tuple(trace for trace in self.traces if trace.key in self.visible_keys)
         self._trace_style_revision += 1
         self._refit_voltage_bounds()
         self.hover_time_ms = None
@@ -220,12 +390,16 @@ class _VoltageCanvas(QWidget):
 
     def _refit_voltage_bounds(self) -> None:
         visible = self._visible_traces()
-        voltages = [value for trace in visible for value in trace.voltages_mV]
-        if not voltages:
+        nonempty = [trace for trace in visible if trace.voltages_mV]
+        if not nonempty:
             self._voltage_bounds = (-80.0, 40.0)
             return
-        low, high = min(voltages), max(voltages)
-        pad = max(2.0, (high - low) * 0.08)
+        low = min(trace.value_bounds[0] if trace.value_bounds is not None
+                  else min(trace.voltages_mV) for trace in nonempty)
+        high = max(trace.value_bounds[1] if trace.value_bounds is not None
+                   else max(trace.voltages_mV) for trace in nonempty)
+        pad = max(2.0 if self.quantity_unit == "mV" else max(abs(low), abs(high), 1e-9)*.02,
+                  (high - low) * 0.08)
         self._voltage_bounds = (low - pad, high + pad)
 
     def set_time_cursor(self, time_ms: float | None) -> None:
@@ -262,7 +436,7 @@ class _VoltageCanvas(QWidget):
         )
 
     def _plot_rect(self) -> QRectF:
-        return QRectF(self.rect()).adjusted(68.0, 28.0, -24.0, -52.0)
+        return QRectF(self.rect()).adjusted(68.0 if self.quantity_unit == "mV" else 112.0, 28.0, -24.0, -52.0)
 
     @staticmethod
     def _map(value: float, low: float, high: float, start: float, end: float) -> float:
@@ -285,7 +459,7 @@ class _VoltageCanvas(QWidget):
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "No long-form voltage traces are available for this result.",
+                f"No {'voltage' if self.quantity_unit == 'mV' else 'current'} traces are available for this result.",
             )
             painter.end()
             return
@@ -294,7 +468,7 @@ class _VoltageCanvas(QWidget):
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "No voltage traces match the current filter.",
+                f"No {'voltage' if self.quantity_unit == 'mV' else 'current'} traces match the current filter.",
             )
             painter.end()
             return
@@ -367,9 +541,11 @@ class _VoltageCanvas(QWidget):
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
             painter.setPen(label)
             painter.drawText(
-                QRectF(5.0, y - 10.0, 54.0, 20.0),
+                QRectF(5.0 if self.quantity_unit == "mV" else 33.0, y - 10.0,
+                       54.0 if self.quantity_unit == "mV" else 68.0, 20.0),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                f"{v_min + fraction * (v_max - v_min):g}",
+                (f"{v_min + fraction * (v_max - v_min):g}" if self.quantity_unit == "mV"
+                 else f"{v_min + fraction * (v_max - v_min):.2g}"),
             )
         painter.setPen(QPen(axis, 1.2))
         painter.drawLine(plot.bottomLeft(), plot.bottomRight())
@@ -386,7 +562,7 @@ class _VoltageCanvas(QWidget):
         painter.drawText(
             QRectF(-plot.height() / 2.0, -10.0, plot.height(), 20.0),
             Qt.AlignmentFlag.AlignHCenter,
-            "soma membrane voltage (mV)",
+            self.quantity_label,
         )
         painter.restore()
 
@@ -504,7 +680,7 @@ class _VoltageCanvas(QWidget):
             "3D trace stack · drag to rotate · wheel to zoom · right-click to reset",
         )
         painter.drawText(self._project_3d(1.06, -0.72, base_z, plot), "time")
-        painter.drawText(self._project_3d(-1.0, 0.84, base_z, plot), "voltage")
+        painter.drawText(self._project_3d(-1.0, 0.84, base_z, plot), self.quantity_label)
         if lane_count > 1:
             painter.drawText(
                 self._project_3d(-1.0, -0.72, lane_z(lane_count - 1) + 0.12, plot),
@@ -610,7 +786,7 @@ class _VoltageCanvas(QWidget):
             for trace in active_visible[:HOVER_TRACE_LIMIT]:
                 voltage = voltage_at(trace, self.hover_time_ms)
                 if voltage is not None:
-                    values.append(f"{trace.label}: {voltage:.2f} mV")
+                    values.append(f"{trace.label}: {voltage:.6g} {self.quantity_unit}")
             if len(active_visible) > HOVER_TRACE_LIMIT:
                 values.append(
                     f"… {len(active_visible) - HOVER_TRACE_LIMIT} more plotted traces; "
@@ -670,14 +846,20 @@ class VoltagePlotWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("VoltagePlotWidget")
         self.traces: tuple[VoltageTrace, ...] = ()
+        self._traces_by_key = {}
+        self._sample_count = 0
         self.legend_buttons: dict[str, QPushButton] = {}
+        self._legend_matches: tuple[VoltageTrace, ...] = ()
+        self._legend_page = 0
+        self._legend_generation = 0
+        self._active_trace_keys: set[str] = set()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         legend_header = QHBoxLayout()
         hint = QLabel(
             "Legend · search isolates plotted traces · click to emphasize or fade · "
-            "Shift-click to isolate"
+            "Shift-click to isolate · large recordings plot one page at a time"
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -688,7 +870,7 @@ class VoltagePlotWidget(QWidget):
         self.trace_count_label.setWordWrap(True)
         self.trace_count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         legend_header.addWidget(self.trace_count_label, 1)
-        self.show_all_button = QPushButton("Show all")
+        self.show_all_button = QPushButton("Emphasize all")
         self.show_all_button.setObjectName("VoltageLegendShowAll")
         self.show_all_button.clicked.connect(self.show_all)
         legend_header.addWidget(self.show_all_button)
@@ -698,7 +880,7 @@ class VoltagePlotWidget(QWidget):
         self.legend_filter.setObjectName("VoltageLegendFilter")
         self.legend_filter.setAccessibleName("Filter voltage traces")
         self.legend_filter.setPlaceholderText(
-            "Search by neuron ID, type, condition, or repetition to isolate the plot"
+            "Search neuron, SWC edge, or condition; separate alternatives with commas"
         )
         self.legend_filter.setClearButtonEnabled(True)
         self.legend_filter.textChanged.connect(self._filter_legend)
@@ -709,6 +891,9 @@ class VoltagePlotWidget(QWidget):
         self.legend_layout.setContentsMargins(0, 0, 0, 0)
         self.legend_layout.setHorizontalSpacing(7)
         self.legend_layout.setVerticalSpacing(5)
+        # Keep page rows at their real button height inside the scroll area.
+        # Otherwise a replacement page can collapse every row to one pixel.
+        self.legend_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.legend_widget.setLayout(self.legend_layout)
         self.legend_scroll = QScrollArea()
         self.legend_scroll.setObjectName("VoltageLegendScroll")
@@ -719,6 +904,23 @@ class VoltagePlotWidget(QWidget):
         self.legend_scroll.setWidget(self.legend_widget)
         self.legend_scroll.setMaximumHeight(164)
         layout.addWidget(self.legend_scroll)
+        self.legend_pager = QWidget()
+        pager_layout = QHBoxLayout(self.legend_pager)
+        pager_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_previous_button = QPushButton("Previous")
+        self.legend_previous_button.setObjectName("VoltageLegendPrevious")
+        self.legend_previous_button.setAccessibleName("Previous trace legend page")
+        self.legend_previous_button.clicked.connect(lambda: self._change_legend_page(-1))
+        self.legend_page_label = QLabel()
+        self.legend_page_label.setObjectName("VoltageLegendPage")
+        self.legend_next_button = QPushButton("Next")
+        self.legend_next_button.setObjectName("VoltageLegendNext")
+        self.legend_next_button.setAccessibleName("Next trace legend page")
+        self.legend_next_button.clicked.connect(lambda: self._change_legend_page(1))
+        pager_layout.addWidget(self.legend_previous_button)
+        pager_layout.addWidget(self.legend_page_label, 1)
+        pager_layout.addWidget(self.legend_next_button)
+        layout.addWidget(self.legend_pager)
         self.canvas = _VoltageCanvas()
         self.canvas.time_selected.connect(self.time_selected)
         self.canvas.status_message.connect(self.status_message)
@@ -730,21 +932,57 @@ class VoltagePlotWidget(QWidget):
 
     @property
     def sample_count(self) -> int:
-        return sum(len(trace.times_ms) for trace in self.traces)
+        return getattr(self, '_sample_count', 0)
 
     @property
     def mode(self) -> str:
         return self.canvas.mode
 
-    def set_traces(self, traces: tuple[VoltageTrace, ...]) -> None:
-        self.traces = tuple(traces)
+    def set_traces(self, traces: tuple[VoltageTrace, ...], *, prepared=None) -> None:
+        traces=traces if isinstance(traces,MappedVoltageTraces) else tuple(traces)
+        prepared=prepared if prepared is not None else prepare_trace_plot(traces)
+        if prepared.traces is not traces:
+            raise ValueError('Prepared plot belongs to a different recording')
+        self.traces = traces
+        self._prepared = prepared
+        self._sample_count = prepared.sample_count
+        self._traces_by_key = prepared.by_key
+        self._active_trace_keys = set(prepared.keys)
+        self.canvas.set_traces(self.traces,prepared=prepared)
+        self.show_all_button.setEnabled(bool(self.traces))
+        self.legend_filter.setEnabled(bool(self.traces))
+        self.legend_filter.blockSignals(True)
+        self.legend_filter.clear()
+        self.legend_filter.blockSignals(False)
+        self.legend_scroll.setVisible(bool(self.traces))
+        self._filter_legend("")
+
+    def set_quantity(self, label: str, unit: str) -> None:
+        """Reuse the paged renderer without mixing current and voltage axes."""
+        self.canvas.quantity_label = label
+        self.canvas.quantity_unit = unit
+        self.canvas._static_layer_key = None
+        self.canvas.setAccessibleName(f"Interactive {label} plot")
+        self.legend_filter.setAccessibleName(f"Filter {label} traces")
+        self.canvas.update()
+
+    def _render_legend_page(self) -> None:
+        self._legend_generation += 1
+        generation = self._legend_generation
         while self.legend_layout.count():
             item = self.legend_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         self.legend_buttons.clear()
-        for index, trace in enumerate(self.traces):
+        start = self._legend_page * LEGEND_PAGE_SIZE
+        page_traces = self._legend_matches[start:start + LEGEND_PAGE_SIZE]
+        plotted = (page_traces if len(self._legend_matches) > SIMULTANEOUS_TRACE_LIMIT
+                   else self._legend_matches)
+        self.canvas.set_visible_keys({trace.key for trace in plotted},traces=plotted)
+        for trace in page_traces:
             button = QPushButton(f"●  {trace.label}")
             button.setObjectName("VoltageLegendButton")
             button.setCheckable(True)
@@ -752,24 +990,29 @@ class VoltagePlotWidget(QWidget):
             # name must not impose a wider-than-window grid column minimum.
             button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             button.setMinimumWidth(0)
-            button.setChecked(True)
-            button.setAccessibleName(f"Voltage trace {trace.label}")
+            button.setChecked(trace.key in self._active_trace_keys)
+            button.setAccessibleName(f"{'Voltage' if self.canvas.quantity_unit == 'mV' else 'Current'} trace {trace.label}")
             button.setToolTip(
                 f"{trace.label}\nClick to keep this trace visible but faded; Shift-click to isolate it"
             )
             button.setStyleSheet(f"QPushButton {{ color: {trace.color}; text-align: left; }}")
-            button.clicked.connect(
-                lambda checked, key=trace.key: self._legend_clicked(key, checked)
+            button.toggled.connect(
+                lambda checked, key=trace.key, page=generation: self._legend_clicked(key, checked, page)
             )
             self.legend_buttons[trace.key] = button
         self._relayout_legend()
-        self.canvas.set_traces(self.traces)
         self._refresh_legend_buttons()
-        self.show_all_button.setEnabled(bool(self.traces))
-        self.legend_filter.setEnabled(bool(self.traces))
-        self.legend_filter.clear()
-        self.legend_scroll.setVisible(bool(self.traces))
-        self._update_trace_count()
+        total = len(self._legend_matches)
+        self.legend_pager.setVisible(total > LEGEND_PAGE_SIZE)
+        self.legend_previous_button.setEnabled(self._legend_page > 0)
+        self.legend_next_button.setEnabled(start + LEGEND_PAGE_SIZE < total)
+        scope = "Plotted traces" if total > SIMULTANEOUS_TRACE_LIMIT else "Legend entries"
+        self.legend_page_label.setText(f"{scope} {start + 1 if total else 0}–{min(start + LEGEND_PAGE_SIZE, total)} of {total:,}")
+
+    def _change_legend_page(self, delta: int) -> None:
+        last = max(0, (len(self._legend_matches) - 1) // LEGEND_PAGE_SIZE)
+        self._legend_page = max(0, min(last, self._legend_page + delta))
+        self._render_legend_page()
 
     def _relayout_legend(self) -> None:
         # A narrow split panel needs one readable column; a full-width plot
@@ -793,46 +1036,55 @@ class VoltagePlotWidget(QWidget):
         self.canvas.set_time_cursor(time_ms)
 
     def show_all(self) -> None:
-        for button in self.legend_buttons.values():
-            button.setChecked(True)
+        prepared = getattr(self,'_prepared',None)
+        self._active_trace_keys = set(prepared.keys) if prepared is not None else set()
         self._apply_legend_state()
 
-    def _legend_clicked(self, key: str, checked: bool) -> None:
+    def _legend_clicked(self, key: str, checked: bool, generation: int | None = None) -> None:
+        if (generation is not None and generation != self._legend_generation) or key not in self.legend_buttons:
+            return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
-            for trace_key, button in self.legend_buttons.items():
-                button.setChecked(trace_key == key)
+            self._active_trace_keys = {key}
+        elif checked:
+            self._active_trace_keys.add(key)
         else:
-            self.legend_buttons[key].setChecked(bool(checked))
+            self._active_trace_keys.discard(key)
         self._apply_legend_state()
 
     def _apply_legend_state(self) -> None:
-        active = {
-            key for key, button in self.legend_buttons.items() if button.isChecked()
-        }
+        active = self._active_trace_keys
         self.canvas.set_active_keys(active)
         self._refresh_legend_buttons()
         self.status_message.emit(
-            f"{len(active)} of {len(self.traces)} voltage traces emphasized"
+            f"{len(active)} of {len(self.traces)} {'voltage' if self.canvas.quantity_unit == 'mV' else 'current'} traces emphasized"
         )
 
     def _filter_legend(self, text: str) -> None:
-        query = text.strip().casefold()
-        by_key = {trace.key: trace for trace in self.traces}
-        visible_keys: set[str] = set()
-        for key, button in self.legend_buttons.items():
-            trace = by_key[key]
+        queries = tuple(part.strip().casefold() for part in text.split(",") if part.strip())
+        if not queries:
+            self._legend_matches = self.traces
+            self._legend_page = 0
+            self._render_legend_page()
+            return
+        if isinstance(self.traces,MappedVoltageTraces):
+            self._legend_matches = self.traces.filtered(queries)
+            self._legend_page = 0
+            self._render_legend_page()
+            return
+        matches = []
+        for trace in self.traces:
             haystack = " ".join(
                 (trace.label, trace.condition, trace.neuron_id, str(trace.repetition))
             ).casefold()
-            visible = not query or query in haystack
-            button.setVisible(visible)
+            visible = not queries or any(query in haystack for query in queries)
             if visible:
-                visible_keys.add(key)
-        self.canvas.set_visible_keys(visible_keys)
-        self._update_trace_count()
+                matches.append(trace)
+        self._legend_matches = tuple(matches)
+        self._legend_page = 0
+        self._render_legend_page()
 
     def _update_trace_count(self) -> None:
-        visible = sum(not button.isHidden() for button in self.legend_buttons.values())
+        visible = len(self.canvas.visible_keys)
         active = len(self.canvas.active_keys)
         if visible == len(self.traces):
             text = f"{len(self.traces)} plotted · {active} emphasized"
@@ -840,14 +1092,17 @@ class VoltagePlotWidget(QWidget):
             active_visible = len(self.canvas.active_keys & self.canvas.visible_keys)
             text = (
                 f"{visible} of {len(self.traces)} plotted · "
-                f"{active_visible} emphasized"
+                f"{active_visible} emphasized · all {len(self.traces):,} saved traces available"
             )
         self.trace_count_label.setText(text)
 
     def _refresh_legend_buttons(self) -> None:
-        by_key = {trace.key: trace for trace in self.traces}
+        by_key = self._traces_by_key
         for key, button in self.legend_buttons.items():
-            active = button.isChecked()
+            active = key in self._active_trace_keys
+            previous = button.blockSignals(True)
+            button.setChecked(active)
+            button.blockSignals(previous)
             font = button.font()
             font.setBold(active)
             button.setFont(font)

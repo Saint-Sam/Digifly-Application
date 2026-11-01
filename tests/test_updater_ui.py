@@ -20,6 +20,7 @@ def window(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     widget = MainWindow()
     yield widget
+    monkeypatch.setattr(QMessageBox,'question',lambda *a:QMessageBox.StandardButton.Discard)
     widget.close()
     widget.deleteLater()
     app.processEvents()

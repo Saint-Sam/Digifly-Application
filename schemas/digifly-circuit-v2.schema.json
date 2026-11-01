@@ -169,7 +169,7 @@
         "tau_open_ms": {"type": "number", "exclusiveMinimum": 0},
         "tau_close_ms": {"type": "number", "exclusiveMinimum": 0},
         "placement_policy": {
-          "enum": ["imported_contact_sites", "ais_pair", "soma_pair"]
+          "enum": ["imported_contact_sites", "ais_pair", "soma_pair", "gf_ttmn_chemical_sites"]
         },
         "conductance_basis": {"enum": ["per_site", "pair_total"]},
         "aggregation_policy": {

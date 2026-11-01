@@ -34,6 +34,7 @@ from .data_library import (
 from .resource_profile import ResourceProfile
 from .remote import RetryPolicy, parse_retry_after, run_with_retry
 from .swc_quality import ADAPTIVE_RADIUS_RULE_ID, analyze_swc
+from .swc_units import neuprint_raw_convention
 
 
 DEFAULT_NEUPRINT_SERVER = "https://neuprint.janelia.org"
@@ -146,6 +147,7 @@ class NeuPrintAcquisitionRequest:
     max_skeleton_bytes: int = DEFAULT_MAX_SKELETON_BYTES
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
     include_connectivity: bool = False
+    include_contact_sites: bool = False  # Legacy/programmatic requests remain explicit.
     max_connectivity_rows: int = DEFAULT_MAX_CONNECTIVITY_ROWS
     max_connectivity_bytes: int = DEFAULT_MAX_CONNECTIVITY_BYTES
     library_review: dict[str, dict] | None = None
@@ -162,6 +164,8 @@ class NeuPrintAcquisitionRequest:
         safe_component(self.resource_id, field="download name")
         safe_component(self.source_version, field="snapshot name")
         normalize_neuprint_token(self.token)
+        if self.include_contact_sites and not self.include_connectivity:
+            raise ValueError('Contact locations require the matching connectivity download')
         if not self.neurons:
             raise ValueError("Preview and select at least one neuron before downloading")
         if len(self.neurons) > MAX_SELECTION_LIMIT:
@@ -518,6 +522,14 @@ class NeuPrintClient:
             raise NeuPrintError("neuPrint returned an unreadable connectivity table") from exc
         return _parse_connectivity_rows(payload, max_rows=limit)
 
+    def fetch_contact_sites_between(self, source_ids, target_ids, *, cancel=None,
+                                    max_rows=DEFAULT_MAX_CONNECTIVITY_ROWS,
+                                    max_bytes=DEFAULT_MAX_CONNECTIVITY_BYTES, on_bytes=None):
+        """Exact pre/post locations; counts alone never stand in for these."""
+        from .neuprint_contacts import fetch_between
+        return fetch_between(self, source_ids, target_ids, cancel=cancel,
+                             max_rows=max_rows, max_bytes=max_bytes, on_bytes=on_bytes)
+
 
 def _cypher_string(value: str, *, field: str) -> str:
     text = str(value).strip()
@@ -720,6 +732,8 @@ def _request_descriptor(request: NeuPrintAcquisitionRequest) -> dict[str, Any]:
         result.update(library_review=request.library_review, replacement_ids=list(request.replacement_ids))
     if request.connectivity_review is not None:
         result['connectivity_review'] = request.connectivity_review
+    if request.include_contact_sites:
+        result['include_contact_sites'] = True
     return result
 
 
@@ -936,7 +950,8 @@ def acquire_neuprint_bundle(
         if request.include_connectivity:
             from .selected_connectivity import review_connectivity, require_current_review
             bodies = tuple(neuron.body_id for neuron in request.neurons)
-            plan = (review_connectivity(profile, request.server, request.dataset, bodies)
+            plan = (review_connectivity(profile, request.server, request.dataset, bodies,
+                                       include_contact_sites=request.include_contact_sites)
                     if request.connectivity_review is None else require_current_review(
                         profile, request.server, request.dataset, bodies, request.connectivity_review))
             request = replace(request, connectivity_review=plan)
@@ -996,6 +1011,8 @@ def acquire_neuprint_bundle(
         (record for record in inventory if record.get("data_role") == "connectivity"),
         None,
     )
+    contact_record = next((r for r in inventory if r.get('data_role')=='chemical_contact_sites'), None)
+    contact_method = (contact_record or {}).get('method')
     review_count = sum(
         int(bool(record.get("swc_quality", {}).get("needs_review")))
         for record in inventory
@@ -1006,10 +1023,10 @@ def acquire_neuprint_bundle(
         for record in inventory
         if isinstance(record.get("swc_quality"), Mapping)
     )
-    total_tasks = len(request.neurons) + int(request.include_connectivity)
+    total_tasks = len(request.neurons) + int(request.include_connectivity) + int(request.include_contact_sites)
 
     def completed_tasks() -> int:
-        return len(completed_bodies) + int(connectivity_record is not None)
+        return len(completed_bodies) + int(connectivity_record is not None) + int(contact_record is not None)
 
     def emit(stage: str, completed: int, current: str = "") -> None:
         if progress is not None:
@@ -1119,6 +1136,13 @@ def acquire_neuprint_bundle(
             save_checkpoint()
             emit("Audited and checkpointed SWC", completed_tasks(), current)
 
+        connectivity_transferred = 0
+        def connectivity_bytes(amount):
+            nonlocal connectivity_transferred
+            connectivity_transferred += amount
+            if connectivity_transferred > request.max_connectivity_bytes:
+                raise NeuPrintError('Combined connection-count/contact-location byte budget exceeded')
+            add_bytes(amount)
         if request.include_connectivity and connectivity_record is None:
             if cancel_event.is_set():
                 raise AcquisitionCancelled("The neuPrint download was cancelled")
@@ -1128,11 +1152,11 @@ def acquire_neuprint_bundle(
                 from .selected_connectivity import fetch_updates
                 connections = fetch_updates(provider, request.connectivity_review,
                     cancel=cancel_event, max_rows=request.max_connectivity_rows,
-                    max_bytes=request.max_connectivity_bytes, on_bytes=add_bytes)
+                    max_bytes=request.max_connectivity_bytes, on_bytes=connectivity_bytes)
             else:
                 connections = provider.fetch_connectivity(body_ids, cancel=cancel_event,
                     max_rows=request.max_connectivity_rows, max_bytes=request.max_connectivity_bytes,
-                    on_bytes=add_bytes)
+                    on_bytes=connectivity_bytes)
             table_buffer = io.StringIO(newline="")
             writer = csv.writer(table_buffer, lineterminator="\n")
             writer.writerow(("source_body_id", "target_body_id", "weight"))
@@ -1152,17 +1176,49 @@ def acquire_neuprint_bundle(
             save_checkpoint()
             emit("Checkpointed connectivity table", completed_tasks())
 
+        if request.include_contact_sites and contact_record is None:
+            if cancel_event.is_set():
+                raise AcquisitionCancelled('Contact download cancelled')
+            emit('Downloading chemical contact locations', completed_tasks())
+            from .neuprint_contacts import COLUMNS as CONTACT_COLUMNS, fetch_updates as fetch_contact_updates
+            remaining=request.max_connectivity_bytes-connectivity_transferred
+            if remaining < 1:
+                raise NeuPrintError('No byte budget remains for chemical contact locations')
+            if request.connectivity_review is not None:
+                contacts, contact_method=fetch_contact_updates(provider,request.connectivity_review,
+                    cancel=cancel_event,max_rows=request.max_connectivity_rows,
+                    max_bytes=remaining,on_bytes=connectivity_bytes)
+            else:
+                bodies=tuple(n.body_id for n in request.neurons)
+                contacts, contact_method=provider.fetch_contact_sites_between(bodies,bodies,
+                    cancel=cancel_event,max_rows=request.max_connectivity_rows,
+                    max_bytes=remaining,on_bytes=connectivity_bytes)
+            buffer=io.StringIO(newline=''); writer=csv.writer(buffer,lineterminator='\n')
+            writer.writerow(CONTACT_COLUMNS);writer.writerows(c.to_row() for c in contacts)
+            data=buffer.getvalue().encode('utf-8')
+            if len(data)>request.max_connectivity_bytes:
+                raise NeuPrintError('Chemical contact file exceeds the storage budget')
+            if cancel_event.is_set():
+                raise AcquisitionCancelled('Contact download cancelled; no partial locations saved')
+            connectivity_root.mkdir(parents=True,exist_ok=True)
+            relative=Path('source/connectivity/selected_contact_sites.csv')
+            (staging/relative).write_bytes(data)
+            contact_record={'path':relative.as_posix(),'size_bytes':len(data),
+                'sha256':_sha256_bytes(data),'data_role':'chemical_contact_sites',
+                'row_count':len(contacts),'method':contact_method}
+            inventory.append(contact_record);save_checkpoint()
+            emit('Checkpointed chemical contact locations',completed_tasks())
+
         metadata = {
             "schema_version": 1,
             "server": normalize_server(request.server),
             "dataset": request.dataset,
-            "swc_coordinate_convention": (
-                {"input_units": "8nm", "scale_to_um": 0.008,
-                 "frame": "male-cns-v0.9-native", "raw_bytes_preserved": True}
-                if request.dataset == "male-cns:v0.9"
-                and normalize_server(request.server) == "https://neuprint.janelia.org"
-                else None
-            ),
+            # Keep the historical library-wide field compatible; newer libraries
+            # may also contain local, already-micrometre files. Raw units are
+            # pinned per file by the exact acquisition receipt, not its label.
+            "swc_coordinate_convention": (neuprint_raw_convention(normalize_server(request.server), request.dataset)
+                                          if request.dataset == "male-cns:v0.9" else None),
+            "native_swc_coordinate_convention": neuprint_raw_convention(normalize_server(request.server), request.dataset),
             "selection": request.selection.to_dict(),
             "neurons": [neuron.to_dict() for neuron in request.neurons],
             "connectivity_included": bool(request.include_connectivity),
@@ -1193,11 +1249,16 @@ def acquire_neuprint_bundle(
             ),
             "columns": ["source_body_id", "target_body_id", "weight"],
             "row_limit": int(request.max_connectivity_rows),
+            **({'contact_sites':{'included':True,
+                'table_path':contact_record['path'],'row_count':contact_record['row_count'],
+                'method':contact_method,'coordinate_convention':metadata['native_swc_coordinate_convention']}}
+                if request.include_contact_sites else {}),
         }
         manifest_payload = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "provider": "neuprint",
             "swc_coordinate_convention": metadata.get("swc_coordinate_convention"),
+            "native_swc_coordinate_convention": metadata.get("native_swc_coordinate_convention"),
             "acquisition_entrypoint": request.acquisition_entrypoint,
             "credential_source": request.credential_source,
             "resource_id": safe_component(request.resource_id),
@@ -1306,7 +1367,7 @@ def acquire_neuprint_bundle(
             # Completed SWCs keep their resumable checkpoint. A cancelled graph
             # update never leaves a partial/cached table for a later refresh.
             for record in tuple(inventory):
-                if record.get('data_role') != 'connectivity':
+                if record.get('data_role') not in {'connectivity','chemical_contact_sites'}:
                     continue
                 path = staging / record['path']
                 if path.is_file() and not path.is_symlink() and _sha256_bytes(path.read_bytes()) == record['sha256']:
