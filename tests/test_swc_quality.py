@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from digifly_app.core.swc_quality import (
     record_review_decision,
     reviewed_hashes,
     scan_recent_imports,
+    verified_radius_source,
 )
 
 
@@ -105,6 +107,72 @@ def test_copy_heal_leaves_original_and_changes_radius_only(tmp_path: Path) -> No
     assert Path(result.report_path).is_file()
     assert result.before_sha256 == hashlib.sha256(before_bytes).hexdigest()
     assert result.after_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("damage", ["", "output", "source", "missing_record", "units",
+                                    "source_path", "changed_nodes", "radius", "geometry", "symlink"])
+def test_reviewed_radius_copy_requires_committed_source_and_exact_geometry(tmp_path, damage):
+    source = _write_adaptive_fixture(tmp_path / "42.swc")
+    original = source.read_bytes()
+    result = heal_swc(analyze_swc(source))
+    output, record_path = Path(result.output_path), Path(result.report_path)
+    committed = {os.path.normcase(os.path.abspath(source)): result.before_sha256}
+    record = json.loads(record_path.read_text())
+    if damage == "output":
+        output.write_text(output.read_text() + "# changed\n")
+    elif damage == "source":
+        source.write_text(source.read_text() + "# changed\n")
+    elif damage == "missing_record":
+        record_path.unlink()
+    elif damage == "units":
+        record["coordinate_transform"]["scale_to_um"] = 1000
+    elif damage == "source_path":
+        record["result"]["input_path"] = str(tmp_path / "outside.swc")
+    elif damage == "changed_nodes":
+        record["result"]["changed_node_ids"] = [5]
+    elif damage in {"radius", "geometry"}:
+        lines = output.read_text().splitlines(keepends=True)
+        fields = lines[6].split()
+        fields[5 if damage == "radius" else 2] = "2"
+        lines[6] = " ".join(fields) + "\n"
+        output.write_text("".join(lines))
+        # Updating the sidecar digest alone must not admit an altered cable.
+        record["result"]["after_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+        record["coordinate_transform"]["source_sha256"] = record["result"]["after_sha256"]
+    elif damage == "symlink":
+        if os.name == "nt":
+            pytest.skip("Symlink creation needs separate Windows authority")
+        retained = tmp_path / "retained.swc"
+        output.rename(retained)
+        output.symlink_to(retained)
+    if damage != "missing_record":
+        record_path.write_text(json.dumps(record))
+    if damage:
+        with pytest.raises(ValueError):
+            verified_radius_source(output, committed)
+    else:
+        assert verified_radius_source(output, committed) == source
+        assert verified_radius_source(source, committed) is None
+    if damage != "source":
+        assert source.read_bytes() == original
+
+
+def test_timestamped_radius_copy_is_admitted_without_another_heal(tmp_path):
+    source = _write_adaptive_fixture(tmp_path / "42.swc")
+    report = analyze_swc(source)
+    first, second = heal_swc(report), heal_swc(report)
+    assert first.output_path != second.output_path
+    committed = {os.path.normcase(os.path.abspath(source)): report.sha256}
+    assert verified_radius_source(Path(second.output_path), committed) == source
+
+
+def test_radius_copy_admission_allows_saved_nine_digit_rounding(tmp_path):
+    source = _write_adaptive_fixture(tmp_path / "42.swc")
+    source.write_text(source.read_text().replace(" 1.0 ", " 1.234567891 "))
+    report = analyze_swc(source)
+    result = heal_swc(report)
+    committed = {os.path.normcase(os.path.abspath(source)): report.sha256}
+    assert verified_radius_source(Path(result.output_path), committed) == source
 
 
 def test_overwrite_heal_keeps_name_and_creates_recoverable_backup(tmp_path: Path) -> None:

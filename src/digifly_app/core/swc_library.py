@@ -132,7 +132,10 @@ def inspect_existing_swcs(profile: ResourceProfile, server: str, dataset: str,
         _plain_path(path, profile.managed_data_root)
         if os.path.normcase(os.path.abspath(path)) not in committed:
             from .swc_fragments import verified_fragment_source
+            from .swc_quality import verified_radius_source
             original = verified_fragment_source(path, committed)
+            if original is None:
+                original = verified_radius_source(path, committed)
             if original is not None:
                 if str(_infer_id(original.relative_to(export)) or '') != body:
                     raise ValueError('Reviewed joined copy belongs to another body ID')

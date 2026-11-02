@@ -22,7 +22,7 @@ def checked_review_copy(executable: Path, receipt: Path):
     record=json.loads(receipt.read_text())
     application=executable.parents[2]
     with executable.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
-    if (record.get('ok') is not True or record.get('mode')!='review'
+    if (record.get('ok') is not True or record.get('mode') not in {'review','install'}
             or Path(record.get('current_app','')).resolve()!=application
             or record.get('actual_executable_sha256')!=digest):
         raise ValueError('Checked review copy does not match this executable')
@@ -99,13 +99,15 @@ def verify_live_review(output: Path):
     for flag,key in (('--workspace','workspace'),('--existing-profile','profile')):
         if flag in command and ready.get(key)!=command[command.index(flag)+1]:
             raise ValueError('Review readiness has the wrong workspace or profile')
+    if os.name=='nt':
+        # Signal zero is a console control event on Windows, not a harmless
+        # POSIX liveness probe. Refuse this unqualified path before any signal.
+        raise ValueError('Live owner command verification is not qualified on Windows')
     try:
         os.kill(pid,0)
         os.kill(parent,0)
     except (ProcessLookupError,PermissionError) as exc:
         raise ValueError('Review process is gone or uninspectable; do not bind or relaunch it') from exc
-    if os.name=='nt':
-        raise ValueError('Live owner command verification is not qualified on Windows')
     actual=subprocess.run(['/bin/ps','-p',str(pid),'-o','ppid=,command='],
                           capture_output=True,text=True,timeout=5)
     fields=actual.stdout.strip().split(None,1)

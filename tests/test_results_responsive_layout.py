@@ -19,6 +19,8 @@ def results_window(tmp_path,monkeypatch):
     monkeypatch.setenv('DIGIFLY_WORKSTATION_PROFILE',str(tmp_path/'absent.json'))
     monkeypatch.setenv('DIGIFLY_WORKSTATION_SETTINGS_ROOT',str(tmp_path/'settings'))
     window=MainWindow()
+    window.first_experiment_guide.pause()
+    assert window.first_experiment_guide.isHidden()
     window.pages.setCurrentWidget(window.results_page)
     try:
         yield app,window,window.results_page

@@ -477,8 +477,13 @@ class DataLibraryPage(QWidget):
             # Accessibility activation can arrive while another app owns focus.
             # The real button must perform the focus step, not just its tests.
             window = button.window()
-            window.raise_()
-            window.activateWindow()
+            # Cocoa popups need a real top-level owner. A page can acquire a
+            # native child handle from a sibling scene without being a window.
+            if menu.parentWidget() is not window:
+                menu.setParent(window, menu.windowFlags())
+            if not window.isActiveWindow():
+                window.raise_()
+                window.activateWindow()
             menu.popup(button.mapToGlobal(QPoint(0, button.height())))
         button.clicked.connect(open_menu)
         button._library_menu = menu
@@ -584,7 +589,7 @@ class DataLibraryPage(QWidget):
             dataset = self.connectome_picker.selected_dataset
             if not dataset.startswith('manc:'):
                 raise ValueError('Choose a MANC release before importing this connectivity format')
-            dialog = PairGraphImportDialog(ConnectomeRef(dataset, dataset, '', dataset), reader, self)
+            dialog = PairGraphImportDialog(ConnectomeRef(dataset, dataset, '', dataset), reader, self.window())
             dialog.exec()
             if dialog.registered_source:
                 self.refresh()
@@ -597,7 +602,7 @@ class DataLibraryPage(QWidget):
         dataset = self.connectome_picker.selected_dataset
         if not dataset:
             return
-        dialog = ConnectivityDownloadDialog(dataset, self)
+        dialog = ConnectivityDownloadDialog(dataset, self.window())
         self._connectivity_dialog = dialog
         dialog.registered.connect(self.refresh)
         dialog.registered.connect(self.sources_changed)
@@ -820,7 +825,7 @@ class DataLibraryPage(QWidget):
             if not selected:
                 return
             linked = read_library_link(Path(selected))
-            review = QMessageBox(self)
+            review = QMessageBox(self.window())
             review.setWindowTitle('Remember this SWC folder?')
             review.setTextFormat(Qt.TextFormat.PlainText)
             review.setText(f'{linked.label}\nDataset: {linked.dataset}\nFolder: {linked.root}\n\n'
@@ -1189,7 +1194,7 @@ class DataLibraryPage(QWidget):
         resource = self._selected_resource()
         if resource is None:
             return
-        ManifestDialog(resource, self).exec()
+        ManifestDialog(resource, self.window()).exec()
 
     @Slot()
     def reveal_selected(self) -> None:
@@ -1273,7 +1278,7 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Data Library is not configured", str(exc))
             return
-        dialog = TrashDialog(profile, profile_path, self)
+        dialog = TrashDialog(profile, profile_path, self.window())
         dialog.resource_restored.connect(self._resource_restored)
         dialog.resource_purged.connect(self._trash_purged)
         dialog.exec()
@@ -1475,7 +1480,7 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Data Library is not configured", str(exc))
             return
-        dialog = NeuPrintImportDialog(profile, profile_path, self,
+        dialog = NeuPrintImportDialog(profile, profile_path, self.window(),
                                      preferred_dataset=self.connectome_picker.selected_dataset)
         dialog.resource_imported.connect(self._neuprint_completed)
         self._neuprint_dialog = dialog
@@ -1501,7 +1506,7 @@ class DataLibraryPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Data Library is not configured", str(exc))
             return
-        dialog = ModelDBImportDialog(profile, profile_path, self)
+        dialog = ModelDBImportDialog(profile, profile_path, self.window())
         dialog.resource_imported.connect(self._modeldb_completed)
         self._modeldb_dialog = dialog
         dialog.exec()
