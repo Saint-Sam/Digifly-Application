@@ -20,6 +20,11 @@ if ($LASTEXITCODE -ne 0) { throw "Could not create Windows icon." }
 $env:PYTHONPATH = Join-Path $stage "src"
 Push-Location $stage
 try {
+    # Prove the actual Qt wheel and staged helper before starting the compiler.
+    $graphicsPreflight = Join-Path $stage "qt-graphics-preflight"
+    New-Item -ItemType Directory -Path $graphicsPreflight | Out-Null
+    & $python "scripts\stage_windows_graphics.py" --bundle $graphicsPreflight
+    if ($LASTEXITCODE -ne 0) { throw "Qt graphics source preflight failed before compilation." }
     # Reject frozen-asset inventory/path drift before the expensive compiler.
     & $python -c "from pathlib import Path; from digifly_app.workers.pdcm_bionet_app_worker import validate_sources; from digifly_app.workers.pdcm_bionet_scalable_app_worker import validate_sources as v4; validate_sources(Path('src/digifly_app/pdcm_bionet/primary_v3')); v4(Path('src/digifly_app/pdcm_bionet/primary_v4'))"
     if ($LASTEXITCODE -ne 0) { throw "Frozen assets failed precompile validation." }
@@ -81,6 +86,22 @@ try {
     & $python "scripts\windows_package.py" archive --bundle $bundle --archive $archive
     if ($LASTEXITCODE -ne 0) { throw "Windows archive failed validation." }
     Write-Output "Validated Windows ZIP: $archive"
+}
+catch {
+    $failedRecord = $_
+    # Preserve completed compiler work if a later packaging step fails.
+    try {
+        $failedBundle = Join-Path $stage "deployment\main.dist"
+        if (Test-Path $failedBundle) {
+            $checkpoint = Join-Path $dist "failed-compiled-evidence.zip"
+            if (-not (Test-Path $checkpoint)) {
+                Compress-Archive -Path (Join-Path $failedBundle "*") -DestinationPath $checkpoint
+                Copy-Item (Join-Path $stage "windows_source_manifest.json") (Join-Path $dist "failed-compile-inputs.json")
+            }
+        }
+    }
+    catch { Write-Warning "Compiler evidence could not be archived: $($_.Exception.Message)" }
+    throw $failedRecord
 }
 finally { Pop-Location }
 # Unique staging is retained for diagnostics; previous builds/data are untouched.

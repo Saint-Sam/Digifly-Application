@@ -2426,6 +2426,35 @@ The initial inventory contains 301 UI construction sites; it does not mean
   evidence remains intact. No public release or main-branch change has occurred.
   Full compiled playback and updater checks remain required after the repair.
 
+## DF-0128: Release-upload recovery would refuse its existing saved record
+
+- **Inspection:** The release helper uses create-only evidence files. Its resume
+  path read an existing draft ID, then tried to create that same record again.
+  Python would refuse it before the remaining upload.
+- **Repair:** Reuse the saved ID after reading back the actual release, preserve
+  the original record and check every existing asset before continuing. Refuse
+  unexpected files or different package identities.
+- **Checks/status:** Four tests execute the actual generated publication
+  functions against an inert GitHub interface with create-only records. They
+  cover a new draft, saved-draft recovery, recovery after an unrecorded creation,
+  and refusal of an unrelated existing asset. Actual remote recovery has not
+  been needed or claimed. Application behavior is unchanged.
+
+## DF-0129: Windows packaging helper is absent from the normal build stage
+
+- **Symptom:** The next compiler completes, but packaging cannot find the new
+  graphics helper. It was included in release-source snapshots only, while the
+  actual application build uses the normal staging list.
+- **Repair:** Include that helper in normal inputs. Check every literal Python
+  helper used by the real build script immediately after staging. Verify the
+  actual Qt wheel in a temporary folder before compilation. Preserve compiler
+  output if a later packaging step fails.
+- **Checks/status:** A regression against the real build script first fails with
+  the missing graphics helper. After correction, 28 staging/graphics/package
+  tests pass. An actual normal source stage contains all 239 inputs and every
+  referenced helper. The earlier failed compiler/packaging job remains recorded;
+  final Windows package and native checks are still required.
+
 ## Maintenance and GitHub handoff
 
 For each new issue, record its symptom, cause when established, repair, before/

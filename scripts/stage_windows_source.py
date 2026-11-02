@@ -14,6 +14,7 @@ def inputs(root: Path) -> list[Path]:
     names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
+             "scripts/stage_windows_graphics.py",
              "scripts/check_packaged_updater.py", "docs/UPDATER_REPAIR_20261017_V1.md",
              "scripts/stage_pdcm_bionet_scalable_assets.py", "scripts/preserve_macos_runtime.py", "scripts/windows_guide_diagnostic.py", "scripts/prepare_windows_test_display.py", "docs/WINDOWS_TESTER.md"}
     metadata = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
@@ -29,6 +30,16 @@ def inputs(root: Path) -> list[Path]:
     return [root / name for name in sorted(names)]
 
 
+def verify_build_helpers(root: Path) -> list[str]:
+    script=(root/'scripts/build_windows.ps1').read_text('utf-8')
+    names=sorted({p.replace('\\','/') for p in re.findall(r'& \$python "(scripts[\\/][^"\s]+\.py)"',script)})
+    for name in names:
+        path=root/name
+        if '..' in Path(name).parts or not path.is_file() or path.is_symlink():
+            raise ValueError('Missing or unsafe staged Windows build helper: '+name)
+    return names
+
+
 def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parquet: Path | None = None) -> None:
     source = source.resolve()
     if destination.exists() or destination.is_symlink():
@@ -41,7 +52,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             ".github/workflows/windows-native-lifecycle.yml", "scripts/windows_native_lifecycle_diagnostic.py",
             "scripts/windows_compiled_graphics_diagnostic.py",
             "scripts/windows_graphics_payload_diagnostic.py",
-            "scripts/stage_windows_graphics.py", "tests/test_windows_graphics_payload.py",
+            "tests/test_windows_graphics_payload.py", "tests/test_windows_build_helpers.py",
             "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
             "tests/test_generic_experiment.py", "tests/test_morphology.py", "tests/test_experiment_builder_readiness.py", "tests/test_linked_libraries.py", "tests/test_linked_libraries_ui.py", "tests/test_saved_neurons.py", "tests/test_circuit_library.py", "tests/test_circuit_builder_ui.py", "tests/test_connectivity_download.py",
             "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_update_cleanup.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",
@@ -90,6 +101,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+    verify_build_helpers(destination)
     if pair_parquet is not None:
         stage_pair_file(pair_parquet, destination)
         for name in (PAIR_PATH, PAIR_NOTICE):

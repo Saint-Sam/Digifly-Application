@@ -14,8 +14,8 @@
       "sha256": "a57b0fc6aab805562e8d4abf8a9d3264a79089c0915b2b2d90c5b3f3196376d9"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 16377,
-      "sha256": "b6cdea0168c0b9d4383b6f8a608b1fbbd373c05e76244358467ce6d0a34a8f02"
+      "bytes": 16457,
+      "sha256": "d18b17c39efc2d97d4fd9231d2a365938f671d5d6bd4e94a34959482d9526216"
     },
     "CONTRIBUTING.md": {
       "bytes": 1308,
@@ -54,8 +54,8 @@
       "sha256": "ebd9f182f3211f13ff9c743d00e89d6a2792676b0c2d7d3c8a49d59944e5a9e3"
     },
     "docs/BUG_FIX_LOG.md": {
-      "bytes": 162596,
-      "sha256": "6191917749acc80c02d11588ef0ba35a38185e14b8ce9072d02013550cc168e8"
+      "bytes": 164415,
+      "sha256": "c57ca535924feb5427f925f8f004c29654f5aa19246995bdee7f996418708bf1"
     },
     "docs/CHANNEL_EXECUTION_REPAIR.md": {
       "bytes": 33935,
@@ -242,8 +242,8 @@
       "sha256": "37ecb875361adf1dce365392ae656e0aef7dead64fc145f6429bf325e4934f25"
     },
     "scripts/build_windows.ps1": {
-      "bytes": 6971,
-      "sha256": "52890cb97cc351d476104bfc972749d4977c57f80812ba70f064865d61cb46f1"
+      "bytes": 8070,
+      "sha256": "e4ab2d43d777e5190c06cba8fb422c4c92df86a66f8cf62dd4e353374cb7afbf"
     },
     "scripts/build_windows_neuron_payload.py": {
       "bytes": 10215,
@@ -378,8 +378,8 @@
       "sha256": "d61169826da700018e7ff17129fa0c796f1e1672e153d1610b59d5984f3a98c2"
     },
     "scripts/stage_windows_source.py": {
-      "bytes": 8464,
-      "sha256": "dcbaa9f6eb695fd2da3bb198f565d6c6a2825f8f47ffbab9f5728d348e7f7867"
+      "bytes": 9010,
+      "sha256": "a253c805221c1121a297b82bdad8221c18c6e3a337f0f7991d8a3ac8b7d0824f"
     },
     "scripts/windows_native_lifecycle_diagnostic.py": {
       "bytes": 10590,
@@ -1392,6 +1392,10 @@
     "tests/test_windows_graphics_payload.py": {
       "bytes": 1762,
       "sha256": "085cdbe2cbea1ad1adc60fd4f5d456b6354913890f36a7e622c1f7809364dc0d"
+    },
+    "tests/test_windows_build_helpers.py": {
+      "bytes": 1387,
+      "sha256": "51a0ce26e977b207dd0709c4baef8ce64ad7a35baf3d2b8673d7f52de34bc912"
     }
   }
 }
