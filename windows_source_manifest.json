@@ -1202,8 +1202,8 @@
       "sha256": "797abf5e906428a229d6a7c0c3e647e894661a0d5b50e852b9dd003fa4a4c09e"
     },
     "tests/test_native_viewport_host.py": {
-      "bytes": 8469,
-      "sha256": "2eab2dd87b086428a816c0dde79ab2841ecf99810f5e280e8c69bc1cfb2769c4"
+      "bytes": 8867,
+      "sha256": "967c97f923f3c317677a3d992f67c5187b45004322ba4374798dc757997f7b3a"
     },
     "tests/test_neuprint_acquisition.py": {
       "bytes": 21134,

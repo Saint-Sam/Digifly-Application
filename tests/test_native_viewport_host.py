@@ -8,6 +8,14 @@ from PySide6.QtWidgets import QApplication,QWidget
 from digifly_app.ui.circuit_viewport import _NativeCircuitViewport as CircuitViewport
 
 
+@pytest.fixture(params=('native', 'windows'))
+def composed_viewport(monkeypatch, request):
+    from digifly_app.ui import circuit_viewport as scene
+    selected = scene._NativeCircuitViewport if request.param == 'native' else scene._WindowsCircuitViewport
+    monkeypatch.setattr(scene, 'CircuitViewport', selected)
+    return selected
+
+
 def test_windows_uses_widget_context_and_mac_retains_native_surface():
     import sys
     from digifly_app.ui import circuit_viewport as scene
@@ -75,13 +83,13 @@ def test_native_surface_routes_same_local_camera_events_and_respects_disabled_ho
 
 
 @pytest.mark.parametrize('ratio',[1,2])
-def test_native_snapshot_obeys_parent_clipping_and_pixel_ratio(monkeypatch,ratio):
+def test_native_snapshot_obeys_parent_clipping_and_pixel_ratio(monkeypatch,ratio,composed_viewport):
     from PySide6.QtGui import QColor,QImage,QPixmap
     from digifly_app.ui.circuit_viewport import composite_native_viewports
     app=QApplication.instance() or QApplication([])
     root=QWidget();root.resize(200,120)
     clip=QWidget(root);clip.setGeometry(10,10,60,50)
-    viewport=CircuitViewport(clip);viewport.setMinimumSize(1,1);viewport.setGeometry(0,30,100,80)
+    viewport=composed_viewport(clip);viewport.setMinimumSize(1,1);viewport.setGeometry(0,30,100,80)
     native=QImage(100*ratio,80*ratio,QImage.Format.Format_ARGB32);native.fill(QColor('red'))
     monkeypatch.setattr(viewport,'isValid',lambda:True)
     monkeypatch.setattr(viewport,'grabFramebuffer',lambda:native)
@@ -96,13 +104,13 @@ def test_native_snapshot_obeys_parent_clipping_and_pixel_ratio(monkeypatch,ratio
         root.close();root.deleteLater();app.processEvents()
 
 
-def test_native_snapshot_keeps_selection_outline_above_its_scene(monkeypatch):
+def test_native_snapshot_keeps_selection_outline_above_its_scene(monkeypatch,composed_viewport):
     from PySide6.QtCore import QRect
     from PySide6.QtGui import QColor,QImage,QPixmap
     from digifly_app.ui.circuit_viewport import composite_native_viewports
     app=QApplication.instance() or QApplication([])
     root=QWidget();root.resize(150,120)
-    viewport=CircuitViewport(root);viewport.setMinimumSize(1,1);viewport.setGeometry(10,10,100,80)
+    viewport=composed_viewport(root);viewport.setMinimumSize(1,1);viewport.setGeometry(10,10,100,80)
     native=QImage(100,80,QImage.Format.Format_ARGB32);native.fill(QColor('red'))
     monkeypatch.setattr(viewport,'isValid',lambda:True)
     monkeypatch.setattr(viewport,'grabFramebuffer',lambda:native)
@@ -160,12 +168,12 @@ def test_snapshot_reads_a_presented_native_frame(monkeypatch):
         viewport.close();viewport.deleteLater();app.processEvents()
 
 
-def test_composed_capture_does_not_silently_omit_a_visible_unready_native_scene(monkeypatch):
+def test_composed_capture_does_not_silently_omit_a_visible_unready_native_scene(monkeypatch,composed_viewport):
     from PySide6.QtGui import QPixmap
     from digifly_app.ui.circuit_viewport import composite_native_viewports,NativeSceneNotReady
     app=QApplication.instance() or QApplication([])
     root=QWidget();root.resize(200,120)
-    viewport=CircuitViewport(root);viewport.setMinimumSize(1,1);viewport.setGeometry(10,10,100,80)
+    viewport=composed_viewport(root);viewport.setMinimumSize(1,1);viewport.setGeometry(10,10,100,80)
     root.show();app.processEvents()
     viewport._surface=object()
     monkeypatch.setattr(viewport,'isValid',lambda:False)
