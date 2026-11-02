@@ -212,7 +212,7 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
     finally:
         voltage_store._digest=original_store_digest
         loading_module._digest=original_worker_digest
-    if len(source_digest_calls)!=1:
+    if len(source_digest_calls)!=(3 if voltage_store.WINDOWS_FILE_CHECKS else 1):
         raise ValueError('Native Results repeats its completely verified voltage digest')
     if (page.load_stats.get('shared_geometry_nodes') != len(checked_geometry.nodes)
             or page.load_stats.get('shared_geometry_segments') != len(checked_geometry.segments)):

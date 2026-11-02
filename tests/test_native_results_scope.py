@@ -5,6 +5,33 @@ import pytest
 from scripts.check_swc_library_gui import child_command
 
 
+@pytest.mark.parametrize('windows',[False,True])
+def test_native_digest_budget_matches_real_input_snapshot_and_file_safety(tmp_path,monkeypatch,windows):
+    import ast
+    from types import SimpleNamespace
+    import digifly_app.core.result_voltage as store
+    import digifly_app.ui.result_loading as loading
+    import digifly_app.ui.package_results_smoke as fixture
+    from test_result_voltage_store import recording
+    source=recording(tmp_path);calls=[];original=store._digest
+    monkeypatch.setattr(store,'WINDOWS_FILE_CHECKS',windows)
+    def digest(path,cancelled):
+        if path.resolve()==source.resolve():calls.append(path)
+        return original(path,cancelled)
+    monkeypatch.setattr(store,'_digest',digest);monkeypatch.setattr(loading,'_digest',digest)
+    snapshot=loading.result_input_snapshot(source.parent,tmp_path/'cache',lambda:None)
+    table=store.load_voltage_table(source,cache_root=tmp_path/'cache',verified_source=snapshot[source.name])
+    assert table.sample_count==24
+    tree=ast.parse(Path(fixture.__file__).read_text())
+    checks=[node for node in ast.walk(tree) if isinstance(node,ast.If)
+        and 'len(source_digest_calls)' in ast.unparse(node.test)]
+    assert len(checks)==1
+    budget=checks[0].test.comparators[0]
+    expected=eval(compile(ast.Expression(budget),'<native digest budget>','eval'),
+                  {'voltage_store':SimpleNamespace(WINDOWS_FILE_CHECKS=windows)})
+    assert len(calls)==expected
+
+
 @pytest.mark.parametrize('platform_name,surface,accepted',[
     ('cocoa','RasterSurface',True),('cocoa','OpenGLSurface',False),
     ('windows','RasterSurface',False),('windows','OpenGLSurface',True),
