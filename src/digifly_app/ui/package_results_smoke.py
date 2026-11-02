@@ -253,6 +253,12 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
     if (page.load_stats.get('prepared_reused') or page.load_stats.get('display_reused')
             or page.voltage_plot.traces[0].voltages_mV[0] != original_value):
         raise ValueError('Changed mapped display data bypassed verification or remained visible')
+    if voltage_store.WINDOWS_FILE_CHECKS:
+        cache_store = None
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        import gc
+        gc.collect()
     from dataclasses import replace
     external=destination/'external-result-detail.txt'
     external.write_text('External result detail before change')

@@ -10,12 +10,12 @@
       "sha256": "92e7acb3736e4ad2d0cd1622a66399bfe210543df3fb4616aadebe86c50b6b72"
     },
     ".github/workflows/windows-native-lifecycle.yml": {
-      "bytes": 2188,
-      "sha256": "6c82c14e15f9b37a6d065b09effa3dab842dc03e5f6b48751a1a84dc2d0563f7"
+      "bytes": 3120,
+      "sha256": "bf315701f2ecc228f47cb2676f873fdee4e96f4f2a09a32801272171eec6a866"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 15829,
-      "sha256": "7f3e0347e5532cb4e7b2c524ca0e4952375079e5d0e279ed316d49d05501e18a"
+      "bytes": 15959,
+      "sha256": "f81a712c1080b3a7aaeb56b8241162d9bbcc2d4580f3a70422b43d7f46204291"
     },
     "CONTRIBUTING.md": {
       "bytes": 1308,
@@ -906,8 +906,8 @@
       "sha256": "90489e8c751aac54c87cf5a99fd25923c69ba6a12afb3381e02cd9697c5e844b"
     },
     "src/digifly_app/ui/package_results_smoke.py": {
-      "bytes": 39024,
-      "sha256": "a53cc05b89d196f773e358e60b2fa7d12aab3583b7dda0582a4ce24144c6c624"
+      "bytes": 39268,
+      "sha256": "8d0ac75acbbe65083cf03124df10912d56c1d8ed1288d41b2aef81607a685d28"
     },
     "src/digifly_app/ui/package_smoke.py": {
       "bytes": 6000,

@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   runtime:
-    if: ${{ !contains(github.event.head_commit.message, '[lifecycle-only]') && !contains(github.event.head_commit.message, '[guide-only]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[lifecycle-only]') && !contains(github.event.head_commit.message, '[guide-only]') && !contains(github.event.head_commit.message, '[results-only]') }}
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -40,7 +40,7 @@ jobs:
           path: |
             ${{ runner.temp }}/private-neuron-test/digifly-install-receipt.json
   app:
-    if: ${{ !contains(github.event.head_commit.message, '[lifecycle-only]') && !contains(github.event.head_commit.message, '[guide-only]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[lifecycle-only]') && !contains(github.event.head_commit.message, '[guide-only]') && !contains(github.event.head_commit.message, '[results-only]') }}
     needs: runtime
     runs-on: windows-2022
     timeout-minutes: 60
