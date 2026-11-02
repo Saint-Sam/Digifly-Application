@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
@@ -40,6 +40,39 @@ def picture_path(key: str) -> Path:
     return Path(__file__).resolve().parents[1] / 'assets' / f'connectome_{key}.png'
 
 
+class ConnectomePicture(QLabel):
+    """Keep the original pixels until the actual screen density is known."""
+
+    def __init__(self, key: str, parent=None):
+        super().__init__(parent)
+        self.original = QPixmap(str(picture_path(key)))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(132)
+        self.refresh_picture()
+
+    def refresh_picture(self):
+        if self.original.isNull():
+            self.setText('Picture unavailable')
+            return
+        ratio = self.devicePixelRatioF()
+        logical_width = max(1, min(270, self.contentsRect().width()))
+        target = QSize(round(logical_width * ratio), round(128 * ratio))
+        picture = self.original.scaled(target, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation)
+        picture.setDevicePixelRatio(ratio)
+        self.setPixmap(picture)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_picture()
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == QEvent.Type.DevicePixelRatioChange and hasattr(self, 'original'):
+            self.refresh_picture()
+        return result
+
+
 class ConnectomePicker(Card):
     dataset_selected = Signal(str)
 
@@ -71,17 +104,9 @@ class ConnectomePicker(Card):
             body = QVBoxLayout(card)
             body.setContentsMargins(12, 12, 12, 12)
             body.setSpacing(8)
-            image = QLabel()
+            image = ConnectomePicture(choice.key)
             image.setObjectName('ConnectomePicture')
             image.setAccessibleName(f'{choice.name} picture from neuPrint')
-            image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            image.setFixedHeight(132)
-            pixmap = QPixmap(str(picture_path(choice.key)))
-            if pixmap.isNull():
-                image.setText(f'{choice.name} picture unavailable')
-            else:
-                image.setPixmap(pixmap.scaled(270, 128, Qt.AspectRatioMode.KeepAspectRatio,
-                                              Qt.TransformationMode.SmoothTransformation))
             body.addWidget(image)
             button = QPushButton(choice.name)
             button.setObjectName('ConnectomeChoiceButton')

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 from pathlib import Path
 import time
 import tempfile
@@ -36,6 +37,17 @@ def _wait_until(predicate, timeout: float) -> bool:
     return bool(predicate())
 
 
+def dispose_neuron_fixture(window, app):
+    """Delete only idle engineering widgets before Python begins finalization."""
+    from .runtime_setup import RuntimeSetupDialog
+    from .package_library_smoke import dispose_fixture_window
+    if getattr(getattr(window,'experiment_page',None),'_process',None) is not None:
+        raise RuntimeError('Refusing to destroy an active fixture experiment')
+    if any(dialog._thread is not None for dialog in window.findChildren(RuntimeSetupDialog)):
+        raise RuntimeError('Refusing to destroy an active fixture installation')
+    dispose_fixture_window(window,app)
+
+
 def run_neuron_package_smoke(destination: Path) -> int:
     from PySide6.QtCore import Qt
     from digifly_app.core.app_settings import app_settings, SETTINGS_ROOT_ENV
@@ -53,6 +65,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
     record = {"ok": False, "scope": "Windows private NEURON install plus actual app Run on tiny engineering fixture; not user-selected presets/paper/equivalence acceptance"}
     original_question, original_warning, original_critical, original_information = QMessageBox.question, QMessageBox.warning, QMessageBox.critical, QMessageBox.information
     errors = []
+    window = None
     def checkpoint(phase: str) -> None:
         record["phase"] = phase
         (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
@@ -128,16 +141,31 @@ def run_neuron_package_smoke(destination: Path) -> int:
         volts = [float(row["voltage_mV"]) for row in rows]
         assert len(volts)>50 and all(math.isfinite(v) for v in volts) and max(volts)-min(volts)>1
         assert hashlib.sha256(source.read_bytes()).hexdigest()==sha
+        from .circuit_viewport import CircuitViewport, _WindowsCircuitViewport
+        viewports = window.findChildren(CircuitViewport)
+        assert viewports, 'No actual circuit renderer in the app'
+        if sys.platform == 'win32':
+            assert all(isinstance(view, _WindowsCircuitViewport) for view in viewports)
         window.grab().save(str(destination / "neuron-app-run.png"))
-        record.update(ok=True, health=health, ui_install=True, ui_runtime_binding=True,
+        record.update(health=health, ui_install=True, ui_runtime_binding=True,
             ui_run=True, finite_voltage_samples=len(volts), min_mV=min(volts), max_mV=max(volts),
-            run_root=str(root), installed_python=str(python), source_unchanged=True, registry_changed=False, global_path_changed=False)
+            run_root=str(root), installed_python=str(python), source_unchanged=True, registry_changed=False, global_path_changed=False,
+            viewport_backend=CircuitViewport.__name__, viewport_count=len(viewports))
         checkpoint("close isolated app")
-        window.close()
-        app.processEvents()
+        dispose_neuron_fixture(window,app)
+        window = None
+        record.update(ok=True, fixture_widgets_deleted=True)
+        checkpoint("isolated app closed")
     except Exception:
+        record['ok'] = False
         record["error"] = traceback.format_exc()
     finally:
+        if window is not None:
+            try:
+                dispose_neuron_fixture(window,app)
+            except Exception:
+                record['ok'] = False
+                record['shutdown_error'] = traceback.format_exc()
         QMessageBox.question, QMessageBox.warning, QMessageBox.critical, QMessageBox.information = original_question, original_warning, original_critical, original_information
         faulthandler.cancel_dump_traceback_later()
         faulthandler.disable()

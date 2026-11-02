@@ -4,6 +4,7 @@ from array import array
 from dataclasses import dataclass
 from math import ceil, isfinite, radians, sqrt, tan
 from typing import Iterable, Mapping
+import sys
 import weakref
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, Slot
@@ -18,6 +19,7 @@ from PySide6.QtOpenGL import (
     QOpenGLWindow,
 )
 from PySide6.QtWidgets import QApplication, QMessageBox, QRubberBand, QVBoxLayout, QWidget
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from digifly_app.core.morphology import Morphology, SomaLocation, SwcSegment, locate_soma
 from digifly_app.core.connectomes import unwrapped_connectome_key
@@ -238,7 +240,8 @@ class _NativeRubberBand(QRubberBand):
     """Keep the selection outline above the native scene, clipped to its host."""
     def __init__(self, parent):
         super().__init__(QRubberBand.Shape.Rectangle,parent)
-        if QApplication.platformName() not in {'offscreen','minimal'}:
+        if (getattr(parent, '_uses_native_surface', True)
+                and QApplication.platformName() not in {'offscreen','minimal'}):
             self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -1812,6 +1815,13 @@ class _CircuitScene:
             super().keyPressEvent(event)
 
 
+class NativeSceneNotReady(RuntimeError):
+    """A native scene has no safe presented framebuffer to capture yet."""
+    def __init__(self,message,*,details=None):
+        super().__init__(message)
+        self.details=details or {}
+
+
 class _CircuitSurface(QOpenGLWindow):
     """Own only the 3-D surface; ordinary controls retain a raster window."""
     def __init__(self, owner):
@@ -1868,7 +1878,7 @@ class _CircuitSurface(QOpenGLWindow):
         else:self._forward('keyPressEvent',event)
 
 
-class CircuitViewport(_CircuitScene,QWidget):
+class _NativeCircuitViewport(_CircuitScene,QWidget):
     """Raster widget host for the same batched native OpenGL scene."""
     neuron_selected = Signal(str)
     neurons_selected = Signal(object)
@@ -1911,7 +1921,17 @@ class CircuitViewport(_CircuitScene,QWidget):
         if self._surface is not None:self._surface.doneCurrent()
 
     def grabFramebuffer(self):
-        return self._surface.grabFramebuffer() if self.isValid() else QImage()
+        if not self.isValid():return QImage()
+        surface=self._surface
+        # A valid context can precede allocation of PartialUpdateBlit's FBO.
+        # Qt's native grab dereferences that missing FBO rather than raising.
+        framebuffer=surface.defaultFramebufferObject()
+        if (not surface.isExposed() or not framebuffer
+                or surface.width()<=0 or surface.height()<=0):
+            raise NativeSceneNotReady('The native scene is preparing its first visible frame. Try the snapshot again after it renders.',
+                details={'exposed':surface.isExposed(),'framebuffer':framebuffer,
+                         'width':surface.width(),'height':surface.height()})
+        return surface.grabFramebuffer()
 
     def update(self,*args):
         surface=getattr(self,'_surface',None)
@@ -1924,13 +1944,47 @@ class CircuitViewport(_CircuitScene,QWidget):
         super().hideEvent(event)
 
 
+class _WindowsCircuitViewport(_CircuitScene, QOpenGLWidget):
+    """Use a widget-owned GL context for Windows window teardown.
+
+    The embedded QOpenGLWindow crashes after the native installation/Run path
+    on Windows. The widget backend uses the identical scene and model data.
+    macOS retains its raster top-level window and native child surface.
+    """
+    _uses_native_surface = False
+    neuron_selected = Signal(str)
+    neurons_selected = Signal(object)
+    compartments_changed = Signal(str, object)
+    isolation_changed = Signal(bool)
+    display_mode_changed = Signal(str)
+    status_message = Signal(str)
+
+    def __init__(self, parent=None, *, camera_only=False):
+        super().__init__(parent, camera_only=camera_only)
+        self._surface = None
+        self._surface_container = None
+
+    def hideEvent(self, event):
+        self._rubber_band.hide()
+        self._box_selecting = False
+        self._box_origin = None
+        super().hideEvent(event)
+
+
+def _viewport_class(platform):
+    return _WindowsCircuitViewport if platform == 'win32' else _NativeCircuitViewport
+
+
+CircuitViewport = _viewport_class(sys.platform)
+
+
 def composite_native_viewports(widget,pixmap,rectangle=None):
     """Include native child scenes in app-owned window snapshots, with clipping."""
     painter=QPainter(pixmap)
     if rectangle is not None:painter.translate(-rectangle.topLeft())
     try:
         for viewport in widget.findChildren(CircuitViewport):
-            if not viewport.isVisibleTo(widget) or not viewport.isValid():continue
+            if not viewport.isVisibleTo(widget):continue
             clip=QRect(viewport.rect());ancestor=viewport.parentWidget()
             while ancestor is not None:
                 bounds=QRect(viewport.mapFrom(ancestor,QPoint()),ancestor.size())
@@ -1938,6 +1992,10 @@ def composite_native_viewports(widget,pixmap,rectangle=None):
                 if ancestor is widget:break
                 ancestor=ancestor.parentWidget()
             if clip.isEmpty():continue
+            if not viewport.isValid():
+                if viewport._surface is not None:
+                    raise NativeSceneNotReady('The native scene is preparing its first visible frame. Try the snapshot again after it renders.')
+                continue
             image=viewport.grabFramebuffer()
             if image.isNull():raise RuntimeError('Native scene snapshot is empty')
             origin=viewport.mapTo(widget,QPoint())

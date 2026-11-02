@@ -38,3 +38,12 @@ def test_exact_closed_copy_identity_and_counterexamples(tmp_path,fault):
     else:
         checked=runner.checked_review_copy(exe,receipt)
         assert checked['build']=='fixture14' and checked['receipt']==str(receipt.resolve())
+
+
+def test_completed_installed_copy_keeps_the_same_identity_guard(tmp_path):
+    exe,receipt,record=example(tmp_path)
+    record['mode']='install';receipt.write_text(json.dumps(record))
+    assert runner.checked_review_copy(exe,receipt)['build']=='fixture14'
+    exe.write_bytes(b'wrong installed executable')
+    with pytest.raises(ValueError,match='does not match'):
+        runner.checked_review_copy(exe,receipt)

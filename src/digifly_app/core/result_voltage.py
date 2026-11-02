@@ -38,6 +38,7 @@ SCHEMA = 'digifly-voltage-display-v2'
 REPLAY_BINDING_SCHEMA = 'digifly-replay-bindings-v1'
 CACHE_BYTES = 2 * 1024**3
 RESERVE_BYTES = 2 * 1024**3
+WINDOWS_FILE_CHECKS = sys.platform == 'win32'
 
 
 class LoadCancelled(Exception):
@@ -62,6 +63,13 @@ def _stamp(path):
     stat = path.stat()
     return [str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
             stat.st_dev, stat.st_ino]
+
+
+def _check_source_bytes(path, digest, cancelled):
+    # Windows can give a same-length, rapid rewrite the same stat timestamps.
+    # Keep the request's digest check even when that metadata appears unchanged.
+    if WINDOWS_FILE_CHECKS and _digest(path, cancelled) != digest:
+        raise ValueError('Saved voltage changed during loading; open the completed result again')
 
 
 class MappedTraceMetadata:
@@ -483,6 +491,16 @@ def _write_cache(folder, table, source, digest, cancelled, progress):
     _check(cancelled)
 
 
+def _remove_cache(path):
+    if not _marked_cache(path):
+        raise OSError('Unrecognized cache folder; leaving it unchanged')
+    # Delete the mapped payload first. If Windows still has an open view, the
+    # failure leaves the complete marker/index for a later safe retirement.
+    for name in ('values.bin', 'index.jsonl', 'ready.json'):
+        (path/name).unlink(missing_ok=True)
+    path.rmdir()
+
+
 def _prune(root, keep):
     entries = [p for p in root.iterdir() if len(p.name) == 64 and all(c in '0123456789abcdef' for c in p.name) and _marked_cache(p)]
     total = sum(sum(f.stat().st_size for f in p.iterdir()) for p in entries)
@@ -493,7 +511,7 @@ def _prune(root, keep):
             continue
         size = sum(f.stat().st_size for f in path.iterdir())
         try:
-            shutil.rmtree(path)
+            _remove_cache(path)
             total -= size
         except OSError:
             pass  # Windows can retain a mapped/open cache until its reader closes.
@@ -518,7 +536,8 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
     else:
         digest = verified_source.get('sha256')
         if (verified_source.get('stamp') != source or not isinstance(digest,str)
-                or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest)):
+                or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest)
+                or (WINDOWS_FILE_CHECKS and _digest(path,cancelled)!=digest)):
             raise ValueError('Saved voltage changed since input verification; reopen the completed result')
     _check(cancelled)
     root = Path(cache_root).resolve()
@@ -535,6 +554,7 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
             raise ValueError('Saved voltage changed during loading; open the completed result again')
         if cached is not None:
             _check(cancelled)
+            _check_source_bytes(path,digest,cancelled)
             return cached
     table = _parse(path, cancelled, progress, maximum_samples)
     if _stamp(path) != source:
@@ -543,6 +563,7 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
         root.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(root).free < RESERVE_BYTES + table.sample_count*16 + 128*1024**2:
             table.cache_note = 'Display cache skipped to preserve free disk space'
+            _check_source_bytes(path,digest,cancelled)
             return table
         with tempfile.TemporaryDirectory(prefix='.partial-', dir=root) as temporary:
             staging = Path(temporary)
@@ -553,7 +574,7 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
             if folder.exists():
                 if not _marked_cache(folder):
                     raise OSError('Unrecognized cache folder; leaving it unchanged')
-                shutil.rmtree(folder)
+                _remove_cache(folder)
             staging.rename(folder)
         _prune(root, folder)
         # Retiring hundreds of thousands of separate cold arrays while
@@ -567,5 +588,6 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
         table = mapped
     except OSError as exc:
         table.cache_note = f'Display cache unavailable: {exc}'
+    _check_source_bytes(path,digest,cancelled)
     _check(cancelled)
     return table

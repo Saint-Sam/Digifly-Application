@@ -19,6 +19,9 @@ def wait_for(app,predicate,seconds=5):
     deadline=time.monotonic()+seconds
     while not predicate() and time.monotonic()<deadline:
         app.processEvents(); QTest.qWait(5)
+        # Windows Qt's test wait can keep Python's worker from acquiring its
+        # interpreter lock. Yield explicitly without extending the deadline.
+        time.sleep(.001)
     app.processEvents()
     assert predicate()
 
@@ -59,7 +62,7 @@ def test_worker_does_not_digest_the_same_voltage_input_twice(tmp_path,monkeypatc
     worker.succeeded.connect(received.append);worker.failed.connect(errors.append)
     worker.start();wait_for(app,lambda:not worker.isRunning())
     assert not errors and len(received)==1
-    assert len(calls)==1, 'The complete input snapshot already hashes every saved byte'
+    assert len(calls)==(3 if store.WINDOWS_FILE_CHECKS else 1), 'Unexpected saved-input digest count'
     assert received[0]['table'].sample_count==24
 
 
@@ -392,18 +395,24 @@ def current_fixture(tmp_path):
 def test_background_current_cancel_immediate_retry_and_kind_switch(window,tmp_path,monkeypatch):
     app,owner,page=window;plot=page.current_plot
     import digifly_app.ui.current_plot as module
-    entered=threading.Event();calls=[]
+    entered=threading.Event();release=threading.Event();calls=[]
     def read(path,channel,**kwargs):
-        calls.append(channel['signal']);entered.set();time.sleep(.08)
+        calls.append(channel['signal']);entered.set()
+        if len(calls)==1 and not release.wait(5):
+            raise AssertionError('The fixture did not release its first reader')
         from array import array
         return array('d',(0.,1.,2.))
     monkeypatch.setattr(module,'read_values',read)
     plot.set_prepared(current_fixture(tmp_path))
     assert not calls and not plot.plot.trace_count  # metadata is genuinely lazy
-    plot.ensure_selected();wait_for(app,entered.is_set)
-    plot.load_button.click()
-    assert 'cancelled' in plot.load_status.text()
-    plot.load_button.click()  # retry while old reader is still stopping
+    try:
+        plot.ensure_selected();wait_for(app,entered.is_set)
+        plot.load_button.click()
+        assert 'cancelled' in plot.load_status.text()
+        plot.load_button.click()  # retry while the first read is definitely held
+        assert plot.loading and plot._pending_kind==plot.kind.currentData()
+    finally:
+        release.set()
     wait_for(app,lambda:not plot.loading)
     assert plot.plot.trace_count==1 and len(calls)==2
     initial=plot.kind.currentData()

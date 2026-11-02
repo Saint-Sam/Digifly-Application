@@ -13,13 +13,26 @@ def test_verified_digest_avoids_only_the_duplicate_source_read(tmp_path,monkeypa
     import digifly_app.core.result_voltage as store
     path=recording(tmp_path);checked=identity(path);calls=[];original=store._digest
     def digest(candidate,cancelled):
-        assert candidate.resolve()!=path.resolve(), 'Already verified source was hashed twice'
+        if not store.WINDOWS_FILE_CHECKS:
+            assert candidate.resolve()!=path.resolve(), 'Already verified source was hashed twice'
         calls.append(candidate.name);return original(candidate,cancelled)
     monkeypatch.setattr(store,'_digest',digest)
     first=load_voltage_table(path,cache_root=tmp_path/'cache',verified_source=checked)
     warm=load_voltage_table(path,cache_root=tmp_path/'cache',verified_source=checked)
     assert first.sample_count==warm.sample_count==24 and warm.cache_hit
     assert 'index.jsonl' in calls and 'values.bin' in calls
+
+
+def test_windows_same_stamp_write_still_refuses_verified_source(tmp_path,monkeypatch):
+    import digifly_app.core.result_voltage as store
+    path=recording(tmp_path);checked=identity(path)
+    monkeypatch.setattr(store,'WINDOWS_FILE_CHECKS',True,raising=False)
+    original_stamp=store._stamp
+    monkeypatch.setattr(store,'_stamp',lambda p:checked['stamp'] if p.resolve()==path.resolve() else original_stamp(p))
+    path.write_text(path.read_text().replace('42.0','43.0'))
+    with pytest.raises(ValueError,match='changed since input verification'):
+        load_voltage_table(path,cache_root=tmp_path/'cache',verified_source=checked)
+    assert not (tmp_path/'cache').exists()
 
 
 @pytest.mark.parametrize('fault',['changed','replaced','wrong-file','missing-digest','invalid-digest'])

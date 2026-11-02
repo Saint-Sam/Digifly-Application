@@ -38,3 +38,26 @@ def test_fixture_refuses_to_delete_an_active_reader():
     finally:
         window.deleteLater()
         QCoreApplication.sendPostedEvents(window,QEvent.Type.DeferredDelete)
+
+
+def test_neuron_fixture_uses_the_live_qt_disposal_path():
+    from digifly_app.ui.package_neuron_smoke import dispose_neuron_fixture
+    app=QApplication.instance() or QApplication([])
+    window,calls=fixture_window()
+    dispose_neuron_fixture(window,app)
+    assert not isValid(window)
+    assert calls==['cancel','browser','builder']
+
+
+def test_neuron_fixture_never_deletes_an_active_experiment():
+    from digifly_app.ui.package_neuron_smoke import dispose_neuron_fixture
+    app=QApplication.instance() or QApplication([])
+    window,calls=fixture_window()
+    window.experiment_page=SimpleNamespace(_process=object())
+    try:
+        with pytest.raises(RuntimeError,match='active fixture experiment'):
+            dispose_neuron_fixture(window,app)
+        assert isValid(window) and not calls
+    finally:
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(window,QEvent.Type.DeferredDelete)
