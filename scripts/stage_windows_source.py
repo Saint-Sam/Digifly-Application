@@ -15,7 +15,7 @@ def inputs(root: Path) -> list[Path]:
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
              "scripts/check_packaged_updater.py", "docs/UPDATER_REPAIR_20261017_V1.md",
-             "scripts/stage_pdcm_bionet_scalable_assets.py", "scripts/preserve_macos_runtime.py", "scripts/windows_guide_diagnostic.py", "docs/WINDOWS_TESTER.md"}
+             "scripts/stage_pdcm_bionet_scalable_assets.py", "scripts/preserve_macos_runtime.py", "scripts/windows_guide_diagnostic.py", "scripts/prepare_windows_test_display.py", "docs/WINDOWS_TESTER.md"}
     metadata = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
     for files in metadata["tool"]["setuptools"]["data-files"].values():
         names.update(files)
@@ -61,7 +61,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_first_experiment.py", "tests/test_bug_fix_log.py",
             "tests/test_columnar_cached_voltage.py", "tests/test_current_tracking.py",
             "tests/test_morphology_loading_checkpoints.py", "tests/test_native_fixture_shutdown.py",
-            "tests/test_native_results_scope.py", "tests/test_native_viewport_host.py",
+            "tests/test_native_results_scope.py", "tests/test_native_viewport_host.py", "tests/test_windows_test_display.py",
             "tests/test_prepared_mapped_cache_integrity.py", "tests/test_qt_callback_guard.py",
             "tests/test_result_bindings_cache.py", "tests/test_result_geometry_sharing.py",
             "tests/test_result_loading_async.py", "tests/test_result_source_verification.py",

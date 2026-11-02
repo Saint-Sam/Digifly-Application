@@ -10,12 +10,12 @@
       "sha256": "92e7acb3736e4ad2d0cd1622a66399bfe210543df3fb4616aadebe86c50b6b72"
     },
     ".github/workflows/windows-native-lifecycle.yml": {
-      "bytes": 1981,
-      "sha256": "df2ee296bb6a530e51f6f7f281a659597089e22f780c91c0c104a758af24b186"
+      "bytes": 2188,
+      "sha256": "6c82c14e15f9b37a6d065b09effa3dab842dc03e5f6b48751a1a84dc2d0563f7"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 15473,
-      "sha256": "1c81943c479d4cc471d91c2abdd86936368a9c75818e2d42191c206eff9539e7"
+      "bytes": 15829,
+      "sha256": "7f3e0347e5532cb4e7b2c524ca0e4952375079e5d0e279ed316d49d05501e18a"
     },
     "CONTRIBUTING.md": {
       "bytes": 1308,
@@ -378,8 +378,8 @@
       "sha256": "d61169826da700018e7ff17129fa0c796f1e1672e153d1610b59d5984f3a98c2"
     },
     "scripts/stage_windows_source.py": {
-      "bytes": 8136,
-      "sha256": "680597575daa7036f7483ca4783f6727d93dd90a23f0e7aad4ff0400fd2e475a"
+      "bytes": 8217,
+      "sha256": "a7218f96209c0e09be6f6aedc55e764fcef5ebc7fe9cea5bbfd1ecd112578901"
     },
     "scripts/windows_native_lifecycle_diagnostic.py": {
       "bytes": 10590,
@@ -1364,6 +1364,14 @@
     "scripts/windows_guide_diagnostic.py": {
       "bytes": 2986,
       "sha256": "935be7c0e02bab602ed43b167d0fecc9f0b105570c1b3f5380b179811b6e5d5c"
+    },
+    "scripts/prepare_windows_test_display.py": {
+      "bytes": 4181,
+      "sha256": "50c33d9fb9380a0e38d16530757600654ee1778f896dc597c3b1616cc3808b80"
+    },
+    "tests/test_windows_test_display.py": {
+      "bytes": 769,
+      "sha256": "fc7dee16a5bfc28115e0f63709633fdc81e7d57ea542dc3f73f455176dbee567"
     }
   }
 }

@@ -65,12 +65,16 @@ jobs:
         run: |
           ./scripts/setup_dev.ps1
           if ($LASTEXITCODE -ne 0) { throw 'App setup failed' }
+          $env:QT_QPA_PLATFORM = 'windows'
+          ./.venv/Scripts/python.exe scripts/prepare_windows_test_display.py --output source-display.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native test desktop does not fit the app window' }
+          $env:QT_QPA_PLATFORM = 'offscreen'
           if (Test-Path bundled_data/manc/unique_pairs_by_id.parquet) { $env:DIGIFLY_TEST_MANC_PARQUET = (Resolve-Path bundled_data/manc/unique_pairs_by_id.parquet).Path }
           ./.venv/Scripts/python.exe -m pytest tests/test_library_review_launch.py tests/test_neuprint_contacts.py tests/test_located_contact_execution.py tests/test_aggregate_chemical_execution.py tests/test_swc_fragments.py tests/test_swc_quality.py tests/test_swc_units.py tests/test_mechanisms.py tests/test_bmtk_bionet_worker.py tests/test_channel_execution.py tests/test_regional_execution.py tests/test_generic_experiment.py::test_classic_arbor_request_pins_hh_table_translator_without_native_channels tests/test_generic_experiment.py::test_generic_adapter_retains_bmtk_single_cell_gap_policy_without_inventing_contacts tests/test_generic_experiment.py::test_generic_adapter_accepts_bmtk_chemical_lane_and_selects_bionet_worker --junitxml=connected-model-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Connected-model/fragment source regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_result_storage.py tests/test_voltage_plot.py tests/test_results_responsive_layout.py tests/test_morphology_voltage_ui.py tests/test_result_playback.py --junitxml=results-review-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Results layout, recording scope or state-action regressions failed' }
-          ./.venv/Scripts/python.exe -m pytest tests/test_first_experiment.py tests/test_columnar_cached_voltage.py tests/test_current_tracking.py tests/test_morphology_loading_checkpoints.py tests/test_native_fixture_shutdown.py tests/test_native_results_scope.py tests/test_native_viewport_host.py tests/test_prepared_mapped_cache_integrity.py tests/test_qt_callback_guard.py tests/test_result_bindings_cache.py tests/test_result_geometry_sharing.py tests/test_result_loading_async.py tests/test_result_source_verification.py tests/test_result_voltage_store.py tests/test_review_copy_admission.py tests/test_shared_cached_trace_records.py tests/test_view_mode_accessibility.py --junitxml=wizard-current-loading-source-tests.xml
+          ./.venv/Scripts/python.exe -m pytest tests/test_windows_test_display.py tests/test_first_experiment.py tests/test_columnar_cached_voltage.py tests/test_current_tracking.py tests/test_morphology_loading_checkpoints.py tests/test_native_fixture_shutdown.py tests/test_native_results_scope.py tests/test_native_viewport_host.py tests/test_prepared_mapped_cache_integrity.py tests/test_qt_callback_guard.py tests/test_result_bindings_cache.py tests/test_result_geometry_sharing.py tests/test_result_loading_async.py tests/test_result_source_verification.py tests/test_result_voltage_store.py tests/test_review_copy_admission.py tests/test_shared_cached_trace_records.py tests/test_view_mode_accessibility.py --junitxml=wizard-current-loading-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Wizard, current tracking or shared Results loading regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_experiment_setting_interactions.py tests/test_experiment.py tests/test_experiment_builder_cancellation.py tests/test_circuit_experiment_globals_ui.py tests/test_condition_execution.py tests/test_generic_recording_sample_preflight.py tests/test_ramp_quadrature.py --junitxml=experiment-settings-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Experiment settings inventory, bindings or interactions failed' }
@@ -145,6 +149,7 @@ jobs:
             results-review-source-tests.xml
             wizard-current-loading-source-tests.xml
             experiment-settings-source-tests.xml
+            source-display.json
             source-neuron-ui-evidence/*.json
             source-neuron-ui-evidence/*.txt
             source-neuron-ui-evidence/*.png
