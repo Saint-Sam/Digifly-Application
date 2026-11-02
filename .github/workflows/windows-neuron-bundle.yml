@@ -146,6 +146,9 @@ jobs:
             source-neuron-ui-evidence/*.json
             source-neuron-ui-evidence/*.txt
             source-neuron-ui-evidence/*.png
+            source-library-ui-evidence/*.json
+            source-library-ui-evidence/*.txt
+            source-library-ui-evidence/*.png
             neuron-ui-evidence/*.json
             neuron-ui-evidence/*.txt
             neuron-ui-evidence/*.png

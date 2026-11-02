@@ -10,8 +10,8 @@
       "sha256": "92e7acb3736e4ad2d0cd1622a66399bfe210543df3fb4616aadebe86c50b6b72"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 15052,
-      "sha256": "2dcfa991bbc11118e60b00ed9073b5168dfd5dac8acb2669c79d4a7b7253a456"
+      "bytes": 15188,
+      "sha256": "50507af35c20c85e44b21e4acec3ee6cdebd5f288651fd0eec09ea43c2993737"
     },
     "CONTRIBUTING.md": {
       "bytes": 1308,
@@ -1246,8 +1246,8 @@
       "sha256": "8c3bc4cf259ca954a311b4da99fb0e7d3f57e7aae31aa887e8673607c77014d8"
     },
     "tests/test_result_loading_async.py": {
-      "bytes": 35399,
-      "sha256": "f03d20c991b3d6dda307f0a0b1c9800bf02b2ec55c280ab1f93b2cf0ccfa8b5f"
+      "bytes": 35681,
+      "sha256": "0831b8f77d8f5164d74c0b09cb635d51dbc08c2a767f41c4dd3a8c3ce08449d7"
     },
     "tests/test_result_playback.py": {
       "bytes": 9482,
