@@ -20,7 +20,7 @@ declared gap-junction models. Runs retain their settings, source details and
 results. This is alpha software: checked bounded protocols do not establish that
 every control interaction or arbitrary circuit works. The
 [student-readiness record](docs/STUDENT_READINESS_MAC_20261028.md) lists that
-unfinished work; Windows verification is currently deferred.
+unfinished work. Windows Server 2022 package checks cover included NEURON setup, a tiny app experiment, saved Results and updater recovery. Windows 11 testing remains open.
 
 The app has a backend-unbound Circuit Builder preview. It discovers local SWC
 roots, selects morphologies by neuron ID or path-derived type/family, renders

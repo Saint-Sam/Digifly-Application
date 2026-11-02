@@ -11,6 +11,10 @@ computer or scientific model is verified. Dates are the dates of investigation
 or delivery, not necessarily when the bug was introduced. Release notes can
 summarize this log without replacing it.
 
+## November 2 release
+
+The current Mac and Windows downloads are 20261102.10. Both include the simplified wizard and high-density connectome pictures. Earlier entries retain the build and test status recorded during each repair.
+
 ## In progress — Mac student-readiness review, October 28, 2026
 
 Windows work is deferred for this review. The starting package is 20261026.9.
@@ -249,7 +253,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Status:** Developer-checker repair, not a simulator or app behavior change.
   Actual Help opening/Close was separately checked for 36 labeled instances.
   This does not establish every setting interaction or student readiness.
-- **Record:** [Student-readiness checker](../scripts/student_readiness.py).
+- **Record:** Student-readiness checker (local test record).
 
 ## Historical repairs
 
@@ -265,7 +269,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   Mac packages. The later source inventory matched the authoritative 165,114
   Traced release IDs. “Traced” coverage is not every annotation status or a
   guarantee that each skeleton is simulation-ready.
-- **Record:** [Local source recovery](MALE_CNS_LOCAL_SOURCE_EVIDENCE_20261002_V1.md).
+- **Record:** Local source recovery (local test record).
 
 ### DF-0010 — Mixed Male CNS coordinate units separate connected anatomy
 
@@ -277,7 +281,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   Unknown conventions refuse rather than being guessed.
 - **Verification:** The actual 10-neuron view, preview/staging geometry and
   custom-save roundtrip passed. No per-neuron translation or invented bridge.
-- **Record:** [Coordinate repair](MALE_CNS_COORDINATE_REPAIR_20261002_V1.md).
+- **Record:** Coordinate repair (local test record).
 
 ### DF-0011 — Circuit settings are visible but unavailable to execution
 
@@ -302,7 +306,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   new cache version, without changing equations or linking a second solver.
 - **Verification:** Fresh compile/load and actual packaged electrical control
   passed. The failed candidate and old cache evidence were retained.
-- **Record:** [Electrical delivery](ELECTRICAL_CONTACT_MESH_DELIVERY_20261003_V1.md).
+- **Record:** Electrical delivery (local test record).
 
 ### DF-0013 — Fine-step Arbor sampling repeats a native state
 
@@ -326,7 +330,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification:** Actual saved-run conversion, raster filtering, export and
   reopen passed without rerunning the model. The original scientific inputs
   and execution remained frozen; publication-level replication is unfinished.
-- **Record:** [BioNet saved-results repair](PDCM_BIONET_SONATA_PORT.md#october-8-separate-5-observation-and-results-only-packaged-repair-checked).
+- **Record:** BioNet saved-results repair (local test record).
 
 ### DF-0015 — Combined neuron names behave differently from individual searches
 
@@ -338,7 +342,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and truncation, and freeze query inputs while work is active.
 - **Verification/delivery:** Shared source and compiled Mac/Windows controls
   passed. Live authenticated Windows retrieval remained a separate limitation.
-- **Record:** [Combined selection repair](SWC_LIBRARY_REPAIR_20261016_V1.md#october17-combined-bounded-selection-repair).
+- **Record:** Combined selection repair (local test record).
 
 ### DF-0016 — Downloads create separate search-named SWC collections
 
@@ -351,7 +355,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   approval before downloading replacement bytes. Retain the previous copy.
 - **Verification:** Compiled Keep, Cancel, Replace, local intake and combined
   loading checks passed. Changed files, duplicates and unsafe paths refuse.
-- **Record:** [Single-tree storage](SWC_LIBRARY_REPAIR_20261016_V1.md).
+- **Record:** Single-tree storage (local test record).
 
 ### DF-0017 — Replacement moves a classified neuron into UNKNOWN
 
@@ -361,7 +365,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Repair:** Keep the exact reviewed destination instead of reclassifying it.
 - **Verification/delivery:** Source and final compiled single-tree replacement
   controls passed for the builds recorded in DF-0016.
-- **Record:** [Classified-folder repair](SWC_LIBRARY_REPAIR_20261016_V1.md).
+- **Record:** Classified-folder repair (local test record).
 
 ### DF-0018 — Valid Windows inventory paths fail validation
 
@@ -372,7 +376,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   path refusals.
 - **Verification/delivery:** The original failed Windows check was preserved;
   the repaired compiled Windows package passed valid and unsafe-path cases.
-- **Record:** [Portable path repair](SWC_LIBRARY_REPAIR_20261016_V1.md).
+- **Record:** Portable path repair (local test record).
 
 ### DF-0019 — Windows updater stops after downloading
 
@@ -524,7 +528,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/delivery:** Actual fresh MANC v1.2.1 and Male CNS v1.0 app
   acquisitions and bounded three-engine connected runs are recorded. Original
   downloads/contact coordinates remained unchanged. Not whole-paper replication.
-- **Record:** [Fresh-circuit tests](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Fresh-circuit tests (local test record).
 
 ### DF-0032 — Inactive settings and comparison names alter experiment behavior
 
@@ -537,7 +541,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification:** Source/widget/native roundtrips and selected actual runs
   passed. The interaction matrix's 907 pairs are configuration checks, not
   907 simulations or every possible parameter value.
-- **Record:** [Experiment settings tests](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Experiment settings tests (local test record).
 
 ### DF-0033 — All-compartment recording is too large or fails at playback
 
@@ -551,7 +555,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   both datasets and all three engines passed; canonical values were checked
   against native output. Oversized requests refuse early. Large arbitrary
   circuits and every recording interaction are not certified by those controls.
-- **Record:** [Recording and playback tests](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Recording and playback tests (local test record).
 
 ### DF-0034 — Added filler cable can impede giant-fiber propagation
 
@@ -565,7 +569,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   input checks passed. The MANC main-shaft control changed from no 0 mV crossings
   to crossings along all declared tested sites. This is a modeling alternative,
   not proof of reconstructed anatomy or every protocol's normal propagation.
-- **Record:** [Bridge comparison](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Bridge comparison (local test record).
 
 ### DF-0035 — Derived bridge reports fail on last-bit platform rounding
 
@@ -578,7 +582,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification:** Native positive and meaningful altered-geometry refusal
   controls passed. The checked packages remained on the approved test branch;
   they were not a new public release.
-- **Record:** [Roundoff and package checks](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Roundoff and package checks (local test record).
 
 ### DF-0037 — Newly acquired MANC files lose their raw-unit identity
 
@@ -590,7 +594,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   imported file is not assumed to use raw server units.
 - **Verification/delivery:** The corrected fresh-circuit unit contracts and
   bounded app runs were checked in the subsequent three-engine review.
-- **Record:** [Fresh acquisition unit repair](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Fresh acquisition unit repair (local test record).
 
 ### DF-0038 — Root siblings are electrically disconnected in native models
 
@@ -603,7 +607,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification:** Real-cell construction now has one native section-tree root.
   The voltage discrepancy shrank but still failed; DF-0039 was a separate cause,
   not an excuse to accept the remaining difference.
-- **Record:** [Root-junction diagnosis](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md#manc-root-junction-failure--not-accepted).
+- **Record:** Root-junction diagnosis (local test record).
 
 ### DF-0039 — “Classic HH” uses different rate evaluation across engines
 
@@ -616,7 +620,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/delivery:** Initial gate values, altered-policy refusal and the
   later actual fresh-circuit triplets passed their stated engineering limits.
   This does not establish universal event-time or biological equivalence.
-- **Record:** [HH table diagnosis](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md#finer-step-diagnostic-and-native-hh-table-repair).
+- **Record:** HH table diagnosis (local test record).
 
 ### DF-0040 — Accessible text edits fail to refresh experiment previews
 
@@ -628,7 +632,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/delivery:** Two failing-before text regressions, expanded
   source checks and packaged external-edit controls passed. The earlier six
   executed protocols were independently checked and were not changed by this UI fix.
-- **Record:** [Settings and preview repair](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Settings and preview repair (local test record).
 
 ### DF-0041 — Results retains help from the previous playback mode
 
@@ -638,7 +642,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Repair:** Reset help together with the visible mode explanation.
 - **Verification/delivery:** The before-regression failed; source and final
   native playback-help checks passed. This was not a change to saved voltages.
-- **Record:** [Results help repair](EXPERIMENT_BUILDER_FRESH_CIRCUIT_TEST_20261025.md).
+- **Record:** Results help repair (local test record).
 
 ### DF-0042 — Window-control service reports no window while Digifly works
 
@@ -664,7 +668,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   visibility. Its passing result does not qualify this failed manual observation;
   focus/menu behavior versus observation failure remains unresolved. No uncertain
   download, Run or menu-item operation was repeated.
-- **Record:** [Observed control limitations](../codex.md#bounded-manual-app-review-startup-october25-repair).
+- **Record:** Observed control limitations (local test record).
 
 ### DF-0043 — Eight MPI ranks cannot bind to four allocated physical cores
 
@@ -677,7 +681,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification:** Guarded actual-node engineering and the one authorized
   production submission are recorded. Scientific acceptance remained a separate
   terminal-validation step; this log does not authorize another submission.
-- **Record:** [MPI affinity repair](PDCM_MPI_AFFINITY_REPAIR_20261005_V1.md).
+- **Record:** MPI affinity repair (local test record).
 
 ### DF-0044 — Earlier 80% production run loses an MPI peer mid-simulation
 
@@ -690,7 +694,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/limit:** A tiny diagnostic is not reproduction of large-scale
   stress. The original failure remains unexplained, not retroactively fixed by
   a later successful condition or the unrelated affinity repair.
-- **Record:** [Guarded retry diagnosis](PDCM_80PCT_RETRY_20261003_V1.md).
+- **Record:** Guarded retry diagnosis (local test record).
 
 ### DF-0045 — MPI observer races an atomic temporary-file update
 
@@ -701,7 +705,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   preserve the pinned model and worker.
 - **Verification:** The actual bounded eight-rank diagnostic passed independent
   terminal/copy/shard checks. It did not resolve DF-0044 or certify paper outcomes.
-- **Record:** [Tiny MPI diagnostic](PDCM_MPI_DIAGNOSTIC_TERMINAL_20261003_V1.md).
+- **Record:** Tiny MPI diagnostic (local test record).
 
 ### DF-0046 — Scheduler requeue default conflicts with one-shot execution
 
@@ -712,7 +716,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/limit:** The attempted change arrived after completion and
   failed; the historical script was not rewritten. No restart occurred, and
   the later source guard is not claimed to have changed the old allocation.
-- **Record:** [Diagnostic limits](PDCM_MPI_DIAGNOSTIC_TERMINAL_20261003_V1.md).
+- **Record:** Diagnostic limits (local test record).
 
 ### DF-0047 — Main README feature restrictions lag behind checked repairs
 
@@ -2211,7 +2215,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   refusal of unrelated or incomplete results. Removing Save also exposed a
   dimmed File menu on non-native menu bars. The save steps now expose the actual
   menu; source and native regressions check both steps. Native builds and
-  publication are in progress for 20261102.7. Older builds retain the panel.
+  publication checks pass for both 20261102.10 packages. Older builds retain the panel.
 
 ## DF-0114: Connectome pictures lose detail on high-density displays
 
@@ -2224,7 +2228,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and 3x scale, with one logical pixel allowed for Qt's image-size rounding.
   A Python-only ratio mock was rejected because it left Qt's native screen
   at 1x. Native package checks now inspect the actual screen ratio and rendered
-  pixel dimensions. Build and publication checks are in progress.
+  pixel dimensions. Both 20261102.10 packages pass the native screen-density and release checks.
 
 ## DF-0115: Windows review checks receive an unexpected console interrupt
 
@@ -2236,7 +2240,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   remains unsupported.
 - **Checks/status:** A regression supplies a Windows OS interface whose signal
   function must never be called. Wrong-source and wrong-profile refusals remain.
-  The replacement Windows build must pass the full source and native gates.
+  The replacement Windows build passes the full source and native gates.
 
 ## DF-0116: A paused guide changes pages when its window first appears
 
@@ -2248,8 +2252,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
   pause the guide before selecting their page.
 - **Checks/status:** A separate regression reproduces the page change before
   the repair. It now keeps Results selected with no active page timer. Existing
-  split-view and expansion assertions remain enabled. Final 20261102.8 native
-  and publication checks are in progress; earlier failures are preserved.
+  split-view and expansion assertions remain enabled. Both final 20261102.10 packages pass their native and publication checks.
+  Earlier failures are preserved.
 
 ## DF-0117: Windows same-length recording edits can share a file timestamp
 
@@ -2259,7 +2263,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and before returning the loaded table. Mac keeps its existing request-local
   digest reuse. Saved recordings are never changed.
 - **Checks/status:** A same-stamp edit reproduces the missing refusal locally.
-  The repaired check rejects it. Final Windows and Mac package checks are pending.
+  The repaired check rejects it. Both actual packages pass their native and release checks.
 
 ## DF-0118: Windows mapped caches cannot be removed while still open
 
@@ -2282,9 +2286,9 @@ The initial inventory contains 301 UI construction sites; it does not mean
   yields Python's lock instead of relying on Qt's test wait; its deadline stays
   five seconds. Native source wizard checks now run before Windows compilation,
   and all compiled-app checks remain enabled afterward.
-- **Checks/status:** The original Windows report is retained. Local focused and
-  native checks are running; Windows results are pending. Thread starvation is
-  a suspected cause until the Windows run verifies the changed event pump.
+- **Checks/status:** The original Windows report is retained. Both packages pass their
+  native checks with unchanged test deadlines. The live-document width and
+  event pump were corrected together; their isolated timing effects remain unmeasured.
 
 ## DF-0120: Cancellation fixture finishes before its cancel click
 
@@ -2296,7 +2300,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   both reads, the plotted trace and current-type switch assertions. Production
   current-loading code is unchanged.
 - **Checks/status:** Both focused current lifecycle tests pass locally. The
-  original Windows report remains saved. New Windows build checks are pending.
+  original Windows report remains saved. The corrected fixture and complete native Windows package checks pass.
 
 ## DF-0121: Windows NEURON check crashes during fixture shutdown
 
@@ -2334,7 +2338,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   assertions: 112 focused checks pass. Thirty-two graphics/lifecycle and 30
   release-guard checks also pass, with overlap. The native Results check keeps
   Mac's raster-owner requirement and explicitly checks Windows' widget context
-  and GL-capable owner. Full source, compiled-app and updater checks are running.
+  and GL-capable owner. Final10 source, compiled-app and updater checks pass.
   The earlier passing Mac9 package and failed Windows runs are kept; neither
   is substituted for final build10 acceptance.
 
@@ -2354,7 +2358,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   desktop refusal and a non-CI mutation refusal. Actual Windows diagnosis changes
   available space from1024x728 to1920x1040 without a registry update; all unchanged
   wizard checks pass, including the formerly offscreen Finish button. The full
-  release build is running. General small-screen/scaling layout remains open.
+  release build passes those checks. General small-screen/scaling layout remains open.
 
 ## DF-0124: Native Results check expects the Mac file-read count on Windows
 
@@ -2401,8 +2405,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Verification/status:** All26focused path/fixture cases pass locally. Actual
   Windows source Results and safety check passes79trueflags, zero callbacks and
   unchanged preferences at run41528705238. Both retained Mac engineering helpers
-  have strict unchanged-Mac-path AST checks. Full Windows compilation, native
-  packaged and updater checks are still required.
+  have strict unchanged-Mac-path AST checks. Final10 Windows compilation, native
+  packaged checks and all three updater cases pass at run41539207436.
 
 ## DF-0127: Compiled Windows Results does not initialize its graphics scene
 
@@ -2424,7 +2428,9 @@ The initial inventory contains 301 UI construction sites; it does not mean
   a symbolic-link source and refusal to replace a different destination.
 - **Status:** The failed package is withheld. Mac10's accepted native and updater
   evidence remains intact. No public release or main-branch change has occurred.
-  Full compiled playback and updater checks remain required after the repair.
+  Final10's repaired Windows package passes full compiled playback and all three
+  updater cases at run41539207436. Its audited archive includes the exact Qt
+  fallback and original notices. The corresponding Mac10 checks also pass.
 
 ## DF-0128: Release-upload recovery would refuse its existing saved record
 
@@ -2452,8 +2458,12 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Checks/status:** A regression against the real build script first fails with
   the missing graphics helper. After correction, 28 staging/graphics/package
   tests pass. An actual normal source stage contains all 239 inputs and every
-  referenced helper. The earlier failed compiler/packaging job remains recorded;
-  final Windows package and native checks are still required.
+  referenced helper. The earlier failed compiler/packaging job remains recorded.
+  Run41539207436 then passes914sourcecases with15platformskips, actual source and
+  compiled NEURON setup/Run/close, native library/Results, the full included table,
+  and updater installation, legacy installation and failed-start rollback.
+  Both final10 archives pass their source, runtime, native and updater audits;
+  the paired validator accepts them and refuses a copy missing Windows.
 
 ## Maintenance and GitHub handoff
 
