@@ -318,9 +318,19 @@ def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Pa
     policy = record["plan"].get("policy", ENDPOINT_POLICY)
     expected = _joined_path(source, policy)
     key = os.path.normcase(os.path.abspath(source))
+    original = source
+    source_digest = committed_hashes.get(key)
+    if source_digest is None:
+        # The app's normal repair sequence is raw -> radius copy -> joined copy.
+        # Admit that one explicit chain only after validating the complete
+        # radius review against the immutable raw library inventory.
+        from .swc_quality import verified_radius_source
+        original = verified_radius_source(source, committed_hashes)
+        if original is None:
+            raise ValueError("Joined copy is not bound to this committed source")
+        source_digest = sha256_file(source)
     if (record.get("schema") != "digifly-fragment-join-v1" or path != expected
-            or source.is_symlink() or key not in committed_hashes
-            or sha256_file(source) != committed_hashes[key]):
+            or source.is_symlink() or sha256_file(source) != source_digest):
         raise ValueError("Joined copy is not bound to this committed source")
     plan = plan_fragment_join(analyze_swc(source), policy=policy)
     if not _same_reviewed_plan(record["plan"],json.loads(json.dumps(plan.to_dict()))):
@@ -333,7 +343,7 @@ def verified_fragment_source(path: Path, committed_hashes: dict[str, str]) -> Pa
             or record.get("metadata") != metadata
             or record.get("coordinate_transform") != transform):
         raise ValueError("Joined copy bytes or physical-unit record changed after review")
-    return source
+    return original
 
 
 def original_for_bridge_review(path: Path) -> Path:

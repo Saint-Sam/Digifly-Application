@@ -14,6 +14,19 @@ import traceback
 import faulthandler
 
 
+def _ready_fixture_grab(window, grab, *, timeout_seconds=3.):
+    """Wait for actual presented native pixels; never activate a test control."""
+    from PySide6.QtTest import QTest
+    from .circuit_viewport import NativeSceneNotReady
+    deadline=time.monotonic()+timeout_seconds
+    while True:
+        try:return grab()
+        except NativeSceneNotReady as exc:
+            if time.monotonic()>=deadline:
+                raise RuntimeError('Native fixture snapshot did not become ready: '+str(exc.details)) from exc
+            QTest.qWait(20)
+
+
 def dispose_fixture_window(window, app, *, timeout_seconds=3):
     """Finish owned readers and delete the test window while Qt is still alive.
 
@@ -113,6 +126,7 @@ def run_library_smoke(destination: Path) -> int:
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
     record = {"schema": "digifly-packaged-swc-library-check-v1", "ok": False,
+              "pid": os.getpid(),
               "scope": "actual packaged controls/worker/storage with tiny fixtures; fake neuPrint transport; no credential, network, simulator or scientific acceptance"}
     stack_output = (destination / 'thread-stacks.txt').open('w')
     previous_fault_handler = faulthandler.is_enabled()
@@ -129,9 +143,21 @@ def run_library_smoke(destination: Path) -> int:
     saved_open, saved_save = QFileDialog.getOpenFileName, QFileDialog.getSaveFileName
     saved_warning, saved_critical = QMessageBox.warning, QMessageBox.critical
     record["dialogs"] = []
+    profiler = None
+    if os.environ.get('DIGIFLY_NATIVE_TIMING') == '1':
+        import cProfile
+        profiler = cProfile.Profile()
+        profiler.enable()
+    phase_started = time.monotonic()
+    phases = []
     def journal(stage):
         record["stage"] = stage
+        phases.append({"stage": stage, "elapsed_seconds": time.monotonic() - phase_started})
+        record["phases"] = phases
         (destination / "journal.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        if profiler is not None:
+            profiler.dump_stats(str(destination / 'timing-profile.prof'))
+            profiler.enable()  # dump_stats creates a snapshot and disables cProfile.
     try:
         profile_path = destination / "workspace/config/resources.json"
         profile = make_standalone_profile(workstation_root=destination / "workspace")
@@ -156,8 +182,12 @@ def run_library_smoke(destination: Path) -> int:
         settings.setValue("output_root", str(destination / "workspace/runs"))
         settings.setValue("workspace_root", "")
         window = MainWindow()
+        native_grab=window.grab
+        window.grab=lambda:_ready_fixture_grab(window,native_grab)
         journal("main_window_created")
         window.show()
+        from .package_first_experiment_smoke import check_first_experiment_guide
+        record.update(check_first_experiment_guide(window, destination))
         page = window.data_library_page
         # Test direct entry before the chooser is initialized, then with a
         # remembered different family. Card-first checks missed this failure.
@@ -479,6 +509,7 @@ def run_library_smoke(destination: Path) -> int:
 
         # Exercise the actual local-import action and its threaded production
         # worker; only native file/confirmation prompts receive fixture answers.
+        journal('local_swc_intake')
         local_root = destination / "local-source"
         local_file = local_root / "AN/AN-example/44/44.swc"
         local_file.parent.mkdir(parents=True)
@@ -508,6 +539,7 @@ def run_library_smoke(destination: Path) -> int:
             raise ValueError("Actual Circuit Builder did not visibly load the combined cell set")
         if not window.grab().save(str(destination / "combined-circuit.png")):
             raise ValueError("Could not capture the actual packaged Circuit Builder")
+        journal('local_swc_intake_finished')
         # The same compiled Data Library must expose existing full-folder
         # sources separately from managed acquisitions. Tiny fixtures exercise
         # discovery, actual Register controls and read-only background counts;
@@ -545,6 +577,7 @@ def run_library_smoke(destination: Path) -> int:
         counts = {}
         shortcuts = []
         for dataset in ('male-cns:v0.9', 'manc:v1.2.1'):
+            journal('linked_count_' + dataset)
             choose_release(dataset)
             page.storage_details_button.setChecked(True)
             if page.linked_table.rowCount() != 1:
@@ -587,6 +620,7 @@ def run_library_smoke(destination: Path) -> int:
             modal.grab().save(str(destination / 'library-shortcut-review.png'))
             QTest.mouseClick(modal.button(QMessageBox.StandardButton.Yes), Qt.MouseButton.LeftButton)
         for shortcut in shortcuts:
+            journal('open_shortcut_' + shortcut.stem)
             QFileDialog.getOpenFileName = lambda *a, _path=shortcut, **kw: (str(_path), '')
             link_review_deadline = time.monotonic() + 10
             QTimer.singleShot(250, accept_link)
@@ -603,6 +637,7 @@ def run_library_smoke(destination: Path) -> int:
         if not window.grab().save(str(destination / 'linked-local-libraries.png')):
             raise ValueError('Linked library view did not render')
         # Use an explicit presentation fixture, not fabricated scientific data.
+        journal('release_scope_layout')
         scope_index = destination / 'scope-fixture-index'
         scope_index.mkdir()
         (scope_index / 'manifest.json').write_text(json.dumps({'rows': 2, 'represented_neurons': 3}))
@@ -696,6 +731,7 @@ def run_library_smoke(destination: Path) -> int:
             click_menu(holder._library_button, action, filename)
         try:
             QDesktopServices.openUrl = lambda url: urls.append(str(Path(url.toLocalFile()))) or True
+            journal('compact_menus')
             managed_action(page.reveal_selected_button, 'compact-managed-row-menu.png')
             if urls != [str(second_resource.root)]:
                 raise ValueError('Managed row menu opened a different selected row')
@@ -1719,6 +1755,9 @@ def run_library_smoke(destination: Path) -> int:
     except Exception:
         record["error"] = traceback.format_exc()
     finally:
+        if profiler is not None:
+            profiler.disable()
+            profiler.dump_stats(str(destination / 'timing-profile.prof'))
         faulthandler.disable()
         stack_output.close()
         if previous_fault_handler:

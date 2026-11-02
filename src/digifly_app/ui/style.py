@@ -215,6 +215,15 @@ QWidget#PageContent, QScrollArea > QWidget > QWidget, QAbstractScrollArea::viewp
 QFrame#Sidebar { background: @sidebar@; border-right: 1px solid @sidebar_border@; }
 QFrame#Topbar { background: @topbar@; border-bottom: 1px solid @topbar_border@; }
 QFrame#Card { background: @card@; border: 1px solid @card_border@; border-radius: 12px; }
+QFrame#FirstExperimentGuide { background: @inset@; border: 1px solid @focus@; border-radius: 12px; }
+QLabel#FirstExperimentProgress { color: @muted@; font-weight: 400; font-size: 12px; }
+QLabel#FirstExperimentTitle { color: @title@; font-weight: 600; font-size: 22px; }
+QTextBrowser#FirstExperimentInstructions { background: transparent; color: @text@; font-size: 15px; border: 0; padding: 0; }
+QTextBrowser#FirstExperimentDetails { background: transparent; color: @text@; font-size: 14px; border: 0; padding: 0; }
+QFrame#FirstExperimentDetailsPanel { background: @card@; border: 1px solid @card_border@; border-radius: 8px; }
+QLabel#FirstExperimentStatus { color: @text@; font-size: 13px; }
+QFrame#FirstExperimentGuide QPushButton { font-size: 13px; font-weight: 500; min-height: 22px; padding: 6px 12px; }
+QPushButton#FirstExperimentDetailsToggle { background: transparent; color: @eyebrow@; border: 0; padding-left: 0; text-align: left; }
 QFrame#Inset { background: @inset@; border: 1px solid @inset_border@; border-radius: 8px; }
 QWidget#HHSidePanel { background: @side_panel@; border-left: 1px solid @card_border@; }
 QWidget[collapsibleSection="true"] { background: @section@; border: 1px solid @section_border@; border-radius: 8px; }

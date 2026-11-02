@@ -127,6 +127,7 @@ from .style import (
 from .circuit_builder import CIRCUIT_BUILDER_WORKFLOW, CircuitBuilderPage
 from .circuit_viewport import (
     CircuitViewport,
+    NativeSceneNotReady,
     composite_native_viewports,
     DISPLAY_MODE_FULL_SKELETONS,
     DISPLAY_MODE_SOMA_POINTS,
@@ -716,7 +717,7 @@ class OverviewPage(QWidget):
             current_arbor=self.arbor_python_edit.text(),
             current_bmtk=self.bmtk_python_edit.text(),
             current_netpyne=self.netpyne_python_edit.text(),
-            parent=self,
+            parent=self.window(),
         )
         dialog.runtimes_selected.connect(self._runtime_selected)
         dialog.exec()
@@ -3445,6 +3446,11 @@ class MainWindow(QMainWindow):
         self.project_label.setStyleSheet("font-weight:650;")
         topbar_layout.addWidget(self.project_label)
         topbar_layout.addStretch()
+        self.first_experiment_button = QPushButton("First experiment")
+        self.first_experiment_button.setObjectName("FirstExperimentOpen")
+        self.first_experiment_button.setToolTip("Resume the step-by-step NEURON beginner guide without changing your project.")
+        self.first_experiment_button.clicked.connect(lambda: self.first_experiment_guide.resume())
+        topbar_layout.addWidget(self.first_experiment_button)
         self.read_only_badge = StatusPill(CheckState.INFO, "DRY-RUN SAFE")
         self.update_button = QPushButton("Check for updates")
         self.update_button.setToolTip(
@@ -3542,6 +3548,8 @@ class MainWindow(QMainWindow):
         self._sync_experiment_circuit(self.circuit_builder_page.circuit_spec())
         self._last_editor_page: QWidget = self.circuit_builder_page
         self._project_workflow: str | None = None
+        from .first_experiment import FirstExperimentGuide
+        self.first_experiment_guide = FirstExperimentGuide(self)
         self._build_menu()
         self._restore_settings()
         from .widgets import add_accessible_choice_buttons
@@ -3694,13 +3702,11 @@ class MainWindow(QMainWindow):
                 message += " Some changed or recovery files were kept; see update details."
             self.statusBar().showMessage(message)
             if request.get("engineering_test"):
-                self.grab().save(str(request_path.parent / "reopened-window.png"))
-                QTimer.singleShot(1200, self.close)
+                _capture_update_test_window(self, request_path)
         def failed(message):
             self.statusBar().showMessage("Update installed; cleanup deferred safely: " + message)
             if request.get("engineering_test"):
-                self.grab().save(str(request_path.parent / "reopened-window.png"))
-                QTimer.singleShot(1200, self.close)
+                _capture_update_test_window(self, request_path)
         self._update_cleanup_worker.succeeded.connect(finished)
         self._update_cleanup_worker.failed.connect(failed)
         self._update_cleanup_worker.finished.connect(self._update_cleanup_worker.deleteLater)
@@ -3831,6 +3837,10 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
         help_menu = self.menuBar().addMenu("Help")
+        first_experiment_action = QAction("First experiment guide", self)
+        first_experiment_action.setObjectName("FirstExperimentHelp")
+        first_experiment_action.triggered.connect(self.first_experiment_guide.resume)
+        help_menu.addAction(first_experiment_action)
         docs_action = QAction("Open architecture guide", self)
         docs_action.triggered.connect(self.open_architecture_guide)
         help_menu.addAction(docs_action)
@@ -4275,12 +4285,33 @@ def launch(argv: list[str] | None = None) -> int:
                 if request.get("engineering_test") and arguments[1] != "--finish-update":
                     # Explicit disposable packaged-updater test only; never set
                     # by the normal updater. Preserve a real visible-window PNG.
-                    window.grab().save(str(request_path.parent / "reopened-window.png"))
-                    QTimer.singleShot(1200, window.close)
+                    _capture_update_test_window(window, request_path)
             except Exception as exc:
                 QMessageBox.critical(window, "Update needs attention", str(exc))
         QTimer.singleShot(500, finish_update)
     return application.exec()
+
+
+def _capture_update_test_window(window, request_path: Path, *, deadline=None) -> None:
+    """Bounded disposable-fixture capture after native buffers are allocated."""
+    deadline=time.monotonic()+10. if deadline is None else deadline
+    def capture():
+        try:
+            pixmap=window.grab()
+        except NativeSceneNotReady as exc:
+            if time.monotonic()<deadline:
+                QTimer.singleShot(50, lambda:_capture_update_test_window(window,request_path,deadline=deadline))
+                return
+            (request_path.parent/'snapshot-failed.txt').write_text(str(exc))
+            window.close()
+            return
+        if pixmap.isNull() or not pixmap.save(str(request_path.parent/'reopened-window.png')):
+            (request_path.parent/'snapshot-failed.txt').write_text('The actual restored window snapshot could not be saved.')
+            window.close()
+            return
+        QTimer.singleShot(1200,window.close)
+    # Let open_project's new native child receive its expose/paint/swap events.
+    QTimer.singleShot(0,capture)
 
 
 def _double_spin(

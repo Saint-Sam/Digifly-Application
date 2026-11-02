@@ -22,7 +22,7 @@ def checked_review_copy(executable: Path, receipt: Path):
     record=json.loads(receipt.read_text())
     application=executable.parents[2]
     with executable.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
-    if (record.get('ok') is not True or record.get('mode')!='review'
+    if (record.get('ok') is not True or record.get('mode') not in {'review','install'}
             or Path(record.get('current_app','')).resolve()!=application
             or record.get('actual_executable_sha256')!=digest):
         raise ValueError('Checked review copy does not match this executable')

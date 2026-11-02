@@ -1812,6 +1812,13 @@ class _CircuitScene:
             super().keyPressEvent(event)
 
 
+class NativeSceneNotReady(RuntimeError):
+    """A native scene has no safe presented framebuffer to capture yet."""
+    def __init__(self,message,*,details=None):
+        super().__init__(message)
+        self.details=details or {}
+
+
 class _CircuitSurface(QOpenGLWindow):
     """Own only the 3-D surface; ordinary controls retain a raster window."""
     def __init__(self, owner):
@@ -1911,7 +1918,17 @@ class CircuitViewport(_CircuitScene,QWidget):
         if self._surface is not None:self._surface.doneCurrent()
 
     def grabFramebuffer(self):
-        return self._surface.grabFramebuffer() if self.isValid() else QImage()
+        if not self.isValid():return QImage()
+        surface=self._surface
+        # A valid context can precede allocation of PartialUpdateBlit's FBO.
+        # Qt's native grab dereferences that missing FBO rather than raising.
+        framebuffer=surface.defaultFramebufferObject()
+        if (not surface.isExposed() or not framebuffer
+                or surface.width()<=0 or surface.height()<=0):
+            raise NativeSceneNotReady('The native scene is preparing its first visible frame. Try the snapshot again after it renders.',
+                details={'exposed':surface.isExposed(),'framebuffer':framebuffer,
+                         'width':surface.width(),'height':surface.height()})
+        return surface.grabFramebuffer()
 
     def update(self,*args):
         surface=getattr(self,'_surface',None)
@@ -1930,7 +1947,7 @@ def composite_native_viewports(widget,pixmap,rectangle=None):
     if rectangle is not None:painter.translate(-rectangle.topLeft())
     try:
         for viewport in widget.findChildren(CircuitViewport):
-            if not viewport.isVisibleTo(widget) or not viewport.isValid():continue
+            if not viewport.isVisibleTo(widget):continue
             clip=QRect(viewport.rect());ancestor=viewport.parentWidget()
             while ancestor is not None:
                 bounds=QRect(viewport.mapFrom(ancestor,QPoint()),ancestor.size())
@@ -1938,6 +1955,10 @@ def composite_native_viewports(widget,pixmap,rectangle=None):
                 if ancestor is widget:break
                 ancestor=ancestor.parentWidget()
             if clip.isEmpty():continue
+            if not viewport.isValid():
+                if viewport._surface is not None:
+                    raise NativeSceneNotReady('The native scene is preparing its first visible frame. Try the snapshot again after it renders.')
+                continue
             image=viewport.grabFramebuffer()
             if image.isNull():raise RuntimeError('Native scene snapshot is empty')
             origin=viewport.mapTo(widget,QPoint())
