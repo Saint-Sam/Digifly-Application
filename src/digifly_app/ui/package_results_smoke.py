@@ -7,6 +7,22 @@ from pathlib import Path
 import time
 
 
+def check_result_surface(window, viewport, platform_name):
+    """Verify the chosen platform backend; Mac keeps a raster owner window."""
+    from PySide6.QtGui import QSurface
+    from .circuit_viewport import _WindowsCircuitViewport
+    surface_type = window.windowHandle().surfaceType()
+    if platform_name == 'windows':
+        if (not isinstance(viewport, _WindowsCircuitViewport)
+                or surface_type not in {QSurface.SurfaceType.OpenGLSurface,
+                                        QSurface.SurfaceType.RasterGLSurface}):
+            raise ValueError('Windows Results lacks its widget-owned OpenGL renderer')
+        return False
+    if surface_type != QSurface.SurfaceType.RasterSurface:
+        raise ValueError('The 3-D scene still forces whole-window OpenGL composition')
+    return True
+
+
 def run_results_smoke(destination: Path) -> int:
     """Exercise Results with tiny owned data, not unrelated download menus.
 
@@ -176,13 +192,12 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
             raise ValueError(page.result_load_note.text())
 
     native_surface_checked=False
+    graphics_backend_checked=False
     if QApplication.platformName() not in {'offscreen','minimal'}:
-        from PySide6.QtGui import QSurface
         wait_for(lambda:page.result_viewport.isValid() and page.result_viewport._gpu_ready,
                  'Native Results scene lacks its live graphics context or shader')
-        if window.windowHandle().surfaceType()!=QSurface.SurfaceType.RasterSurface:
-            raise ValueError('The 3-D scene still forces whole-window OpenGL composition')
-        native_surface_checked=True
+        native_surface_checked=check_result_surface(window,page.result_viewport,QApplication.platformName())
+        graphics_backend_checked=True
     import digifly_app.core.result_voltage as voltage_store
     import digifly_app.ui.result_loading as loading_module
     original_store_digest=voltage_store._digest
@@ -614,4 +629,5 @@ def check_results_review(window, destination: Path) -> dict[str, bool]:
             'columnar_voltage_rows':True,
             'verified_mapped_cache_reuse':True,
             'single_verified_source_digest':True,
-            'native_result_surface_isolated':native_surface_checked}
+            'native_result_surface_isolated':native_surface_checked,
+            'result_graphics_backend_checked':graphics_backend_checked}

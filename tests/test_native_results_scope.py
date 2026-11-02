@@ -5,6 +5,30 @@ import pytest
 from scripts.check_swc_library_gui import child_command
 
 
+@pytest.mark.parametrize('platform_name,surface,accepted',[
+    ('cocoa','RasterSurface',True),('cocoa','OpenGLSurface',False),
+    ('windows','RasterSurface',False),('windows','OpenGLSurface',True),
+    ('windows','RasterGLSurface',True),
+])
+def test_result_surface_guard_checks_each_platform_contract(platform_name,surface,accepted):
+    from types import SimpleNamespace
+    from PySide6.QtGui import QSurface
+    from PySide6.QtWidgets import QApplication
+    from digifly_app.ui.circuit_viewport import _WindowsCircuitViewport
+    from digifly_app.ui.package_results_smoke import check_result_surface
+    app=QApplication.instance() or QApplication([])
+    viewport=_WindowsCircuitViewport(camera_only=True)
+    window=SimpleNamespace(windowHandle=lambda:SimpleNamespace(
+        surfaceType=lambda:getattr(QSurface.SurfaceType,surface)))
+    try:
+        if accepted:
+            assert check_result_surface(window,viewport,platform_name) is (platform_name!='windows')
+        else:
+            with pytest.raises(ValueError):check_result_surface(window,viewport,platform_name)
+    finally:
+        viewport.deleteLater();app.processEvents()
+
+
 def test_existing_full_library_route_is_unchanged(tmp_path):
     assert child_command(tmp_path,None,tmp_path/'out',source=True)==[
         sys.executable,str(tmp_path/'main.py'),'--package-library-test',str(tmp_path/'out')]

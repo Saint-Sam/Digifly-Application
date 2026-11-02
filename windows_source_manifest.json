@@ -906,8 +906,8 @@
       "sha256": "90489e8c751aac54c87cf5a99fd25923c69ba6a12afb3381e02cd9697c5e844b"
     },
     "src/digifly_app/ui/package_results_smoke.py": {
-      "bytes": 38163,
-      "sha256": "2458c6412038e66d43467e23f479dc24240fd1ae7ffe1acd0bea8f2615efd35a"
+      "bytes": 38978,
+      "sha256": "527a339b250717b5b5307b98a4ca6073b23d4d1d9073a913e61626db80190a2b"
     },
     "src/digifly_app/ui/package_smoke.py": {
       "bytes": 6000,
@@ -1198,8 +1198,8 @@
       "sha256": "803dd0d0f8ce1bfe222d1cbc43bc611551b1f07a3c01e3ae385af304b24205f8"
     },
     "tests/test_native_results_scope.py": {
-      "bytes": 4512,
-      "sha256": "797abf5e906428a229d6a7c0c3e647e894661a0d5b50e852b9dd003fa4a4c09e"
+      "bytes": 5662,
+      "sha256": "fe7c8277b36f6c1ae76c05d768e46896653c2b4b2ed59df03ff8ce525ecdd9b8"
     },
     "tests/test_native_viewport_host.py": {
       "bytes": 8867,
