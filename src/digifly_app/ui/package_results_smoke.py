@@ -48,6 +48,8 @@ def run_results_smoke(destination: Path) -> int:
         journal('start')
         window=MainWindow();window.show();app.processEvents()
         journal('window_ready')
+        from .package_first_experiment_smoke import check_first_experiment_guide
+        record.update(check_first_experiment_guide(window, destination))
         record.update(check_results_review(window,destination))
         journal('results_checked')
         record['ok']=True

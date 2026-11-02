@@ -131,6 +131,32 @@ def test_eviction_only_removes_complete_recognized_derived_cache(tmp_path,monkey
     (cache/('c'*64)).symlink_to(outside,target_is_directory=True)
     monkeypatch.setattr(module,'CACHE_BYTES',0)
     module._prune(cache,None)
+    if __import__('sys').platform=='win32':
+        # Windows holds a mapped file open. Preserve its marker until all
+        # views are closed, then retry eviction without touching saved input.
+        assert valid.exists() and module._marked_cache(valid)
+        mapping=table.mapping
+        table.series={};table.mapping=None
+        mapping.close()
+        module._prune(cache,None)
     assert not valid.exists()
     assert (unknown/'values.bin').read_bytes()==b'keep' and (outside/'keep').read_text()=='keep'
+    assert table.sample_count==24
+
+
+def test_locked_cache_keeps_its_marker_and_can_be_retired_later(tmp_path,monkeypatch):
+    import digifly_app.core.result_voltage as module
+    path=recording(tmp_path);cache=tmp_path/'cache'
+    table=load_voltage_table(path,cache_root=cache)
+    folder=next(cache.glob('*/ready.json')).parent
+    from pathlib import Path
+    original=module.os.unlink
+    def locked(value,*args,**kwargs):
+        if Path(value).name=='values.bin':raise PermissionError('mapped file is still open')
+        return original(value,*args,**kwargs)
+    monkeypatch.setattr(module.os,'unlink',locked)
+    monkeypatch.setattr(module,'CACHE_BYTES',0)
+    module._prune(cache,None)
+    assert module._marked_cache(folder)
+    assert {p.name for p in folder.iterdir()}=={'ready.json','index.jsonl','values.bin'}
     assert table.sample_count==24

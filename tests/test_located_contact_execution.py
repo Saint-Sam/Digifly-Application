@@ -13,6 +13,18 @@ from digifly_app.workers import bmtk_bionet_worker as bionet
 from test_generic_experiment import _morphology
 
 
+def test_frame_refusal_identifies_the_affected_neuron_without_guessing(tmp_path, monkeypatch):
+    from digifly_app.core import pair_graph
+    from digifly_app.engines.generic_experiment import GenericExperimentAdapter
+    morphology = replace(_morphology(tmp_path),
+                         coordinate_transform={'coordinate_frame': 'source-frame'})
+    monkeypatch.setattr(pair_graph, 'selected_contact_sites', lambda *args: (
+        {'contact_coordinate_convention': {'frame': 'male-cns-v1.0-native', 'scale_to_um': .008}},
+        ({'source_body_id': 1, 'target_body_id': 1},)))
+    with pytest.raises(ValueError, match="Neuron 1 uses skeleton frame 'source-frame'.*male-cns-v1.0-native"):
+        GenericExperimentAdapter({})._located_download_rows(CircuitSpec(), {'1': morphology})
+
+
 def test_projection_is_onto_a_real_cable_not_just_the_nearest_node(tmp_path):
     morphology = _morphology(tmp_path)
     site = project_contact(morphology, (2,0,6))
