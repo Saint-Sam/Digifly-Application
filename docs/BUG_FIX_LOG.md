@@ -921,6 +921,12 @@ The initial inventory contains 301 UI construction sites; it does not mean
   are not further reasons to loop or to declare the human-operated menu broken.
 - **Status:** Tool limitation, unresolved. Not a Digifly crash or feature pass.
 
+  November 1: a new PowerPoint attachment for the beginner guide took 10,594
+  seconds despite a 30-second request. It eventually returned PowerPoint's
+  file-opening window. The Digifly owner stayed alive and passed independent
+  identity verification afterward. Keep the returned handle. This observation
+  does not establish the cause or repair the control service.
+
 ### DF-0062 — Test-copy preparation continued before copying finished
 
 - **Date:** October29,2026; packaging workflow, not a user app failure.
@@ -1930,6 +1936,293 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Status:** Unfixed and explicitly retained in actual-review-31.14.json.
   Bounded loading acceptance and general student readiness remain distinct.
   No new scientific run or normal installation follows from these observations.
+
+### DF-0102 — Reviewed radius copies are omitted from a managed SWC library
+
+- **Observed in installed Mac 20261031.14:** A fresh six-cell Male CNS v1.0
+  walkthrough downloads four missing neurons, preserves two existing TTMn
+  files, and saves four separately reviewed radius-healed copies. The managed
+  inventory omits those new copies. Circuit Builder selects two older PSI
+  derivatives whose coordinate records lack the frame required by the newly
+  downloaded contacts. Readiness correctly refuses before any simulation.
+- **Cause:** Admission of an unlisted reviewed derivative handles synthetic
+  bridge copies but not the app's radius-only copies. A same-release older
+  variant can therefore remain preferred while the new reviewed copy is hidden.
+- **Source repair:** Verify each radius copy against its committed original,
+  regular review record, both file identities, unchanged geometry/topology,
+  allowed radius changes and preserved coordinate contract before indexing it.
+  Body counts remain unique and raw acquisitions remain unchanged. Bad records,
+  edited geometry/radii, changed originals, unit changes and symlinks refuse.
+  Frame refusals now identify the affected neuron and both declared frames.
+- **Checks/status:** 46 radius/inventory tests and 33 coordinate/contact/library
+  tests pass. A read-only check of the actual acquired inputs verifies all four
+  copies, 44 radius edits, unchanged original points/edges and unchanged existing
+  TTMn bytes. The repaired source selection has the required frame for all six
+  cells and retains 228 located contacts across 16 pairs. A further 53
+  connected-model regressions pass. The separate 20261101.1 package passed its
+  source/archive checks but failed the capture check described in DF-0103.
+  Corrected Mac 20261101.2 passes the complete package check, 177 native flags,
+  modern and legacy installation, and failed-startup rollback. No callback
+  errors or normal preference changes were recorded. It is installed in the
+  normal app location, with the entire previous app preserved separately.
+- **Actual installed walkthrough:** The app explicitly refreshes and selects
+  the four reviewed copies plus two unchanged TTMn files. A separately saved
+  project preserves the experiment and membrane settings. All 19 readiness
+  checks pass. One eight-millisecond NEURON Run completes both conditions with
+  exit 0. Independent reading checks 3,905,216 finite voltage values, complete
+  clocks, all 12,128 locations per condition and all 228 original contact
+  mappings. Saved Results reopens in 0.6 seconds. Play, Pause, seeking and
+  condition switching work. The small input produces subthreshold DNp01 voltage
+  differences with no threshold events or response in the other four cells.
+  No repeat or outcome-driven tuning was used. Details are in the beginner
+  walkthrough's actual-app-review-v1 and run-audit-v1 records.
+- **Delivery status:** Installed Mac repair checked. Windows remains deferred,
+  this repair has not been uploaded, and the broader student test remains open.
+
+### DF-0103 - Early restored-window capture can crash the native scene
+
+- **Observed in the separate Mac20261101.1candidate:** Its packaged library
+  checks pass177flags. Install and legacy updater cases pass, but the injected
+  failed-startup case restores its app files and then crashes while capturing
+  the restored window. The normal installed31.14app remains untouched and no
+  simulation starts. The candidate and failure records are retained.
+- **Measured failure:** The native crash stack enters MainWindow.grab,
+  composite_native_viewports and CircuitViewport.grabFramebuffer in QtOpenGL.
+  A valid graphics context alone does not establish that the native child has
+  presented an allocated framebuffer. The capture follows open_project in the
+  same event callback, before newly shown children necessarily finish rendering.
+- **Source repair:** Admit a native capture only after exposure and allocation
+  of its actual framebuffer. Refuse an unready visible scene explicitly instead
+  of omitting it from a composed image. The disposable updater capture uses a
+  bounded10-second wait, preserving unrelated errors and refusing missing images.
+  The library fixture waits up to3seconds for actual pixels without activating
+  controls. An initial frame-swap heuristic blocked a valid resized view and is
+  retired; both failed native source checks remain. The current guard uses the
+  buffer handle described by Qt's documented API and6.10implementation:
+  https://doc.qt.io/qt-6/qopenglwindow.html#defaultFramebufferObject
+  and https://raw.githubusercontent.com/qt/qtbase/6.10/src/opengl/qopenglwindow.cpp.
+  Source geometry, membrane settings and saved numerical values are unchanged.
+- **Checks/status:** Both early-grab negative cases fail before the repair.
+  The initial guard's62viewport/capture/updater regressions pass, including
+  deadline, empty-image and unrelated-error cases. The updated allocated-buffer
+  guard's64-case regression passes. The full native source check passes177flags
+  with no callback errors or changed preferences. A separate capture of the exact
+  restored-window draft observes the initial unallocated buffer, then saves the
+  actual window without a crash. Distinct candidate 20261101.2 passes its package
+  and 177 native flags without callbacks or preference changes. Its actual
+  updater completes modern installation, legacy installation and failed-startup
+  recovery with real saved window images and unchanged drafts, source files,
+  profiles and shortcuts. The normal installed app then completes the six-cell
+  walkthrough recorded under DF-0102. Candidate 1 and its crash remain retained.
+- **Delivery status:** Installed on Mac 20261101.2. No Windows qualification or
+  public upload of this repair occurred.
+
+## DF-0104: No in-app path through the beginner experiment
+
+- **Symptom:** A new user had to switch between the beginner PowerPoint and
+  several app pages without a saved guide position or a way to load its exact
+  teaching settings.
+- **Change:** The initial inline guide was rejected. The replacement is a
+  standard floating wizard dialog with bottom Previous/Next, Pause/Exit and a
+  dimmed backdrop. Only the current step's real controls remain interactive.
+  It is also available from Help and covers the six-cell Male CNS v1.0 NEURON workflow,
+  keeps its step across launches, and asks before applying the example settings.
+  Navigation starts no download, installation, shape repair or simulation.
+  Existing custom overrides and pending edits are preserved. Finish requires a
+  loaded completed result with matching saved circuit and experiment inputs.
+- **Checks/status:** Fourteen focused source cases pass, including dialog
+  geometry, spotlight hit testing, keyboard focus, Pause/Exit, saved progress
+  and refusal guards. A complete source-level native Mac suite passes with
+  all checks and its original deadline. The earlier banner-only Mac package
+  is retained as a prototype, not the requested final design. The new dialog's
+  package and installed-app verification are not yet complete. The existing
+  completed teaching recording is reused; no new scientific Run is requested.
+- **Limits:** Clean-Mac NEURON installation is still unverified. Windows is
+  deferred. The wizard does not certify every student control or physiological
+  validity.
+
+## DF-0105: Mac compiler spends excessive time on the native test module
+
+- **Symptom:** A first-use-guide candidate's Mac build spent more than 17
+  minutes on one generated UI-test compilation unit, with a CPU core busy and
+  modest memory use. No app or simulation was blocked by this compiler process.
+- **Observed cause:** A one-second system sample placed the compiler in LLVM's
+  SLP vectorizer and its cost calculations for the large generated function.
+  This is build-time compiler work, not slow experiment execution.
+- **Scoped workaround:** The next local build uses the compiler's supported
+  `-fno-slp-vectorize` flag through Nuitka's documented-in-source inherited
+  CFLAGS path. The app and external worker sources remain unchanged. No
+  fast-math option, simulation parameter or recording value is changed.
+- **Checks/status:** The earlier compilation was stopped and its source and
+  compiler records retained. The flagged banner-prototype build completes and
+  passes its focused native, package and updater checks. The replacement
+  dialog still requires a separate compilation and checks. This is a local build workaround, not a repaired default for
+  every toolchain or platform.
+
+## DF-0106: Wizard focus and accessible step labels
+
+- **Symptom:** The first dialog implementation looked embedded but keyboard
+  focus remained in the main window. The earlier banner's accessible step
+  chooser also retained an old label after Previous/Next navigation.
+- **Cause/change:** QDialog creates an inappropriate native child handle when
+  embedded in the app's native-scene window. Use a floating dialog card with
+  ordinary named Qt controls and a separate masked shade. Preserve normal text-change signals while using a
+  reentrancy guard for the step picker. Redirect keyboard focus away from
+  dimmed controls without blocking the highlighted controls or their dialogs.
+- **Checks/status:** The focused test first failed on the actual focus
+  assertion, then passed after correction. Native source spotlight tests
+  pass actual field hit testing, runtime-dialog cancellation and accessible
+  label refresh. Final compiled and installed checks remain pending.
+
+## DF-0107: Complete native library suite exceeds its deadline
+
+- **Symptom:** Multiple source and packaged checks exceeded the original
+  120-second limit, including the retained pre-wizard build. Focused checks
+  passed, so they did not establish full-suite acceptance.
+- **Diagnosis/change:** Keep the failures and every existing check. Added
+  monotonic phase timing and retained a one-second system stack sample. The
+  sample shows native modal processing and repeated Cocoa child-window
+  warnings, rather than a blocked simulator or missing network response.
+  Data Library menus and dialogs now use the actual top-level app window as
+  their owner. This targets the native ownership defect, not the time limit.
+- **Checks/status:** A later full source check completes, but compiled20261101.7
+  still times out. Production-style and outer-loop comparisons also time out.
+  Two inert-menu probes without Digifly reproduce multi-second native waits;
+  an OS sample shows AppKit/SkyLight window-ordering and window-server IPC
+  dominating the delay. Qt animation changes do not remove it. Exact host
+  service cause remains unproved. Await host recovery before further unchanged
+  attempts. No checks are dropped, deadline relaxed or failed partial promoted.
+  The installed app is unchanged. Detailed records remain in
+  outputs/workstation/first-use-wizard-20261101-v1/NATIVE_CHECK_DIAGNOSIS.md.
+
+## DF-0108: Deferred wizard callbacks survive a closed window
+
+- **Symptom:** A regression process printed successful assertions but exited
+  abnormally. Explicit Qt teardown then caught pending layout callbacks
+  accessing already-deleted window objects in eight cases.
+- **Change:** Layout, focus and initial-page timers now belong to the wizard
+  and are cancelled by Qt when it is destroyed. Pause also stops those timers.
+  Tests flush window deletion while Qt is alive instead of accumulating closed
+  windows until interpreter shutdown. A trial custom accessibility adapter
+  was removed; the real named Qt controls remain.
+- **Checks/status:** The failing process and eight teardown errors are kept.
+  The final24case regression exits0, and build20261101.7 includes the repair
+  with a successful package audit. Its full native suite remains blocked as
+  described in DF-0107; it is not installed or publicly delivered. Passing
+  assertions without a successful process exit do not qualify a build.
+
+## DF-0109: Previous can leave keyboard focus in a newly dimmed field
+
+- **Symptom:** Actual installed20261101.7 review opens and cancels the highlighted
+  output-folder picker. Accessible Previous returns to the fully dimmed welcome
+  step, but the output field still owns keyboard focus. Its text was not changed.
+- **Cause/change:** Accessible press activates a navigation button without
+  necessarily focusing it. Changing spotlight targets did not reconsider existing
+  focus. The completed spotlight layout now applies the existing focus guard,
+  which preserves highlighted fields and native dialogs but moves focus out of
+  newly dimmed controls.
+- **Checks/status:** keyboard-focus-before-v2.xml reproduces the retained-field
+  failure. The first test attempt omitted Qt's timed press animation and is kept
+  as a test-setup failure, not the defect proof. source-tests-spotlight-v12.xml
+  passes26cases, including the real accessible press and a still-highlighted-field
+  positive control. Separate20261102.1compiles and passes its exact package audit,
+  complete native suite under the unchanged120second deadline and focused
+  wizard/Results/safety route, including the new focus assertion and no callbacks.
+  The updater cases subsequently pass, and 20261102.1 is installed with full
+  recovery copies. Actual installed Previous moves focus out of the newly dimmed
+  field. The saved six-cell experiment opens and its loaded recording matches
+  the project. The next user request concerns the guide's writing and layout;
+  see DF-0110. Earlier recordings and the full pre-wizard app remain preserved.
+
+## DF-0110: Wizard instructions are dense and difficult to read
+
+- **Symptom:** The user rejects the writing and appearance of the first-use
+  wizard. Each page places instructions, parameter values and repeated cautions
+  in a single text block. Default status text adds another explanation before
+  the user has asked for a check.
+- **Change:** Rewrite all thirteen pages using the user's Natural Writing rules.
+  Keep the main task in short paragraphs or numbered actions. Put full settings,
+  cell IDs and background notes in a collapsed Details panel. Increase instruction
+  type to 15 pixels with paragraph spacing, simplify button labels and show status
+  only after an action. Keep Previous and Next at the bottom.
+- **Checks/status:** Source copy-v3 passes 28 cases. All thirteen tasks fit without
+  scrolling; expanded references and navigation fit at the minimum window size.
+  The source-native wizard/Results/safety fixture passes with unchanged preferences.
+  Each task page and the long membrane reference were visually inspected.
+  Copy review covers the user's phrasing exclusions and all cadence checks.
+  Compiled .2 exposes a test-isolation error: the added guide traversal leaves
+  More options expanded before the independent compact-default assertion. The
+  fixture now saves and restores the expansion states it changes. The complete
+  source-native route passes 194 true checks in 51.85 seconds with all prior
+  assertions retained. Source copy-v4 passes 28 cases. Final .3 compiles and its
+  exact package audit passes. Its focused fixture catches a click sent before
+  the dialog settles; the fixture now waits for a stationary real hit target.
+  Final expanded build .4 passes both complete and focused native checks with
+  unchanged preferences. Updater and installed checks are in progress. The
+  subsequent DLMn tutorial expansion has separate user approval and Run checks.
+
+## DF-0111: Reviewed radius and fragment repairs do not load together
+
+- **Symptom:** The expanded tutorial downloads all sixteen cells, but Circuit
+  Builder reports two disconnected skeletons after both repair dialogs finish.
+  It selects the intermediate radius copies instead of the saved joined copies.
+- **Cause/change:** The joined-copy check requires its immediate input to be a
+  raw downloaded file. It now verifies the radius review against that raw file,
+  then verifies the joined plan, output and coordinate units. Download review
+  also skips verified radius derivatives when identifying an existing raw file.
+- **Checks/status:** A generated repair chain reproduces the rejection. The
+  valid chain now loads, while four damaged or incomplete chains are refused.
+  The combined source suite passes 141 cases. Read-only inspection of the actual
+  sixteen-cell library selects one connected skeleton per cell. Build4 then
+  loads both joined copies in the fresh tutorial project and completes its
+  sixteen-cell Run. All 840 contacts avoid synthetic filler targets. Installed 5
+  reopens that unchanged result; see DF-0112 for the final review repair.
+
+## DF-0112: Wizard rejects the expanded run's contact-file size
+
+- **Symptom:** The actual sixteen-cell run completes and Results displays its
+  voltage recordings, but the wizard refuses Finish because the contact document
+  exceeds its two-megabyte review cutoff. Its 840 located contacts occupy 3.05 MB.
+- **Change:** At the user's request, remove the fixed file-size cutoff. Read
+  chemical contacts one at a time from 64 KB chunks and calculate the digest from
+  those same bytes. Continue checking cell identities, located contacts, counts,
+  both conditions and the completed summary. Settings documents also have no
+  byte-count cutoff. Memory follows an individual contact or metadata value.
+- **Checks/status:** The generated 3.1 MB case reproduces the original refusal.
+  Source now passes 149 cases, including 9 MB valid files, split UTF-8/numeric values,
+  damaged contact digests and malformed/incomplete documents. The actual saved
+  contact file yields 840 contacts and the expected digest in 0.017 seconds. The
+  replacement Mac build 20261102.5 passes package, complete/focused native and all
+  three updater cases. Actual installed Check settings and Finish accept the
+  unchanged expanded result. Final postflight verifies previous and expanded
+  data plus the recovery apps. No second simulation was run.
+
+## DF-0113: Repeated wizard actions crowd every step
+
+- **Symptom:** The wizard repeats an extra panel containing details, a project
+  action, Show controls and Check settings. Juan requests its removal on every
+  step.
+- **Change:** Remove that panel and its step picker. Keep the instructions,
+  Pause, Previous and Next. Put required settings directly in the instructions
+  and point to the app's normal controls. Finish still checks the matching saved
+  result. The real runtime-setup button is now included in its spotlight.
+- **Checks/status:** Source checks cover all thirteen pages, readable settings,
+  minimum-size navigation, focus protection, unchanged project state and
+  refusal of unrelated or incomplete results. Native builds and publication
+  are in progress for 20261102.6. The earlier panel remains in older builds.
+
+## DF-0114: Connectome pictures lose detail on high-density displays
+
+- **Symptom:** The Data Library landing page draws soft connectome images on
+  Retina and scaled displays, despite original images of 600 to 1200 pixels.
+- **Cause/change:** The app reduces every image to a 270 by 128 physical-pixel
+  box before display. Render from the unchanged originals at the screen's
+  pixel ratio and refresh when that ratio changes. Keep the logical card size.
+- **Checks/status:** Fresh Qt processes check all five images at 1x, 1.5x, 2x
+  and 3x scale, with one logical pixel allowed for Qt's image-size rounding.
+  A Python-only ratio mock was rejected because it left Qt's native screen
+  at 1x. Native package checks now inspect the actual screen ratio and rendered
+  pixel dimensions. Build and publication checks are in progress.
 
 ## Maintenance and GitHub handoff
 

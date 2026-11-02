@@ -169,8 +169,10 @@ def scan_saved_neurons(sources, dataset, *, cancel: threading.Event | None = Non
                                 file_key = os.path.normcase(str(path))
                                 if committed is not None and file_key not in committed:
                                     from .swc_fragments import verified_fragment_source
+                                    from .swc_quality import verified_radius_source
                                     try:
-                                        if verified_fragment_source(path, committed) is None:
+                                        if (verified_fragment_source(path, committed) is None
+                                                and verified_radius_source(path, committed) is None):
                                             continue
                                     except (OSError, ValueError, KeyError, TypeError) as error:
                                         issues.append(f'{path}: {error}')

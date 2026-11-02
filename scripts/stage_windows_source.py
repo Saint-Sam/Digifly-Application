@@ -56,6 +56,16 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "scripts/bundle_arbor_runtime_macos.sh", "scripts/check_swc_library_gui.py",
             "scripts/collect_macos_release_notices.py", "scripts/stage_macos_notices.py",
             "tests/test_stage_macos_notices.py", "tests/test_stage_build_source_manifest.py",
+            "scripts/check_swc_library_gui.py", "tests/conftest.py",
+            "tests/test_first_experiment.py", "tests/test_bug_fix_log.py",
+            "tests/test_columnar_cached_voltage.py", "tests/test_current_tracking.py",
+            "tests/test_morphology_loading_checkpoints.py", "tests/test_native_fixture_shutdown.py",
+            "tests/test_native_results_scope.py", "tests/test_native_viewport_host.py",
+            "tests/test_prepared_mapped_cache_integrity.py", "tests/test_qt_callback_guard.py",
+            "tests/test_result_bindings_cache.py", "tests/test_result_geometry_sharing.py",
+            "tests/test_result_loading_async.py", "tests/test_result_source_verification.py",
+            "tests/test_result_voltage_store.py", "tests/test_review_copy_admission.py",
+            "tests/test_shared_cached_trace_records.py", "tests/test_view_mode_accessibility.py",
             "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt", "docs/MACOS_TESTER.md",
             "docs/CHANNEL_EXECUTION_REPAIR.md"))
     records = {}

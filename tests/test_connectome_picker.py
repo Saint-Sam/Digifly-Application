@@ -30,6 +30,40 @@ def test_catalogue_matches_public_snapshot_and_exact_original_pictures():
         picture_path('../../other')
 
 
+@pytest.mark.parametrize('ratio', [1.0, 1.5, 2.0, 3.0])
+def test_connectome_pictures_keep_screen_density_without_changing_logical_size(ratio):
+    import subprocess
+    import sys
+    # QLabel's native pixmap getter uses the real screen ratio. A Python-only
+    # mock leaves that C++ getter at 1x and cannot exercise high-density drawing.
+    code = '''
+import json
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import QApplication
+from digifly_app.ui.connectome_picker import CONNECTOMES, ConnectomePicture
+QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+app=QApplication([])
+rows=[]
+for choice in CONNECTOMES:
+    image=ConnectomePicture(choice.key);image.resize(300,132);image.show();app.processEvents()
+    image.refresh_picture();picture=image.pixmap();ratio=image.devicePixelRatioF()
+    expected=image.original.size().scaled(round(270*ratio),round(128*ratio),Qt.AspectRatioMode.KeepAspectRatio)
+    assert abs(picture.width()-expected.width())<=ratio and abs(picture.height()-expected.height())<=ratio
+    assert picture.devicePixelRatio()==ratio
+    assert picture.deviceIndependentSize().width()<=271 and picture.deviceIndependentSize().height()<=129
+    assert picture.height()>=128*ratio-ratio or picture.width()>=270*ratio-ratio
+    rows.append(dict(key=choice.key,ratio=ratio,width=picture.width(),height=picture.height()))
+    image.close()
+print(json.dumps(rows))
+'''
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+        timeout=30, env={**os.environ, 'QT_QPA_PLATFORM':'offscreen', 'QT_SCALE_FACTOR':str(ratio)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = json.loads(result.stdout)
+    assert len(rows) == 5 and all(row['ratio'] == ratio for row in rows)
+
+
 @pytest.mark.parametrize('width', [780, 1120, 1700])
 def test_picker_images_navigation_buttons_releases_and_responsive_layout(width):
     app = QApplication.instance() or QApplication([])

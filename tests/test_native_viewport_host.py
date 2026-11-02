@@ -91,3 +91,60 @@ def test_native_snapshot_keeps_selection_outline_above_its_scene(monkeypatch):
         assert image.pixelColor(20,20)==QColor('red')
     finally:
         root.close();root.deleteLater();app.processEvents()
+
+
+@pytest.mark.parametrize('exposed,framebuffer', [(False, 1), (True, 0)])
+def test_snapshot_refuses_native_frame_without_exposure_and_allocated_buffer(monkeypatch, exposed, framebuffer):
+    app=QApplication.instance() or QApplication([])
+    viewport=CircuitViewport(camera_only=True)
+    class Surface:
+        def isExposed(self):return exposed
+        def defaultFramebufferObject(self):return framebuffer
+        def width(self):return 200
+        def height(self):return 100
+        def grabFramebuffer(self):raise AssertionError('Unsafe native framebuffer read')
+    monkeypatch.setattr(viewport,'isValid',lambda:True)
+    viewport._surface=Surface()
+    try:
+        with pytest.raises(RuntimeError,match='first visible frame'):
+            viewport.grabFramebuffer()
+    finally:
+        viewport._surface=None
+        viewport.close();viewport.deleteLater();app.processEvents()
+
+
+def test_snapshot_reads_a_presented_native_frame(monkeypatch):
+    from PySide6.QtGui import QImage
+    app=QApplication.instance() or QApplication([])
+    viewport=CircuitViewport(camera_only=True)
+    image=QImage(20,10,QImage.Format.Format_ARGB32)
+    class Surface:
+        def isExposed(self):return True
+        def defaultFramebufferObject(self):return 1
+        def width(self):return 20
+        def height(self):return 10
+        def grabFramebuffer(self):return image
+    monkeypatch.setattr(viewport,'isValid',lambda:True)
+    viewport._surface=Surface()
+    try:
+        assert viewport.grabFramebuffer() is image
+    finally:
+        viewport._surface=None
+        viewport.close();viewport.deleteLater();app.processEvents()
+
+
+def test_composed_capture_does_not_silently_omit_a_visible_unready_native_scene(monkeypatch):
+    from PySide6.QtGui import QPixmap
+    from digifly_app.ui.circuit_viewport import composite_native_viewports,NativeSceneNotReady
+    app=QApplication.instance() or QApplication([])
+    root=QWidget();root.resize(200,120)
+    viewport=CircuitViewport(root);viewport.setMinimumSize(1,1);viewport.setGeometry(10,10,100,80)
+    root.show();app.processEvents()
+    viewport._surface=object()
+    monkeypatch.setattr(viewport,'isValid',lambda:False)
+    try:
+        with pytest.raises(NativeSceneNotReady,match='first visible frame'):
+            composite_native_viewports(root,QPixmap(200,120))
+    finally:
+        viewport._surface=None
+        root.close();root.deleteLater();app.processEvents()

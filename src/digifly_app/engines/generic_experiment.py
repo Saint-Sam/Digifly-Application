@@ -1261,7 +1261,11 @@ class GenericExperimentAdapter:
                 morphology = morphology_by_id[str(site[body])]
                 frame = (morphology.coordinate_transform or {}).get('coordinate_frame')
                 if frame != convention['frame']:
-                    raise ValueError('Contact and skeleton coordinate frames differ; no unit or frame guess is permitted')
+                    raise ValueError(
+                        f"Neuron {site[body]} uses skeleton frame {frame!r}, but contacts use "
+                        f"{convention['frame']!r}. Choose a saved SWC with verified matching "
+                        "coordinate details; no unit or frame guess is permitted"
+                    )
                 point = [site[f'{end}_{axis}']*scale for axis in 'xyz']
                 mappings[end] = project_contact(morphology, point)
             rows.append({'source_edge_rowid':serial,

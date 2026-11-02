@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import statistics
 import tempfile
 from typing import Any, Iterable, Mapping
@@ -607,6 +608,69 @@ def heal_swc(
         before_sha256=report.sha256,
         after_sha256=after_hash,
     )
+
+
+def verified_radius_source(path: Path, committed_hashes: Mapping[str, str]) -> Path | None:
+    """Admit an explicitly reviewed copy without changing the raw inventory.
+
+    A filename alone grants no trust. Bind the regular review record and both
+    file identities to a committed source, then check the original geometry,
+    permitted radius edits and coordinate contract independently.
+    """
+    if "_radius_healed" not in path.stem:
+        return None
+    sidecar = path.with_suffix(path.suffix + ".quality.json")
+    if path.is_symlink() or sidecar.is_symlink() or not sidecar.is_file():
+        raise ValueError("Radius-healed copy lacks its regular review record")
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    result = record.get("result", {})
+    source = Path(result.get("input_path", ""))
+    key = os.path.normcase(os.path.abspath(source))
+    permitted_name = re.fullmatch(
+        re.escape(source.stem) + r"_radius_healed(?:_\d{8}T\d{6}Z)?" + re.escape(source.suffix),
+        path.name,
+    )
+    if (record.get("schema_version") != QUALITY_SCHEMA_VERSION
+            or record.get("operation") != "radius-only SWC healing"
+            or result.get("mode") != "copy" or not source.is_absolute()
+            or source.is_symlink() or key not in committed_hashes
+            or path.parent != source.parent or not permitted_name
+            or result.get("output_path") != str(path)
+            or result.get("before_sha256") != committed_hashes[key]
+            or sha256_file(source) != committed_hashes[key]
+            or result.get("after_sha256") != sha256_file(path)):
+        raise ValueError("Radius-healed copy is not bound to this committed source")
+    audit = record.get("audit", {})
+    verification = record.get("verification", {})
+    if (audit.get("path") != str(source) or audit.get("sha256") != committed_hashes[key]
+            or verification.get("node_count_unchanged") is not True
+            or verification.get("topology_and_geometry_unchanged") is not True):
+        raise ValueError("Radius-healed copy's review does not identify its unchanged source geometry")
+    report = analyze_swc(source, provider=str(audit.get("provider", "")))
+    if not report.can_heal:
+        raise ValueError("Radius-healed copy's source no longer supports its repair")
+    _lines, before, before_errors = _parse_swc(source)
+    _lines, after, after_errors = _parse_swc(path)
+    if before_errors or after_errors:
+        raise ValueError("Radius-healed copy or its source no longer parses")
+    changed = _verify_radius_only(before, after)
+    expected = {finding.node_id: finding.suggested_radius_um / report.length_scale_to_um
+                for finding in report.findings}
+    if (set(changed) != set(expected)
+            or result.get("changed_node_ids") != list(changed)
+            or record.get("verification", {}).get("radius_diff_node_ids") != list(changed)):
+        raise ValueError("Radius-healed copy changes different nodes from its reviewed repair")
+    # Saved radii have nine significant digits. Allow that writing precision;
+    # this checks the repair, not bit-for-bit floating-point recomputation.
+    if any(not math.isclose(node.radius, expected[node.node_id], rel_tol=5e-9, abs_tol=0.0)
+           for node in after if node.node_id in expected):
+        raise ValueError("Radius-healed copy differs from its reviewed radius values")
+    from .swc_units import source_coordinate_contract
+    expected_transform = {**source_coordinate_contract(source),
+                          "source_sha256": result["after_sha256"]}
+    if record.get("coordinate_transform") != expected_transform:
+        raise ValueError("Radius-healed copy's coordinate contract differs from its source")
+    return source
 
 
 def decision_path(report: SwcQualityReport) -> Path | None:
