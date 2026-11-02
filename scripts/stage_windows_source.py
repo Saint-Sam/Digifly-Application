@@ -61,7 +61,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "tests/test_first_experiment.py", "tests/test_bug_fix_log.py",
             "tests/test_columnar_cached_voltage.py", "tests/test_current_tracking.py",
             "tests/test_morphology_loading_checkpoints.py", "tests/test_native_fixture_shutdown.py",
-            "tests/test_native_results_scope.py", "tests/test_native_viewport_host.py", "tests/test_windows_test_display.py",
+            "tests/test_native_results_scope.py", "tests/test_native_viewport_host.py", "tests/test_windows_test_display.py", "tests/test_result_reveal.py",
             "tests/test_prepared_mapped_cache_integrity.py", "tests/test_qt_callback_guard.py",
             "tests/test_result_bindings_cache.py", "tests/test_result_geometry_sharing.py",
             "tests/test_result_loading_async.py", "tests/test_result_source_verification.py",

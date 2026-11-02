@@ -420,6 +420,8 @@ def check_student_safety(destination: Path) -> dict:
         artifact = destination/'reader-artifact.txt'
         artifact.write_text('Owned engineering file; must not launch the artifact itself.\n')
         QDesktopServices.openUrl = lambda url: opened.append(url.toLocalFile()) or True
+        if sys.platform == 'win32':
+            QDesktopServices.openUrl = lambda url: opened.append(str(Path(url.toLocalFile()))) or True
         assert _reveal(str(artifact), window) and opened == [str(destination)]
         QDesktopServices.openUrl = lambda url: False
         assert not _reveal(str(artifact), window) and 'manually' in warnings[-1]

@@ -378,8 +378,8 @@
       "sha256": "d61169826da700018e7ff17129fa0c796f1e1672e153d1610b59d5984f3a98c2"
     },
     "scripts/stage_windows_source.py": {
-      "bytes": 8217,
-      "sha256": "a7218f96209c0e09be6f6aedc55e764fcef5ebc7fe9cea5bbfd1ecd112578901"
+      "bytes": 8248,
+      "sha256": "cb80d851b6f83c68917c0a3f9de49d8c89012f0d226e72ce60618ed3812c4e10"
     },
     "scripts/windows_native_lifecycle_diagnostic.py": {
       "bytes": 10590,
@@ -962,8 +962,8 @@
       "sha256": "ae4380e1ebf87acb63e54606ddfcdb32e88f47942259d38a73c5493f45ae7408"
     },
     "src/digifly_app/ui/student_readiness_check.py": {
-      "bytes": 27342,
-      "sha256": "8e0a1fc2156384dac534d92de79d4f1540f0956d46352b868507f19feb1d1b85"
+      "bytes": 27481,
+      "sha256": "6a8649d634895cbff4a3915f91c50113ee849052f70368b0e20f1cb44a682ab8"
     },
     "src/digifly_app/ui/style.py": {
       "bytes": 18419,
@@ -1372,6 +1372,10 @@
     "tests/test_windows_test_display.py": {
       "bytes": 769,
       "sha256": "fc7dee16a5bfc28115e0f63709633fdc81e7d57ea542dc3f73f455176dbee567"
+    },
+    "tests/test_result_reveal.py": {
+      "bytes": 1796,
+      "sha256": "7543bcde56c73688a1f10c0787441f7cc7e2a2f05cb0e7b40b02415c3460ab97"
     }
   }
 }
