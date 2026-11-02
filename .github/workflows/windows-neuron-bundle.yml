@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261026.9
+      DIGIFLY_RELEASE_VERSION: 0.1.0-alpha.20261102.7
       DIGIFLY_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +68,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Connected-model/fragment source regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_result_storage.py tests/test_voltage_plot.py tests/test_results_responsive_layout.py tests/test_morphology_voltage_ui.py tests/test_result_playback.py --junitxml=results-review-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Results layout, recording scope or state-action regressions failed' }
+          ./.venv/Scripts/python.exe -m pytest tests/test_first_experiment.py tests/test_columnar_cached_voltage.py tests/test_current_tracking.py tests/test_morphology_loading_checkpoints.py tests/test_native_fixture_shutdown.py tests/test_native_results_scope.py tests/test_native_viewport_host.py tests/test_prepared_mapped_cache_integrity.py tests/test_qt_callback_guard.py tests/test_result_bindings_cache.py tests/test_result_geometry_sharing.py tests/test_result_loading_async.py tests/test_result_source_verification.py tests/test_result_voltage_store.py tests/test_review_copy_admission.py tests/test_shared_cached_trace_records.py tests/test_view_mode_accessibility.py --junitxml=wizard-current-loading-source-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Wizard, current tracking or shared Results loading regressions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_experiment_setting_interactions.py tests/test_experiment.py tests/test_experiment_builder_cancellation.py tests/test_circuit_experiment_globals_ui.py tests/test_condition_execution.py tests/test_generic_recording_sample_preflight.py tests/test_ramp_quadrature.py --junitxml=experiment-settings-source-tests.xml
           if ($LASTEXITCODE -ne 0) { throw 'Experiment settings inventory, bindings or interactions failed' }
           ./.venv/Scripts/python.exe -m pytest tests/test_connectivity_download.py tests/test_circuit_library.py tests/test_circuit_builder_ui.py tests/test_saved_neurons.py tests/test_linked_libraries.py tests/test_linked_libraries_ui.py tests/test_windows_neuron_bundle.py tests/test_windows_package.py tests/test_windows_release.py tests/test_stage_pdcm_bionet_assets.py tests/test_app_settings.py tests/test_ui_wording.py tests/test_swc_library.py tests/test_bundled_pair_graph.py tests/test_neuprint_ui.py tests/test_neuprint_acquisition.py tests/test_data_library.py tests/test_connectomes.py tests/test_connectome_picker.py tests/test_updates.py tests/test_update_installer.py tests/test_update_cleanup.py tests/test_updater_gate.py tests/test_updater_ui.py tests/test_project.py tests/test_morphology.py tests/test_experiment_builder_readiness.py tests/test_generic_experiment.py::test_downloaded_male_pair_graph_cannot_silently_use_native_contacts --junitxml=neuron-source-tests.xml
@@ -110,6 +112,9 @@ jobs:
           $libraryReceipt = Get-Content "$libraryReport/receipt.json" | ConvertFrom-Json
           if (-not $libraryReceipt.ok) { throw 'Packaged SWC library receipt did not pass' }
           if (-not $libraryReceipt.experiment_settings_inventory -or -not $libraryReceipt.experiment_settings_pairwise -or -not $libraryReceipt.experiment_settings_refusals -or -not $libraryReceipt.experiment_settings_external_edits -or -not $libraryReceipt.results_activity_help_resets -or -not $libraryReceipt.compressed_compartment_playback -or -not $libraryReceipt.all_compartment_playback_readiness) { throw 'Native Experiment settings coverage missing' }
+          if (-not $libraryReceipt.first_experiment_large_contacts_streamed -or -not $libraryReceipt.first_experiment_previous_next -or -not $libraryReceipt.first_experiment_spotlight_interactive -or -not $libraryReceipt.first_experiment_task_text_visible -or -not $libraryReceipt.first_experiment_simplified_steps -or -not $libraryReceipt.first_experiment_save_menu_interactive -or -not $libraryReceipt.connectome_pictures_native_density) { throw 'Native simplified tutorial, File menu or high-density image coverage missing' }
+          ./.venv/Scripts/python.exe scripts/check_swc_library_gui.py --executable $exe --archive "dist/Digifly-Workstation-$env:DIGIFLY_RELEASE_VERSION-Windows-x86_64.zip" --results-only --output "$env:GITHUB_WORKSPACE/results-ui-evidence"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Results, wizard or preference-preservation check failed' }
           $pairReport = "$env:GITHUB_WORKSPACE/included-pair-ui-evidence"
           $pairCheck = Start-Process -FilePath $exe -ArgumentList @('--package-smoke-test', $pairReport, '--data-reader', ('"' + $receipt.installed_python + '"'), '--included-parquet') -RedirectStandardOutput packaged-pair-ui-stdout.txt -RedirectStandardError packaged-pair-ui-stderr.txt -PassThru
           if (-not $pairCheck.WaitForExit(180000)) { taskkill /PID $pairCheck.Id /T /F; throw 'Included all-row Parquet app check timed out' }
@@ -134,6 +139,7 @@ jobs:
             neuron-source-tests.xml
             connected-model-source-tests.xml
             results-review-source-tests.xml
+            wizard-current-loading-source-tests.xml
             experiment-settings-source-tests.xml
             source-neuron-ui-evidence/*.json
             source-neuron-ui-evidence/*.txt
@@ -144,6 +150,9 @@ jobs:
             swc-library-ui-evidence/*.json
             swc-library-ui-evidence/experiment-settings/*.json
             swc-library-ui-evidence/*.png
+            results-ui-evidence/*.json
+            results-ui-evidence/*.txt
+            results-ui-evidence/*.png
             included-pair-ui-evidence/*.json
             included-pair-ui-evidence/*.png
             updater-evidence/receipt.json

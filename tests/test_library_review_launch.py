@@ -156,3 +156,18 @@ def test_held_runner_itself_refuses_wrong_profile_before_reporting_ready(tmp_pat
     finally:
         claim=tmp_path/'wrong-held-profile-launch/launch.json'
         if claim.exists():os.kill(json.loads(claim.read_text())['pid'],signal.SIGTERM)
+
+
+def test_windows_live_review_refuses_before_sending_any_posix_probe(tmp_path,monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import scripts.launch_library_review as module
+    output=tmp_path/'review';output.mkdir()
+    claim=tmp_path/'review-launch';claim.mkdir()
+    record=dict(ownership_mode='foreground-held',window_confirmed=True,pid=123,launcher_pid=456,command=['app'])
+    (claim/'launch.json').write_text(json.dumps(record))
+    (output/'window-ready.json').write_text(json.dumps(dict(pid=123,window_visible=True)))
+    def forbidden(*args):pytest.fail('Windows review sent a POSIX liveness signal')
+    monkeypatch.setattr(module,'os',SimpleNamespace(name='nt',kill=forbidden))
+    with pytest.raises(ValueError,match='not qualified on Windows'):
+        module.verify_live_review(output)
