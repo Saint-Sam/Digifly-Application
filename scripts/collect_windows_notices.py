@@ -100,6 +100,16 @@ def collect(bundle):
                     "source": "https://doc.qt.io/qtforpython-6/licenses.html", "notices": qt_notices,
                     "replacement": "DLLs remain separate in the extracted app folder; modification/replacement and reverse engineering for debugging library modifications are not prohibited by Digifly",
                     "source_obtainment": "Exact v6.10.3 upstream source tags are linked in every collected notice"})
+    # Keep complete original attribution pages and the already collected GFDL.
+    graphics_notices=[]
+    for page in ('qt-attribution-llvmpipe','qt-attribution-llvm'):
+        url='https://doc.qt.io/qt-6.10/'+page+'.html'
+        notice=save('Qt-software-graphics/'+page+'.html',fetch(url))
+        graphics_notices.append({**notice,'source_url':url})
+    records.append({'component':'Qt software OpenGL fallback (Mesa llvmpipe/LLVM)',
+        'version':'Unmodified PySide6_Essentials 6.10.3 Windows wheel binary',
+        'license':'MIT, BSL-1.0 and incorporated LLVM notices; see included originals',
+        'notices':graphics_notices})
     result = {"schema": "digifly-windows-notice-inventory-v1", "components": records,
               "native_binaries": sorted(path.relative_to(bundle).as_posix() for path in bundle.rglob("*") if path.suffix.lower() in {".dll", ".pyd", ".exe"}),
               "augustin": {"license": "CC-BY-4.0", "article": "https://doi.org/10.1523/ENEURO.0423-18.2019",

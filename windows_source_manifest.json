@@ -14,8 +14,8 @@
       "sha256": "a57b0fc6aab805562e8d4abf8a9d3264a79089c0915b2b2d90c5b3f3196376d9"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 16091,
-      "sha256": "42830fa925aea89f384ccdacaa345e30907b60a2ca6cce441cefb2fd975a0dae"
+      "bytes": 16377,
+      "sha256": "b6cdea0168c0b9d4383b6f8a608b1fbbd373c05e76244358467ce6d0a34a8f02"
     },
     "CONTRIBUTING.md": {
       "bytes": 1308,
@@ -54,8 +54,8 @@
       "sha256": "ebd9f182f3211f13ff9c743d00e89d6a2792676b0c2d7d3c8a49d59944e5a9e3"
     },
     "docs/BUG_FIX_LOG.md": {
-      "bytes": 154071,
-      "sha256": "fb87a3eb8d4c7980897d39ea9e4e6309156cc61c37818abc64767689e277d890"
+      "bytes": 162596,
+      "sha256": "6191917749acc80c02d11588ef0ba35a38185e14b8ce9072d02013550cc168e8"
     },
     "docs/CHANNEL_EXECUTION_REPAIR.md": {
       "bytes": 33935,
@@ -86,8 +86,8 @@
       "sha256": "f060d988405b23366866ef6f03759ba75402129a821f6401de3b9b61134d3291"
     },
     "docs/RELEASE_20261102.md": {
-      "bytes": 2748,
-      "sha256": "f421fa9bf99885c1dbb3abf2648656dcc47604c2eab40e2ded56ae632ff5afaf"
+      "bytes": 2986,
+      "sha256": "6b21f15706dd6b8c9a56c1fc80373e0c2b065e56ae3ca5117b7e34da2b57b198"
     },
     "docs/STUDENT_READINESS_MAC_20261028.md": {
       "bytes": 1404,
@@ -242,8 +242,8 @@
       "sha256": "37ecb875361adf1dce365392ae656e0aef7dead64fc145f6429bf325e4934f25"
     },
     "scripts/build_windows.ps1": {
-      "bytes": 6800,
-      "sha256": "54417c332c985bed0c785b99ffec05073213eb5f7b4e56001a847224cf9868d0"
+      "bytes": 6971,
+      "sha256": "52890cb97cc351d476104bfc972749d4977c57f80812ba70f064865d61cb46f1"
     },
     "scripts/build_windows_neuron_payload.py": {
       "bytes": 10215,
@@ -270,8 +270,8 @@
       "sha256": "47df29515182c5b7cd3c5a3b0825578999aebc07e5874aa1400b137388257b81"
     },
     "scripts/collect_windows_notices.py": {
-      "bytes": 6633,
-      "sha256": "78293c624f5f93beb7cc31a6cd8dbc3bd65fddb1d19c773eeca9d4cbe063ea23"
+      "bytes": 7275,
+      "sha256": "b516c09e829934d7446e3c30b97037b077f6b5a7287d85672c5308ab88354cdd"
     },
     "scripts/compare_pdcm_figure10_conditions.py": {
       "bytes": 10083,
@@ -378,8 +378,8 @@
       "sha256": "d61169826da700018e7ff17129fa0c796f1e1672e153d1610b59d5984f3a98c2"
     },
     "scripts/stage_windows_source.py": {
-      "bytes": 8373,
-      "sha256": "5e9f880cdffafc4cfdaaff189e9c4bee7d39836a2cd952d8c400cd8b5e32c15f"
+      "bytes": 8464,
+      "sha256": "dcbaa9f6eb695fd2da3bb198f565d6c6a2825f8f47ffbab9f5728d348e7f7867"
     },
     "scripts/windows_native_lifecycle_diagnostic.py": {
       "bytes": 10590,
@@ -1384,6 +1384,14 @@
     "scripts/windows_graphics_payload_diagnostic.py": {
       "bytes": 2891,
       "sha256": "82cc6bcef5eb8eee9e8c25e7cb08c441fd503b4c9f9a3f781a2c972f00296aa1"
+    },
+    "scripts/stage_windows_graphics.py": {
+      "bytes": 3297,
+      "sha256": "58fe601746709f95690882acbe7794944ebbaa0f37d2d8cc1b6811af999843a0"
+    },
+    "tests/test_windows_graphics_payload.py": {
+      "bytes": 1762,
+      "sha256": "085cdbe2cbea1ad1adc60fd4f5d456b6354913890f36a7e622c1f7809364dc0d"
     }
   }
 }

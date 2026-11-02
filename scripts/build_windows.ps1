@@ -63,6 +63,8 @@ try {
     foreach ($worker in $requiredWorkers) {
         if (-not (Test-Path (Join-Path $bundle "digifly_app\workers\$worker"))) { throw "Packaged simulator worker is missing: $worker" }
     }
+    & $python "scripts\stage_windows_graphics.py" --bundle $bundle
+    if ($LASTEXITCODE -ne 0) { throw "Qt software graphics dependency failed source/hash validation." }
     & $python "scripts\collect_windows_notices.py" --bundle $bundle
     if ($LASTEXITCODE -ne 0) { throw "Dependency license/notice inventory failed." }
     if ($env:DIGIFLY_NEURON_PAYLOAD) {
