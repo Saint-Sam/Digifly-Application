@@ -1354,12 +1354,12 @@
       "sha256": "3590791da6f338cddeca7700ccdaf9c69600bb36ef3529bf63524b1babc0906a"
     },
     ".github/workflows/windows-native-lifecycle.yml": {
-      "bytes": 946,
-      "sha256": "25084ee924d7913fd6f47f63ecdd760200b315f36f128562be24ef4d85b5b106"
+      "bytes": 1286,
+      "sha256": "f334288dc5aa1d41212b0fb28f9c50b78f32da4bd887a6a06301592c19bdc72c"
     },
     "scripts/windows_native_lifecycle_diagnostic.py": {
-      "bytes": 6627,
-      "sha256": "b6d31c908e117dc546dcd67ab48b82ed8eee6aba3bfbc323cc09d58dbcf6c610"
+      "bytes": 10590,
+      "sha256": "20d2cc445cf051f41a6eea07983d5eac00fb5ba0653aa50b9c6050b5ce96d996"
     }
   }
 }
