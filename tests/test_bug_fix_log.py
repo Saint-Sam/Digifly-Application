@@ -18,8 +18,11 @@ def test_bug_log_ids_links_and_delivery_distinctions():
     assert 'not publicly released' in body
     assert 'source test is not an installed-app test' in body
     assert 'bug and fix log](docs/BUG_FIX_LOG.md)' in (ROOT/'README.md').read_text()
-    assert 'maintain docs/BUG_FIX_LOG.md during debugging' in (ROOT/'codex.md').read_text()
     contributing = (ROOT/'CONTRIBUTING.md').read_text()
+    assert 'Keep [the bug and fix log](docs/BUG_FIX_LOG.md) up to date' in contributing
+    local_guide = ROOT/'codex.md'
+    if local_guide.is_file():
+        assert 'maintain docs/BUG_FIX_LOG.md during debugging' in local_guide.read_text()
     assert '[the bug and fix log](docs/BUG_FIX_LOG.md)' in contributing
     assert 'Do not mark a source-only repair as released.' in contributing
 
@@ -30,5 +33,7 @@ def test_readme_distinguishes_current_bounded_support_from_older_milestones():
     assert 'chemical-only soma subset' not in body
     assert 'https://github.com/Saint-Sam/Digifly-Application/releases)' in body
     assert 'explicitly assigned to MANC v1.2.1' in body
-    assert 'old 49-cell comparison into a passed' in body
+    assert 'Escape-SIZ comparison has an unresolved voltage mismatch.' in body
+    assert 'Windows 11 testing is still' in body
+    assert 'Morphology voltage' in body and 'soma-only recordings' in body
     assert ''.join(map(chr, [112, 114, 111, 118, 101, 110, 97, 110, 101])) not in body.casefold()
