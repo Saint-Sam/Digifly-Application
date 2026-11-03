@@ -72,10 +72,6 @@ execution. The [channel execution record](docs/CHANNEL_EXECUTION_REPAIR.md)
 documents supported settings and simulator comparisons. The older 49-cell
 Escape-SIZ comparison has an unresolved voltage mismatch.
 
-NetPyNE and BioNet paper-replication work is documented in the
-[PDCM replication record](docs/PDCM_REPLICATION.md), with completed conditions
-and remaining analyses.
-
 ## Development
 
 With Python 3.11 or later installed, run:
