@@ -11,6 +11,14 @@ computer or scientific model is verified. Dates are the dates of investigation
 or delivery, not necessarily when the bug was introduced. Release notes can
 summarize this log without replacing it.
 
+## Version 0.2.1
+
+Both packages show their installed version at the bottom left of every page.
+The Mac and Windows builds pass their package, native interface and updater
+checks. Each passed 28 version-label checks across pages, themes and window
+sizes. The Windows package also passed NEURON setup, simulation and Results
+checks. The broader student-readiness review remains open.
+
 ## Version 0.2.0
 
 The Mac and Windows packages include the current NEURON preparation, binary recording and solver-thread controls. Both pass package, native interface and updater checks. Earlier entries preserve the test and delivery status recorded during each repair.
@@ -2676,7 +2684,9 @@ The initial inventory contains 301 UI construction sites; it does not mean
   updater cases. Installed startup and Results also pass; normal preferences
   are unchanged and the complete 0.2.0 app is preserved. The first notice-file
   and background-focus failures are retained in the local test records.
-  Matching Windows package checks are pending.
+  Matching Windows 0.2.1 passes source, package, native setup/Run, Results and
+  updater checks, including the same 28 footer combinations. All 170 shared
+  application source files match the checked Mac package.
 
 ## DF-0141: Windows source test assumed an empty Qt version default
 
@@ -2688,8 +2698,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
   the window and verify that the stale value was cleared. Keep the same
   visible-label check. Application and simulator code are unchanged.
 - **Verification:** The original Windows report records this single failed
-  assertion. The corrected footer tests pass on Mac. Replacement Windows
-  checks are in progress; no new public release has been uploaded.
+  assertion. The corrected footer tests pass on Mac and Windows. The replacement
+  Windows package passes its native setup/Run, Results and updater checks.
 
 ## DF-0142: Footer unit fixture deleted a running diagnostic thread
 
@@ -2702,7 +2712,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
   assertions. No application or simulator source changes.
 - **Verification:** The original local abort is recorded. The corrected
   footer/version group passes 19 cases. The unchanged checked Mac package
-  remains installed; replacement Windows checks are in progress.
+  remains installed. The replacement Windows source and native package checks
+  also pass, including the real Engines-page navigation.
 
 ## Maintenance and GitHub handoff
 
