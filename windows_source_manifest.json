@@ -374,8 +374,8 @@
       "sha256": "967c97f923f3c317677a3d992f67c5187b45004322ba4374798dc757997f7b3a"
     },
     "tests/test_release_version.py": {
-      "bytes": 1777,
-      "sha256": "bf5dcbeef694c9e61f3aaab0d9665bf7be7eafc1626b87eb8a51ef9bf3359ac0"
+      "bytes": 2281,
+      "sha256": "823719414851d444c9db0b6e095302658d3497081b6eff071bf5d02431effb7a"
     },
     "tests/test_view_mode_accessibility.py": {
       "bytes": 3188,
@@ -742,8 +742,8 @@
       "sha256": "a57b0fc6aab805562e8d4abf8a9d3264a79089c0915b2b2d90c5b3f3196376d9"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 17547,
-      "sha256": "2183a9b74eb1f23cc8ea422246a3d7b93032e5e28238e991c70a553c5b21a93a"
+      "bytes": 17897,
+      "sha256": "1a062e184cb43b1aba0ee7c761e2f9285b42e3e6cdba56cb36157e9df32da150"
     },
     "presets/escape_siz/ablation_notebook_active_v1.json": {
       "bytes": 1392,

@@ -39,3 +39,11 @@ def test_current_windows_workflow_reads_the_shared_version():
     assert "DIGIFLY_RELEASE_VERSION: 0." not in workflow
     assert "python scripts/release_version.py --source ." in workflow
     assert '"DIGIFLY_RELEASE_VERSION=$version"' in workflow
+
+
+def test_source_native_windows_checks_have_the_current_build_identity():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/windows-neuron-bundle.yml").read_text()
+    assert "$sourceBuild = @{ version = $version; build = 'source'; source_commit = $env:GITHUB_SHA }" in workflow
+    generated = workflow.index("$sourceBuild | ConvertTo-Json | Set-Content -Path digifly_build.json")
+    assert generated < workflow.index("Source tests and native Windows UI build")

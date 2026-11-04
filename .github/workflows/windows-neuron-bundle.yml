@@ -58,6 +58,10 @@ jobs:
           $version = python scripts/release_version.py --source .
           if ($LASTEXITCODE -ne 0) { throw 'Invalid shared release number' }
           "DIGIFLY_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # Give the source UI its real identity before native checks. The
+          # compiler creates its separate immutable packaged build record later.
+          $sourceBuild = @{ version = $version; build = 'source'; source_commit = $env:GITHUB_SHA }
+          $sourceBuild | ConvertTo-Json | Set-Content -Path digifly_build.json -Encoding utf8
       - uses: actions/download-artifact@v4
         with:
           name: included-neuron-runtime-20261015
