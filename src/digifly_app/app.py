@@ -49,6 +49,9 @@ def main() -> int:
     if sys.platform == 'darwin':
         sys.dont_write_bytecode = True
         os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+    if len(sys.argv) == 3 and sys.argv[1] == "--package-contact-projection-test":
+        from digifly_app.core.contact_mapping_check import run
+        return run(Path(sys.argv[2]).resolve())
     if len(sys.argv) == 3 and sys.argv[1] == "--finish-update":
         from digifly_app.core.update_installer import read_request
         request = read_request(Path(sys.argv[2]).resolve())

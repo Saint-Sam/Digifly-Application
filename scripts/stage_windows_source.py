@@ -11,7 +11,7 @@ from digifly_app.core.bundled_pair_graph import PAIR_PATH, PAIR_NOTICE, stage_pa
 
 
 def inputs(root: Path) -> list[Path]:
-    names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+    names = {".gitattributes", "main.py", "pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "VERSION", "scripts/release_version.py",
              "scripts/build_windows.ps1", "scripts/setup_dev.ps1", "scripts/stage_windows_source.py",
              "scripts/windows_package.py", "scripts/collect_windows_notices.py", "scripts/stage_pdcm_bionet_assets.py",
              "scripts/stage_windows_graphics.py",
@@ -53,6 +53,9 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "scripts/windows_compiled_graphics_diagnostic.py",
             "scripts/windows_graphics_payload_diagnostic.py",
             "tests/test_windows_graphics_payload.py", "tests/test_windows_build_helpers.py",
+            "tests/test_release_version.py", "tests/test_binary_voltage.py", "tests/test_compact_voltage.py",
+            "tests/test_contact_projection_index.py", "tests/test_worker_preparation.py",
+            "tests/test_neuron_thread_controls.py", "tests/test_library_table_lifetime.py",
             "tests/test_windows_neuron_bundle.py", "scripts/augment_windows_notices.py", "scripts/collect_qtpdf_notices.py",
             "tests/test_generic_experiment.py", "tests/test_morphology.py", "tests/test_experiment_builder_readiness.py", "tests/test_linked_libraries.py", "tests/test_linked_libraries_ui.py", "tests/test_saved_neurons.py", "tests/test_circuit_library.py", "tests/test_circuit_builder_ui.py", "tests/test_connectivity_download.py",
             "tests/test_updates.py", "tests/test_update_installer.py", "tests/test_update_cleanup.py", "tests/test_updater_gate.py", "tests/test_updater_ui.py", "tests/test_project.py",

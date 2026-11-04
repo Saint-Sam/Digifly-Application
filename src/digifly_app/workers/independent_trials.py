@@ -17,6 +17,46 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 
+def logical_cpu_count() -> int:
+    """Respect a host affinity limit when the operating system exposes it."""
+    total = max(1,os.cpu_count() or 1)
+    try:
+        total = min(total,len(os.sched_getaffinity(0)))
+    except (AttributeError,OSError):
+        try:
+            import psutil
+            total = min(total,len(psutil.Process().cpu_affinity()))
+        except (ImportError,AttributeError,OSError):
+            pass
+    return max(1,total)
+
+
+def cpu_capacity_snapshot(previous=None):
+    """Nonblocking utilization estimate; a count of idle CPUs is approximate."""
+    total = logical_cpu_count()
+    try:
+        import psutil
+        times = psutil.cpu_times()
+        current = (sum(times),times.idle+getattr(times,'iowait',0.))
+        elapsed = current[0]-previous[0] if previous else 0
+        spare = max(0,min(total,int(total*(current[1]-previous[1])/elapsed))) if elapsed>0 else None
+        return {'logical_cpus':total,'spare_estimate':spare,'sample':current}
+    except (ImportError,OSError,AttributeError):
+        return {'logical_cpus':total,'spare_estimate':None,'sample':None}
+
+
+def neuron_thread_count(experiment):
+    enabled = experiment.get('neuron_multithreading',False)
+    count = experiment.get('neuron_threads',1)
+    if type(enabled) is not bool or type(count) is not int or not 1<=count<=256:
+        raise ValueError('NEURON thread count must be a whole number between 1 and 256, with an explicit enable switch')
+    if not enabled:
+        return 1
+    if count>logical_cpu_count():
+        raise ValueError(f'NEURON requests {count} threads; this computer exposes {logical_cpu_count()} logical CPUs')
+    return count
+
+
 class TrialCancelled(RuntimeError):
     pass
 

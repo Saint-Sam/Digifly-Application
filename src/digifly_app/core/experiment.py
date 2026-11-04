@@ -164,6 +164,8 @@ class ExperimentSpec:
     random_seed: int = 1
     repetitions: int = 1
     workers: int = 1
+    neuron_multithreading: bool = False
+    neuron_threads: int = 1
     stimuli: tuple[StimulusSpec, ...] = field(default_factory=_default_stimuli)
     conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
     recording: RecordingSpec = field(default_factory=RecordingSpec)
@@ -230,6 +232,8 @@ class ExperimentSpec:
             errors.append("Repetitions must be at least one.")
         if not 1 <= self.workers <= 256:
             errors.append("Worker count must be between 1 and 256.")
+        if type(self.neuron_multithreading) is not bool or type(self.neuron_threads) is not int or not 1<=self.neuron_threads<=256:
+            errors.append('NEURON thread count must be a whole number between 1 and 256.')
         if not self.stimuli:
             errors.append("At least one stimulus is required.")
         if not any(condition.enabled for condition in self.conditions):

@@ -11,10 +11,6 @@ computer or scientific model is verified. Dates are the dates of investigation
 or delivery, not necessarily when the bug was introduced. Release notes can
 summarize this log without replacing it.
 
-## November 2 release
-
-The current Mac and Windows downloads are 20261102.10. Both include the simplified wizard and high-density connectome pictures. Earlier entries retain the build and test status recorded during each repair.
-
 ## In progress — Mac student-readiness review, October 28, 2026
 
 Windows work is deferred for this review. The starting package is 20261026.9.
@@ -2215,7 +2211,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   refusal of unrelated or incomplete results. Removing Save also exposed a
   dimmed File menu on non-native menu bars. The save steps now expose the actual
   menu; source and native regressions check both steps. Native builds and
-  publication checks pass for both 20261102.10 packages. Older builds retain the panel.
+  publication are in progress for 20261102.7. Older builds retain the panel.
 
 ## DF-0114: Connectome pictures lose detail on high-density displays
 
@@ -2228,7 +2224,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and 3x scale, with one logical pixel allowed for Qt's image-size rounding.
   A Python-only ratio mock was rejected because it left Qt's native screen
   at 1x. Native package checks now inspect the actual screen ratio and rendered
-  pixel dimensions. Both 20261102.10 packages pass the native screen-density and release checks.
+  pixel dimensions. Build and publication checks are in progress.
 
 ## DF-0115: Windows review checks receive an unexpected console interrupt
 
@@ -2240,7 +2236,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   remains unsupported.
 - **Checks/status:** A regression supplies a Windows OS interface whose signal
   function must never be called. Wrong-source and wrong-profile refusals remain.
-  The replacement Windows build passes the full source and native gates.
+  The replacement Windows build must pass the full source and native gates.
 
 ## DF-0116: A paused guide changes pages when its window first appears
 
@@ -2252,8 +2248,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
   pause the guide before selecting their page.
 - **Checks/status:** A separate regression reproduces the page change before
   the repair. It now keeps Results selected with no active page timer. Existing
-  split-view and expansion assertions remain enabled. Both final 20261102.10 packages pass their native and publication checks.
-  Earlier failures are preserved.
+  split-view and expansion assertions remain enabled. Final 20261102.8 native
+  and publication checks are in progress; earlier failures are preserved.
 
 ## DF-0117: Windows same-length recording edits can share a file timestamp
 
@@ -2263,7 +2259,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and before returning the loaded table. Mac keeps its existing request-local
   digest reuse. Saved recordings are never changed.
 - **Checks/status:** A same-stamp edit reproduces the missing refusal locally.
-  The repaired check rejects it. Both actual packages pass their native and release checks.
+  The repaired check rejects it. Final Windows and Mac package checks are pending.
 
 ## DF-0118: Windows mapped caches cannot be removed while still open
 
@@ -2286,9 +2282,9 @@ The initial inventory contains 301 UI construction sites; it does not mean
   yields Python's lock instead of relying on Qt's test wait; its deadline stays
   five seconds. Native source wizard checks now run before Windows compilation,
   and all compiled-app checks remain enabled afterward.
-- **Checks/status:** The original Windows report is retained. Both packages pass their
-  native checks with unchanged test deadlines. The live-document width and
-  event pump were corrected together; their isolated timing effects remain unmeasured.
+- **Checks/status:** The original Windows report is retained. Local focused and
+  native checks are running; Windows results are pending. Thread starvation is
+  a suspected cause until the Windows run verifies the changed event pump.
 
 ## DF-0120: Cancellation fixture finishes before its cancel click
 
@@ -2300,7 +2296,7 @@ The initial inventory contains 301 UI construction sites; it does not mean
   both reads, the plotted trace and current-type switch assertions. Production
   current-loading code is unchanged.
 - **Checks/status:** Both focused current lifecycle tests pass locally. The
-  original Windows report remains saved. The corrected fixture and complete native Windows package checks pass.
+  original Windows report remains saved. New Windows build checks are pending.
 
 ## DF-0121: Windows NEURON check crashes during fixture shutdown
 
@@ -2464,6 +2460,189 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and updater installation, legacy installation and failed-start rollback.
   Both final10 archives pass their source, runtime, native and updater audits;
   the paired validator accepts them and refuses a copy missing Windows.
+
+## DF-0130: Trace-layout selection silently disables measured voltage replay
+
+- **Report:** The Mac voltage player appears to show no color or propagation.
+- **Cause:** Results defaults to inferred soma-spike animation. The plot's
+  exclusive view group also owns measured morphology replay. Selecting 2D or
+  3D traces disables that replay and resets its time, although the skeleton is
+  a separate pane. A soma-only recording separately leaves almost every edge
+  gray because those edges have no saved voltage.
+- **Verification:** Actual checked Mac20261102.10 opens the user's saved
+  sixteen-cell soma and all-compartment runs. The all-compartment recording
+  loads15,173,123values/94,243traces; measured colors change between1.45and3ms,
+  and Play reaches8ms and stops. Actual2Dselection removes measured mode;
+  selecting Morphology voltage restores it. Twenty-five existing source
+  playback/accessibility checks pass but encode this confusing mode coupling.
+- **Repair/status:** Diagnosed, not repaired or released. Separate replay mode
+  from plot layout, choose a suitable measured default and display recording
+  coverage explicitly. No new simulation or change to stored values is needed
+  to repair those controls. No renderer failure was reproduced on this checked
+  Mac package; other machines and the user's exact open instance are not
+  independently qualified by this observation.
+
+## DF-0131: Large text intermediates extend NEURON experiment waits
+
+- **Report:** NEURON experiments take too long to finish.
+- **Measurement:** An actual Mac20261102.10 sixteen-cell Male CNS tutorial Run
+  completes in10:16including Results. App/worker preparation takes1:14, the two
+  condition execution phases2:06, saving/compression5:33 and Results1:23. The
+  circuit, settings and all-compartment recording are unchanged. Worker exit0;
+  Results displays30,346,246values and188,486traces. A separately cancelled
+  earlier attempt is excluded from the completed measurement.
+- **Observed cost:** The writer creates4.07GBof text, including1.86GBof voltage
+  CSV and1.58GBof condition details, before compression leaves278MB. A brief
+  process sample during saving is in gzip compression. Peak sampled memory is
+  3.79GiBand minimum free disk6.35GiB. Saved voltage content matches the earlier
+  recording. Condition logs combine construction, integration and collection.
+- **Repair/status:** Implemented and checked in Mac03.3, unreleased. New NEURON runs write
+  float64 samples and shared clocks directly into an indexed binary recording.
+  Results maps those files directly; older CSV/gzip readers remain available.
+  Conditions reference one shared model description and regional material table.
+  Independent child requests omit derived regional plans and return binary data.
+  Initial exact-value, corruption, cancellation, legacy-reader and UI/source
+  checks pass. The actual matched Mac03.2 Run reaches Results in97.9seconds,
+  versus616seconds before (6.29times faster). Every30,346,246value and clock
+  matches with zero measured error; all geometry and contacts are unchanged.
+  Conditions occupy1,648bytes and the complete new run286MB. Preparation still
+  takes54.8seconds. DF0135corrects an artifact-list path without changing the
+  measured simulation code. Mac03.3package/full/focused native checks pass;
+  recoverable installation and actual installed controls/Results checks pass.
+  The complete old app, original projects and recordings are preserved.
+
+## DF-0132: NEURON solver threads and synchronized recording
+
+- **Report:** Users need an enable switch and explicit thread count for a single
+  NEURON simulation, alongside an indication of available computer capacity.
+- **Repair:** Add persisted NEURON thread controls, logical CPU count and a
+  nonblocking approximate spare-CPU display. Partition whole cells by segment
+  count; direct-pointer electrical partners stay together. Concurrent trial
+  processes share the same CPU budget with solver threads.
+- **Failure found:** The first threaded clock had no cell association. After
+  adding owners, the qualified runtime's interval recording still sampled some
+  threads at inconsistent steps, although final voltages matched. Repeated
+  trials retained different intermediate errors, reaching17.6mV. These failed
+  comparisons remain in the task evidence.
+- **Repair/check:** Read native pointers synchronously after all solver threads
+  reach each recording boundary. Match the actual native half-step clock for
+  off-grid intervals, including midpoint ties. Step/ramp/pulse engineering
+  checks cover one/two/four threads, chemical connections, three electrical
+  modes and off/sparse/full currents. Tested observations and spike times match
+  their single-thread controls; the comparison tolerance is1e-8mV/nA. The
+  actual Mac03.2Run reports four native workers with balanced segment loads.
+  Both conditions integrate in17.4seconds combined; the complete recording
+  matches the earlier single-thread run with zero measured voltage/clock error.
+  The combined storage/threading/model-sharing changes account for the measured
+  total speedup; individual contributions were not separately timed. Final03.3
+  contains the same solver/recording code and passes its native checks. It is
+  installed on Mac; actual enable/count/edit/save/restore checks pass. Windows
+  qualification is deferred and no new release is published.
+
+## DF-0133: Old Results smoke checks assumed synchronous discovery
+
+- **Failure:** Two source smoke checks inspected a callback immediately after
+  Load latest. The current app queues discovery and loading in a worker, so
+  those old assertions ran before the callback.
+- **Repair/check:** The isolated discovery tests now exercise the exact queued
+  discovery and loader passed by Load latest, then check the resulting status.
+  The separate asynchronous reader suite retains its real completion, changed-
+  file, cancellation and responsiveness checks. A first mistaken internal method
+  name and its failed test are retained. No app discovery behavior is changed.
+
+## DF-0134: Native settings inventory omitted the new thread controls
+
+- **Failure:** The native source check stopped after162passing flags because
+  two new Experiment Builder settings were absent from its explicit inventory.
+- **Repair:** Declare both controls, verify each serialized binding and restore,
+  and add disabled/one/multiple thread choices to the interaction matrix. The
+  existing new-unknown-control negative check remains active. A mistaken first
+  placement of the factor in the option list is repaired and retained.
+- **Verification/status:** Thirteen source cases pass. The full native source
+  check passes198true flags, including38settings,24interaction cases and1180
+  covered pairs. Candidate03.1was already frozen with the old test helper and
+  is not a delivery candidate. Successor03.3contains the repaired helper and
+  passes198full native flags plus80focused Results flags. Normal UI and
+  simulation code are unchanged by this test repair.
+
+## DF-0135: Binary recording link used only its filename
+
+- **Failure:** The actual four-thread Mac Run completes and replays all saved
+  values, but its Artifacts section reports one missing file. The new recording
+  lives at voltage/ready.json; the worker lists ready.json at the run root.
+- **Repair:** Save the complete run-relative artifact path. A production export
+  regression first reproduces the missing link, then passes after the repair.
+  It also checks that every listed artifact exists. The original completed run
+  and its failed link remain unchanged. This changes the output index only;
+  solver, recording, geometry and settings are unchanged.
+- **Status:** Source and Mac03.3package/full/focused native checks pass.
+  Recoverable installation and actual saved Results checks pass. A separate corrected summary view
+  retains the original benchmark summary and all values unchanged. All61listed
+  artifacts resolve in that view, and the installed Results page shows all pass.
+  No new public release.
+
+## DF-0136: Contact preparation repeatedly scanned and reread skeletons
+
+- **Failure:** The measured sixteen-cell Run spends54.8seconds preparing its
+  model. Production profiling attributes most app preparation to two exhaustive
+  contact-projection passes. Worker preparation reads sixteen normalized
+  skeletons1,712times and streams each regional document field separately.
+- **Repair:** Build a temporary whole-cable spatial index per neuron within
+  each preparation call. Preserve deterministic nearest-edge selection, frame
+  checks, filler exclusions and the existing comparison budget. Read each
+  normalized skeleton once per cell, and encode compact regional documents.
+  The index and text buffers are released within preparation; no circuit cache.
+- **Source checks:** Exhaustive projection comparisons and mapping guard cases
+  pass56tests. Adapter checks pass117cases. Worker/storage checks pass68cases;
+  their first new assertion used the wrong storage-schema field and is retained.
+  Profiled app preparation falls75.7to5.8seconds and worker preparation31.5to4.3.
+  These are profiler measurements; the packaged timing is recorded below.
+  The first saved-data comparison wrongly required computed-output identity;
+  compiled/source projection rounding below1.2e-13um is now compared with
+  declared unit-specific tolerances. Source neuron/branch identities stay fixed.
+- **Delivery:** Mac 03.6 passes package, full/focused native and updater checks.
+  The one matched app Run takes 46.7 seconds versus 97.9, with preparation
+  reduced from 54.8 to about 5.72 seconds. All 30,346,246 values and clocks
+  match. Recoverable installation and actual saved-recording replay pass.
+  Windows is deferred; no public release.
+
+## DF-0137: First indexed contact search fails in the packaged app
+
+- **Failure:** Candidate03.4passes its package audit and source geometry tests.
+  Its full native fixture then stops while mapping acquired contact sites:
+  the search finishes with an empty best-candidate value. The installed03.3
+  control passes the complete unchanged fixture. No simulation ran on03.4.
+- **Repair:** Seed each search with an actual eligible cable and
+  compare all visited candidates against that concrete tuple. Add an explicit
+  packaged geometry check against exhaustive search across720random queries,
+  long/shared cable cases and invalid-input refusals. The exact compiler cause
+  has not been established. Candidate03.5passed geometry before its separate
+  table crash; final03.6passes both checks and the complete native route.
+- **Other observation:** The first03.4fixture stops at a wizard-copy assertion;
+  the second reaches contact mapping. The unchanged installed control passes.
+  The assertion now records actual and expected text if it fails again.
+- **Status:** Source geometry/guide checks pass 64 cases. Final 03.6 passes
+  all 720 compiled geometry queries, tied-cable and three invalid cases, the
+  complete native route and the actual sixteen-cell Run. Every contact keeps
+  its original branch and CV center. Mac 03.6 is installed; no public release.
+
+## DF-0138: Data Library crashes while clearing a populated table
+
+- **Failure:** Candidate 03.5 passes its direct compiled geometry check, then
+  crashes during native Circuit Builder to Data Library navigation. The Mac
+  crash report reaches Shiboken object destruction inside the table-clear path.
+  The installed 03.3 comparison passed the same full fixture. Candidate 03.5
+  remains uninstalled and has run no experiment.
+- **Repair:** Take Python item wrappers out of the table before
+  native row deletion, retain them until that call finishes, remove and disable
+  old row widgets, and block selection signals during teardown. Remove the
+  redundant early clear during refresh. Release filtering and row actions keep
+  their existing identity checks.
+- **Verification:** Two new lifetime tests fail before the helper exists.
+  The focused table, linked-library, release and menu group passes 24 cases.
+  Successor 03.6 passes all 198 full native flags, 80 focused Results flags
+  and the actual project/Run/Results/replay path. Installed with complete
+  recovery app; Windows deferred and no public release.
 
 ## Maintenance and GitHub handoff
 

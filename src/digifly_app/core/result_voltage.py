@@ -31,7 +31,7 @@ except ImportError:
     _json_accelerator = None
 
 from digifly_app.workers.result_storage import (
-    MAX_PLAYBACK_VOLTAGE_SAMPLES, SampleSeries, open_result_text, result_path,
+    MAX_PLAYBACK_VOLTAGE_SAMPLES, BINARY_VOLTAGE_SCHEMA, SampleSeries, open_result_text, result_path,
 )
 
 SCHEMA = 'digifly-voltage-display-v2'
@@ -375,16 +375,18 @@ def _marked_cache(path):
         return False
 
 
-def _read_cache(folder, source, digest, cancelled, maximum_samples):
+def _read_cache(folder, source, digest, cancelled, maximum_samples, *, native=False):
     cache_paths = tuple(folder/name for name in ('ready.json','index.jsonl','values.bin'))
     cache_stamps = tuple(tuple(_stamp(path)) for path in cache_paths)
-    if not _owned_cache(folder):
+    if not native and not _owned_cache(folder):
         raise ValueError('Unrecognized display cache')
+    if native and (folder.is_symlink() or any(p.is_symlink() or not p.is_file() for p in cache_paths)):
+        raise ValueError('Binary voltage requires ordinary recording files')
     if (folder/'ready.json').stat().st_size >= 65536:
         raise ValueError('Invalid display cache marker')
     ready_bytes = (folder/'ready.json').read_bytes()
     ready = json.loads(ready_bytes)
-    if ready.get('schema') != SCHEMA or ready['source_sha256'] != digest:
+    if ready.get('schema') != (BINARY_VOLTAGE_SCHEMA if native else SCHEMA) or (not native and ready['source_sha256'] != digest):
         raise ValueError('Display cache source differs')
     if (folder/'index.jsonl').stat().st_size > 128 * 1024**2:
         raise ValueError('Display cache index exceeds its limit')
@@ -394,8 +396,12 @@ def _read_cache(folder, source, digest, cancelled, maximum_samples):
     # Stream one small trace entry at a time to keep the window responsive.
     with (folder/'index.jsonl').open() as stream:
         record = json.loads(stream.readline())
-    if record['source'] != source or record['byteorder'] != sys.byteorder:
+    if (not native and record['source'] != source) or record['byteorder'] not in ('little','big'):
         raise ValueError('Display cache identity changed')
+    if native and record.get('schema') != BINARY_VOLTAGE_SCHEMA:
+        raise ValueError('Invalid binary voltage header')
+    if not native and record['byteorder'] != sys.byteorder:
+        raise ValueError('Display cache byte order differs')
     count = int(record['sample_count'])
     if count < 0 or count > maximum_samples:
         raise ValueError('Voltage traces exceed the local sample budget')
@@ -412,11 +418,29 @@ def _read_cache(folder, source, digest, cancelled, maximum_samples):
     # slice plus cast per trace creates hundreds of thousands of temporary
     # GC-tracked objects and pauses even the main thread during collection.
     flat = memoryview(mapping).cast('d') if mapping is not None else ()
+    if native and record['byteorder'] != sys.byteorder:
+        # A recording moved to a different-endian host remains lossless. The
+        # ordinary same-endian path maps the original file with no copy.
+        swapped = array('d')
+        if mapping is not None:
+            swapped.frombytes(mapping)
+            flat.release()
+            mapping.close()
+        swapped.byteswap()
+        table.mapping = swapped
+        flat = memoryview(swapped)
     def view(offset, length):
         if not isinstance(offset, int) or not isinstance(length, int) or offset < 0 or offset%8 or length < 0 or offset+length*8 > size:
             raise ValueError('Invalid display cache block')
         return flat[offset//8:offset//8+length] if length else ()
     clocks = [view(*block) for block in record['clocks']]
+    if native:
+        expected_offset = 0
+        for block,clock in zip(record['clocks'],clocks):
+            _check(cancelled)
+            if block[0] != expected_offset or not clock or any(not isfinite(t) or t<0 for t in clock) or any(b<=a for a,b in zip(clock,clock[1:])):
+                raise ValueError('Invalid binary voltage clock')
+            expected_offset += len(clock)*8
     table.series = MappedSeries(flat, clocks, payload_sha256=ready['values_sha256'],
         clock_blocks=record['clocks'],cache_files=tuple(zip(cache_paths,
             (hashlib.sha256(ready_bytes).hexdigest(),ready['index_sha256'],ready['values_sha256']))),
@@ -431,6 +455,8 @@ def _read_cache(folder, source, digest, cancelled, maximum_samples):
             key = tuple(entry['key'])
             if len(key) != 4 or key in table.series or not isinstance(key[1], int):
                 raise ValueError('Invalid display cache trace identity')
+            if native and (any(not isinstance(v,str) for v in (key[0],key[2],key[3])) or not key[2] or key[1]<0):
+                raise ValueError('Invalid binary voltage trace identity')
             clock_id = entry['clock']
             if not isinstance(clock_id,int) or not 0 <= clock_id < len(clocks):
                 raise ValueError('Invalid display cache clock')
@@ -440,13 +466,32 @@ def _read_cache(folder, source, digest, cancelled, maximum_samples):
                     or offset+len(clock)*8 > size):
                 raise ValueError('Invalid display cache block')
             total += len(clock)
+            if native:
+                values = view(offset,len(clock))
+                bounds = entry['bounds']
+                if (offset != expected_offset or entry['unique'] is not True or not values
+                        or any(not isfinite(v) for v in values) or bounds != [min(values),max(values)]):
+                    raise ValueError('Invalid binary voltage sample block')
+                expected_offset += len(clock)*8
             table.series.add(key, clock_id, offset, entry['unique'], entry['bounds'])
     if total != count:
         raise ValueError('Incomplete display cache')
-    table.clocks = {(c, r): tuple(times) for c, r, times in record['condition_clocks']}
+    if native:
+        if expected_offset != size or len(table.series) != record['trace_count']:
+            raise ValueError('Incomplete binary voltage recording')
+        table.clocks = {}
+        for c,r,ids in record['condition_clock_ids']:
+            if (c,r) in table.clocks or not isinstance(ids,list) or any(type(i) is not int or not 0<=i<len(clocks) for i in ids):
+                raise ValueError('Invalid binary voltage condition clock')
+            table.clocks[c,r] = tuple(sorted({t for i in ids for t in clocks[i]}))
+        if set(table.clocks) != {key[:2] for key in table.series}:
+            raise ValueError('Missing binary voltage condition clock')
+    else:
+        table.clocks = {(c, r): tuple(times) for c, r, times in record['condition_clocks']}
     if cache_stamps != tuple(tuple(_stamp(path)) for path in cache_paths):
         raise ValueError('Display cache changed during loading')
-    os.utime(folder, None)
+    if not native:
+        os.utime(folder, None)
     return table
 
 
@@ -523,9 +568,15 @@ def load_voltage_table(path, *, cache_root, cancelled=lambda: False,
                        verified_source=None):
     """Load one source once, or reopen its verified lossless indexed cache."""
     _check(cancelled)
-    path = result_path(Path(path).resolve())
+    path = result_path(Path(path).absolute())
+    if path.name=='ready.json' and path.parent.name=='voltage' and (path.is_symlink() or path.parent.is_symlink()):
+        raise ValueError('Binary voltage requires ordinary recording files')
+    path = path.resolve()
     if not path.is_file():
         return VoltageTable()
+    if path.name == 'ready.json' and path.parent.name == 'voltage':
+        progress('Opening binary voltage recording',0,0)
+        return _read_cache(path.parent,None,None,cancelled,maximum_samples,native=True)
     source = _stamp(path)
     progress('Checking saved recording', 0, 0)
     # The Results worker has already digested every saved input. Reuse only

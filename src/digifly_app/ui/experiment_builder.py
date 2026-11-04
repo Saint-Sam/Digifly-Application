@@ -37,6 +37,7 @@ from digifly_app.core.jobs import JobStore
 from digifly_app.core.models import CheckState
 from digifly_app.core.morphology import Morphology, locate_soma
 from digifly_app.core.process_environment import EXTERNAL_PYTHON_ENV_REMOVE
+from digifly_app.workers.independent_trials import cpu_capacity_snapshot
 from digifly_app.engines.generic_experiment import (
     GenericExperimentAdapter,
     load_generic_experiment_result,
@@ -424,6 +425,18 @@ class ExperimentBuilderPage(QWidget):
         self.workers = QSpinBox()
         self.workers.setRange(1, 256)
         self.workers.setValue(1)
+        self.neuron_multithreading = QCheckBox('Enable NEURON multithreading')
+        self.neuron_multithreading.setObjectName('NeuronMultithreading')
+        self.neuron_threads = QSpinBox()
+        self.neuron_threads.setObjectName('NeuronThreadCount')
+        self.neuron_threads.setRange(1,256)
+        self.neuron_threads.setValue(1)
+        self.neuron_threads.setAccessibleName('NEURON solver threads per experiment process')
+        self.neuron_threads.setToolTip('CPU threads within each NEURON simulation. Electrically connected cells stay together on one thread. More threads can add overhead on small circuits.')
+        self.cpu_capacity = QLabel()
+        self.cpu_capacity.setObjectName('NeuronCpuCapacity')
+        self.cpu_capacity.setWordWrap(True)
+        self._cpu_sample = None
         add_help_row(run_form, "duration", "Simulation duration", self.duration)
         add_help_row(run_form, "integration_dt", "Integration step", self.integration_dt)
         add_help_row(run_form, "initial_voltage", "Initial voltage", self.initial_voltage)
@@ -431,6 +444,14 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(run_form, "random_seed", "Random seed", self.seed)
         add_help_row(run_form, "repetitions", "Repetitions", self.repetitions)
         add_help_row(run_form, "workers", "Workers / threads", self.workers)
+        run_form.addRow('NEURON solver',self.neuron_multithreading)
+        run_form.addRow('Threads per process',self.neuron_threads)
+        run_form.addRow('',self.cpu_capacity)
+        self._cpu_timer = QTimer(self)
+        self._cpu_timer.setInterval(3000)
+        self._cpu_timer.timeout.connect(self._refresh_cpu_capacity)
+        self._cpu_timer.start()
+        self._refresh_cpu_capacity()
         run_layout.addLayout(run_form)
         self.global_settings_help = QLabel(
             "Initial voltage and temperature here are the global settings executed by all simulators. "
@@ -832,6 +853,8 @@ class ExperimentBuilderPage(QWidget):
             self.seed,
             self.repetitions,
             self.workers,
+            self.neuron_multithreading,
+            self.neuron_threads,
             self.stimulus_targets,
             self.stimulus_region,
             self.waveform_combo,
@@ -1192,6 +1215,8 @@ class ExperimentBuilderPage(QWidget):
             random_seed=self.seed.value(),
             repetitions=self.repetitions.value(),
             workers=self.workers.value(),
+            neuron_multithreading=self.neuron_multithreading.isChecked(),
+            neuron_threads=self.neuron_threads.value(),
             stimuli=(stimulus,),
             conditions=tuple(conditions),
             recording=recording,
@@ -1212,6 +1237,8 @@ class ExperimentBuilderPage(QWidget):
             self.seed.setValue(config.random_seed)
             self.repetitions.setValue(config.repetitions)
             self.workers.setValue(config.workers)
+            self.neuron_multithreading.setChecked(config.neuron_multithreading)
+            self.neuron_threads.setValue(config.neuron_threads)
             stimulus = config.stimuli[0] if config.stimuli else StimulusSpec()
             self.stimulus_targets.setText(_ids_text(stimulus.target_neuron_ids))
             self.stimulus_region.setCurrentIndex(
@@ -1847,6 +1874,9 @@ class ExperimentBuilderPage(QWidget):
 
     def _sync_setting_availability(self) -> None:
         """Inactive choices keep their editing values but cannot affect a run."""
+        neuron = self.engine_combo.currentData() == 'neuron'
+        self.neuron_multithreading.setEnabled(neuron)
+        self.neuron_threads.setEnabled(neuron and self.neuron_multithreading.isChecked())
         for control in (self.control_gap_enabled, self.control_chemical_enabled):
             control.setEnabled(self.control_enabled.isChecked())
         for control in (
@@ -1859,3 +1889,13 @@ class ExperimentBuilderPage(QWidget):
         self.frequency.setEnabled(pulse_train)
         self.pulse_count.setEnabled(pulse_train)
         self.spike_threshold.setEnabled(self.detect_spikes.isChecked())
+
+    def _refresh_cpu_capacity(self):
+        if not self.isVisible() and self._cpu_sample is not None:
+            return
+        snapshot = cpu_capacity_snapshot(self._cpu_sample)
+        self._cpu_sample = snapshot['sample']
+        spare = snapshot['spare_estimate']
+        text = (f"{snapshot['logical_cpus']} logical CPUs. About {spare} currently spare."
+                if spare is not None else f"{snapshot['logical_cpus']} logical CPUs. Measuring current availability.")
+        self.cpu_capacity.setText(text+' Leave capacity for other apps. Availability changes with computer use.')

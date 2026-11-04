@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import replace
 
 import pytest
+from result_helpers import voltage_rows
 
 from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
 from digifly_app.core.connectomes import NeuronRecord
@@ -1098,7 +1099,7 @@ def test_generic_worker_executes_two_cell_chemical_neuron_network(tmp_path):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    rows = list(csv.DictReader((Path(plan.working_directory) / "voltage_traces.csv").open()))
+    rows = voltage_rows(Path(plan.working_directory))
     grouped: dict[tuple[str, str], list[float]] = {}
     for row in rows:
         grouped.setdefault((row["condition"], row["neuron_id"]), []).append(
@@ -1274,7 +1275,7 @@ def test_generic_worker_executes_two_cell_neuron_gap_network(tmp_path, gap_mode)
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    rows = list(csv.DictReader((Path(plan.working_directory) / "voltage_traces.csv").open()))
+    rows = voltage_rows(Path(plan.working_directory))
     grouped: dict[tuple[str, str], list[float]] = {}
     for row in rows:
         grouped.setdefault((row["condition"], row["neuron_id"]), []).append(

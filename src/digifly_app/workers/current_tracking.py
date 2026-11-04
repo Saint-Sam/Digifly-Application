@@ -65,8 +65,10 @@ def distributed_indices(count, maximum=7):
 
 
 class CurrentRecorder:
-    def __init__(self, h, built, cells, recording, duration_ms, clamps=(), synapses=(), gaps=()):
+    def __init__(self, h, built, cells, recording, duration_ms, clamps=(), synapses=(), gaps=(), *, synchronized=False):
         self.h = h
+        self.synchronized = synchronized
+        self.capture_sources = []
         self.mode = check_mode(recording)
         self.dt = float(recording["sample_dt_ms"])
         self.duration = float(duration_ms)
@@ -75,13 +77,20 @@ class CurrentRecorder:
         self.coverage = []
         self.targets = set(recording.get("target_neuron_ids") or built)
         self.section_info = {}
+        self.sections_by_id = {}
         self.all_sites = {}
+        self.record_owners = {}
         for neuron_id, cell in built.items():
+            section,x = cell['soma_site']
+            owner = h.IClamp(section(x))
+            owner.dur,owner.amp = 0,0
+            self.record_owners[neuron_id] = owner
             specs = (cell.get("regional_plan") or {}).get("sections") or ()
             for section_id, section in enumerate(cell["sections"]):
                 spec = specs[section_id] if specs else {}
                 source = spec.get("source_node_id")
                 self.section_info[section] = (neuron_id, section_id, source)
+                self.sections_by_id[neuron_id,section_id] = section
                 for cv, seg in enumerate(section):
                     key = (section, cv)
                     self.all_sites[key] = (section, seg.x, cv)
@@ -141,9 +150,9 @@ class CurrentRecorder:
                     self._native(meta, kind, getattr(seg, "_ref_" + attribute), area_factor)
             leak = []
             if hasattr(seg, "hh"):
-                leak.append(self._vector(seg.hh._ref_il))
+                leak.append(self._vector(seg.hh._ref_il,section))
             if hasattr(seg, "pas"):
-                leak.append(self._vector(seg.pas._ref_i))
+                leak.append(self._vector(seg.pas._ref_i,section))
             if leak:
                 self.channels.append((dict(meta, signal="leak"), leak, area_factor, None))
             # Every center has an incoming native solver link. At a section
@@ -168,7 +177,9 @@ class CurrentRecorder:
         values = len(self.channels) * (math.ceil(self.duration / self.dt) + 1)
         if values > MAX_CURRENT_VALUES:
             raise ValueError(f"Current recording requires {values:,} values in one trial; limit {MAX_CURRENT_VALUES:,}. Choose Sparse, fewer target neurons, a shorter run or a larger sample interval.")
-        self.times = self._vector(h._ref_t)
+        self.times = array('d') if synchronized else h.Vector()
+        if not synchronized:
+            self.times.record(next(iter(self.record_owners.values())),h._ref_t,self.dt)
 
     def _site_key(self, sec, x):
         return sec, min(sec.nseg - 1, max(0, int(float(x) * sec.nseg)))
@@ -180,19 +191,28 @@ class CurrentRecorder:
                 "cv_index": cv, "nseg": int(sec.nseg), "section_x": (cv + .5) / sec.nseg,
                 "site_id": f"{neuron_id}:section-{section_id}:cv-{cv}"}
 
-    def _vector(self, reference):
+    def _vector(self, reference, section=None):
+        if self.synchronized:
+            vector = array('d')
+            self.capture_sources.append((reference,vector))
+            return vector
         vector = self.h.Vector()
-        vector.record(reference, self.dt)
+        if section is None:
+            vector.record(reference,self.dt)
+        else:
+            owner = self.record_owners[self.section_info[section][0]]
+            vector.record(owner,reference,self.dt,sec=section)
         return vector
 
     def _voltage(self, sec, x):
         key = sec, float(x)
         if key not in self.voltages:
-            self.voltages[key] = self._vector(sec(x)._ref_v)
+            self.voltages[key] = self._vector(sec(x)._ref_v,sec)
         return self.voltages[key]
 
     def _native(self, meta, kind, ref, factor=1.):
-        self.channels.append((dict(meta, signal=kind), [self._vector(ref)], factor, None))
+        section = self.sections_by_id[meta['neuron_id'],meta['section_id']]
+        self.channels.append((dict(meta, signal=kind), [self._vector(ref,section)], factor, None))
 
     def _axial(self, meta, sec, parent_x, child_x, resistance):
         if not math.isfinite(resistance) or resistance <= 0:

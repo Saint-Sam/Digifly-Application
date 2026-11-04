@@ -13,11 +13,29 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import sys
+import math
 
 # Compact float64 arrays in both trace and morphology readers bound numeric
 # payload to 16 bytes/sample per reader, not a dict and tuple for every point.
 # This is still a finite ceiling; it is not permission to discard samples.
 MAX_PLAYBACK_VOLTAGE_SAMPLES = 64_000_000
+BINARY_VOLTAGE_SCHEMA = 'digifly-voltage-float64-v1'
+
+
+def float64_samples(values):
+    """Copy a native double buffer in C when available, retaining exact values."""
+    if hasattr(values,'as_numpy'):
+        values = values.as_numpy()
+    try:
+        view = memoryview(values)
+        if view.ndim==1 and view.format in ('d','=d','@d') and view.itemsize==8:
+            result = array('d')
+            result.frombytes(view.tobytes())
+            return result
+    except TypeError:
+        pass
+    return array('d',values)
 
 
 class SampleSeries:
@@ -77,7 +95,7 @@ class VoltageRows:
         if clock is None:
             clock = array('d', times)
             self._clocks[key] = clock
-        values = array('d', values)
+        values = float64_samples(values)
         if len(clock) != len(values):
             raise ValueError("Incomplete voltage trace")
         self.traces.append((str(condition), repetition, neuron, compartment, clock, values))
@@ -102,15 +120,158 @@ class VoltageRows:
             traces = [traces[round(i*(len(traces)-1)/(maximum-1))] for i in range(maximum)]
         return self._rows(traces)
 
+    def write_binary(self, root: Path, *, check_cancel=lambda: None):
+        """Publish one lossless, directly readable recording, without a text copy.
+
+        Clocks are shared within this recording only. No live model is cached.
+        The ready marker is written last in a private staging folder; a reader
+        never admits a partial recording. All payload hashes cover exact bytes.
+        """
+        root = Path(root)
+        target = root / 'voltage'
+        if target.exists() or target.is_symlink():
+            raise ValueError('Refusing to replace an existing voltage recording')
+        if any((root/name).exists() for name in ('voltage_traces.csv', 'voltage_traces.csv.gz')):
+            raise ValueError('Ambiguous voltage recording destination')
+        size = self.count*8 + sum(len(c)*8 for c in self._clocks.values())
+        if shutil.disk_usage(root).free < size + 2*1024**3:
+            raise OSError('Insufficient disk space for voltage recording and the 2 GiB reserve')
+        with tempfile.TemporaryDirectory(prefix='.voltage-', dir=root) as temporary:
+            folder = Path(temporary)
+            payload_hash = hashlib.sha256()
+            clock_ids, clock_blocks = {}, []
+            condition_clocks = {}
+            offset = 0
+            with (folder/'values.bin').open('xb') as payload:
+                def write(values):
+                    nonlocal offset
+                    start = offset
+                    # Explicit endian metadata supports recordings moved between
+                    # machines. Float64 is retained with no quantization.
+                    for i in range(0, len(values), 131072):
+                        check_cancel()
+                        block = values[i:i+131072].tobytes()
+                        payload.write(block)
+                        payload_hash.update(block)
+                        offset += len(block)
+                    return start
+                for clock in self._clocks.values():
+                    if not clock or any(not math.isfinite(t) or t < 0 for t in clock) or any(b <= a for a,b in zip(clock,clock[1:])):
+                        raise ValueError('Invalid voltage recording clock')
+                    clock_ids[id(clock)] = len(clock_blocks)
+                    clock_blocks.append([write(clock),len(clock)])
+                # The header needs only clock IDs, avoiding duplicated clocks for
+                # every edge or condition in the recording.
+                for condition,repetition,neuron,compartment,clock,values in self.traces:
+                    key = condition,int(repetition)
+                    condition_clocks.setdefault(key,set()).add(clock_ids[id(clock)])
+                header = dict(schema=BINARY_VOLTAGE_SCHEMA,byteorder=sys.byteorder,
+                    sample_count=self.count,trace_count=len(self.traces),payload_bytes=size,
+                    has_compartments=all(bool(t[3]) for t in self.traces),morphology_error='',
+                    clocks=clock_blocks,condition_clock_ids=[[*key,sorted(ids)] for key,ids in condition_clocks.items()])
+                with (folder/'index.jsonl').open('x',encoding='utf-8',newline='\n') as index:
+                    index.write(json.dumps(header,separators=(',',':'))+'\n')
+                    identities = set()
+                    for condition,repetition,neuron,compartment,clock,values in self.traces:
+                        check_cancel()
+                        key = condition,int(repetition),str(neuron),str(compartment)
+                        if key in identities or not key[2] or len(clock)!=len(values) or not values or any(not math.isfinite(v) for v in values):
+                            raise ValueError('Invalid or duplicate voltage trace')
+                        identities.add(key)
+                        entry = dict(key=key,clock=clock_ids[id(clock)],offset=write(values),unique=True,
+                                     bounds=[min(values),max(values)])
+                        index.write(json.dumps(entry,separators=(',',':'))+'\n')
+            if offset != size:
+                raise ValueError('Incomplete binary voltage recording')
+            with (folder/'index.jsonl').open('rb') as stream:
+                index_hash = _digest(stream)
+            ready = dict(schema=BINARY_VOLTAGE_SCHEMA,index_sha256=index_hash,
+                         values_sha256=payload_hash.hexdigest())
+            with (folder/'ready.json').open('x',encoding='utf-8') as stream:
+                json.dump(ready,stream,separators=(',',':'))
+            check_cancel()
+            if target.exists() or target.is_symlink():
+                raise ValueError('Refusing to replace a racing voltage recording')
+            folder.rename(target)
+        return target/'ready.json'
+
 
 def result_path(path: Path) -> Path:
     path = Path(path)
     if path.suffix == ".gz":
         return path
     compressed = path.with_name(path.name + ".gz")
+    if path.name == 'voltage_traces.csv':
+        binary = path.parent/'voltage'/'ready.json'
+        if binary.is_file():
+            if path.exists() or compressed.exists():
+                raise ValueError('Ambiguous saved result: binary and text voltage recordings')
+            return binary
     if path.is_file() and compressed.is_file():
         raise ValueError(f"Ambiguous saved result: both {path.name} and {compressed.name}")
     return compressed if compressed.is_file() else path
+
+
+def iter_binary_traces(root: Path, *, check_cancel=lambda: None):
+    """Stream completed child recordings in external simulator interpreters."""
+    root = Path(root)
+    paths = [root/name for name in ('ready.json','index.jsonl','values.bin')]
+    if root.is_symlink() or any(p.is_symlink() or not p.is_file() for p in paths):
+        raise ValueError('Incomplete binary child recording')
+    stamps = [(p.stat().st_size,p.stat().st_mtime_ns,p.stat().st_ctime_ns) for p in paths]
+    ready = json.loads(paths[0].read_text(encoding='utf-8'))
+    if ready.get('schema') != BINARY_VOLTAGE_SCHEMA:
+        raise ValueError('Unsupported binary child recording')
+    for path,key in zip(paths[1:],('index_sha256','values_sha256')):
+        with path.open('rb') as stream:
+            if _digest(stream) != ready[key]:
+                raise ValueError('Changed binary child recording')
+        check_cancel()
+    with paths[1].open(encoding='utf-8') as index,paths[2].open('rb') as payload:
+        record = json.loads(index.readline())
+        size = paths[2].stat().st_size
+        if (record.get('schema')!=BINARY_VOLTAGE_SCHEMA or record['byteorder'] not in ('little','big')
+                or not 0<=record['sample_count']<=MAX_PLAYBACK_VOLTAGE_SAMPLES or size!=record['payload_bytes']
+                or size>MAX_PLAYBACK_VOLTAGE_SAMPLES*16):
+            raise ValueError('Invalid binary child recording size')
+        offset = 0
+        def read(start,length):
+            if type(start) is not int or type(length) is not int or start<0 or start%8 or length<1 or start+length*8>size:
+                raise ValueError('Invalid binary child recording block')
+            payload.seek(start)
+            values = array('d');values.frombytes(payload.read(length*8))
+            if record['byteorder'] != sys.byteorder:
+                values.byteswap()
+            if any(not math.isfinite(v) for v in values):
+                raise ValueError('Non-finite binary child recording')
+            return values
+        clocks = []
+        for start,length in record['clocks']:
+            if start != offset:
+                raise ValueError('Invalid binary child clock offset')
+            values = read(start,length)
+            if values[0]<0 or any(b<=a for a,b in zip(values,values[1:])):
+                raise ValueError('Invalid binary child clock')
+            clocks.append(values);offset+=length*8
+        count = traces = 0
+        identities = set()
+        for line in index:
+            check_cancel()
+            entry = json.loads(line);key = tuple(entry['key']);clock_id = entry['clock']
+            if (len(key)!=4 or key in identities or type(key[1]) is not int or key[1]<0
+                    or any(not isinstance(v,str) for v in (key[0],key[2],key[3])) or not key[2]
+                    or type(clock_id) is not int or not 0<=clock_id<len(clocks) or entry['offset']!=offset or entry['unique'] is not True):
+                raise ValueError('Invalid binary child trace')
+            identities.add(key);clock=clocks[clock_id]
+            values = read(offset,len(clock))
+            if entry['bounds'] != [min(values),max(values)]:
+                raise ValueError('Invalid binary child trace bounds')
+            count+=len(clock);traces+=1;offset+=len(clock)*8
+            yield key,clock,values
+        if offset!=size or count!=record['sample_count'] or traces!=record['trace_count']:
+            raise ValueError('Incomplete binary child traces')
+    if stamps != [(p.stat().st_size,p.stat().st_mtime_ns,p.stat().st_ctime_ns) for p in paths]:
+        raise ValueError('Binary child recording changed during aggregation')
 
 
 def open_result_text(path: Path):
@@ -121,7 +282,34 @@ def open_result_text(path: Path):
 
 def read_result_json(path: Path):
     with open_result_text(path) as stream:
-        return json.load(stream)
+        payload = json.load(stream)
+    if isinstance(payload,dict) and payload.get('storage_schema') == 'digifly-shared-regional-materials-v1':
+        payload = dict(payload)
+        materials = payload.pop('materials')
+        payload.pop('storage_schema')
+        sections = []
+        for raw in payload['sections']:
+            section = dict(raw)
+            index = section.pop('material')
+            if type(index) is not int or not 0<=index<len(materials) or 'hh' in section or 'membrane' in section:
+                raise ValueError('Invalid regional material reference')
+            sections.append(dict(section,hh=materials[index]['hh'],membrane=materials[index]['membrane']))
+        payload['sections'] = sections
+    return payload
+
+
+def shared_regional_materials(plan):
+    """Save identical membrane settings once, retaining every geometry field."""
+    materials,sections = [],[]
+    for section in plan['sections']:
+        material = {k:section[k] for k in ('hh','membrane')}
+        try:
+            index = materials.index(material)
+        except ValueError:
+            index = len(materials)
+            materials.append(material)
+        sections.append({**{k:v for k,v in section.items() if k not in ('hh','membrane')},'material':index})
+    return {**plan,'storage_schema':'digifly-shared-regional-materials-v1','materials':materials,'sections':sections}
 
 
 def result_maps(root: Path):

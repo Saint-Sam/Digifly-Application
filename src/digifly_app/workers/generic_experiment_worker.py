@@ -26,6 +26,7 @@ import struct
 import sys
 import subprocess
 import tempfile
+import time
 from typing import Any, Mapping, Sequence
 
 try:
@@ -139,11 +140,12 @@ def _scale_cell_biophysics(cell: Mapping[str, Any], scales: Mapping[str, Any]) -
 
 def _condition_cells(cells: Mapping[str, Mapping[str, Any]], condition: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     disabled = {str(value) for value in condition.get("disabled_neuron_ids") or ()}
-    result = {neuron_id: _scale_cell_biophysics(cell, dict(condition.get("mechanism_scales") or {}))
+    scales = dict(condition.get('mechanism_scales') or {})
+    result = {neuron_id: _scale_cell_biophysics({k:v for k,v in cell.items() if k!='regional_plan'}, scales)
               for neuron_id, cell in cells.items() if neuron_id not in disabled}
-    for cell in result.values():
+    for neuron_id,cell in result.items():
         if cell.get("regional"):
-            cell["regional_plan"] = _regional_plan(_swc_rows(Path(cell["swc_path"])), cell)
+            cell['regional_plan'] = (cells[neuron_id].get('regional_plan') if not scales else None) or _regional_plan(_swc_rows(Path(cell['swc_path'])),cell)
     return result
 
 
@@ -658,7 +660,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+def _atomic_json(path: Path, payload: Mapping[str, Any], *, compact: bool = False) -> None:
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -670,7 +672,12 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
             delete=False,
         ) as handle:
             temporary_path = Path(handle.name)
-            json.dump(dict(payload), handle, indent=2, sort_keys=True)
+            if compact:
+                # One cell's derived map only. The native encoder avoids a
+                # Python write for every field and releases its text on return.
+                handle.write(json.dumps(dict(payload), sort_keys=True, separators=(",", ":")))
+            else:
+                json.dump(dict(payload), handle, indent=2, sort_keys=True)
             handle.write("\n")
         os.replace(temporary_path, path)
     finally:
@@ -1395,7 +1402,7 @@ def _neuron_current_clamps(h: Any, site: Any, stimulus: Mapping[str, Any], ampli
             times = [0.0, delay, delay+duration] if delay > 0 else [0.0, duration]
             values = [0.0, 0.0, amplitude] if delay > 0 else [0.0, amplitude]
             time_vector, amp_vector = h.Vector(times), h.Vector(values)
-            amp_vector.play(clamp._ref_amp, time_vector, 1)
+            amp_vector.play(clamp, clamp._ref_amp, time_vector, 1)
             objects.extend((time_vector, amp_vector))
     return objects
 
@@ -1812,6 +1819,8 @@ def _validate_request_capabilities(
         raise ValueError("The membrane worker requires voltage recording or spike detection in a mapped region")
     if not 1 <= int(experiment.get("workers",1)) <= 256:
         raise ValueError("Worker count must be between 1 and 256")
+    if engine == 'neuron':
+        _trials.neuron_thread_count(experiment)
 
 
 def _load_edge_manifest(request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
@@ -2843,7 +2852,7 @@ def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, A
 
 def _neuron_regional_cell(h: Any, swc_path: Path, neuron_id: str, cell: Mapping[str, Any], segment_budget: int) -> dict[str, Any]:
     rows = _swc_rows(swc_path)
-    plan = _regional_plan(rows, cell)
+    plan = cell.get('regional_plan') or _regional_plan(rows, cell)
     _require_neuron_segment_budget(0, plan["estimated_nseg"], segment_budget=segment_budget)
     by_id = {r[0]: r for r in rows}
     counts = {group: 0 for group in ("soma", "axon", "dend", "apic")}
@@ -3070,6 +3079,48 @@ def _neuron_set_gap_pointer(
         h.setpointer(peer_section(float(peer_x))._ref_v, process, "vgap_ptr")
 
 
+def _neuron_thread_partition(h, built, experiment, electrical_edges):
+    """Balance whole cells; keep each direct-pointer electrical component local."""
+    count = _trials.neuron_thread_count(experiment)
+    pc = h.ParallelContext()
+    pc.partition()
+    pc.nthread(count,1)
+    if int(pc.nthread()) != count or (count>1 and int(pc.nworker()) != count):
+        pc.nthread(1)
+        raise ValueError('The selected NEURON installation cannot enable the requested solver threads')
+    parent = {n:n for n in built}
+    def find(n):
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+    for edge in electrical_edges:
+        a,b = str(edge['neuron_a']),str(edge['neuron_b'])
+        parent[find(b)] = find(a)
+    groups = {}
+    for n in built:
+        groups.setdefault(find(n),[]).append(n)
+    loads = [0]*count
+    assigned = [[] for _ in range(count)]
+    for group in sorted(groups.values(),key=lambda ids:-sum(built[n]['nseg'] for n in ids)):
+        target = min(range(count),key=lambda i:loads[i])
+        assigned[target].extend(group)
+        loads[target] += sum(built[n]['nseg'] for n in group)
+    lists = []
+    if count>1:
+        for thread,ids in enumerate(assigned):
+            roots = h.SectionList()
+            for n in ids:
+                for section in built[n]['sections']:
+                    if section.parentseg() is None:
+                        roots.append(sec=section)
+            pc.partition(thread,roots)
+            lists.append(roots)
+    return pc,lists,dict(requested_threads=count,effective_threads=int(pc.nthread()),native_worker_threads=int(pc.nworker()),
+        neurons_by_thread=assigned,segments_by_thread=loads,
+        partition_policy='Whole cells balanced by segments; all direct-pointer electrical partners share one thread')
+
+
 def _neuron_network_traces(
     cells: Mapping[str, Mapping[str, Any]],
     experiment: Mapping[str, Any],
@@ -3078,15 +3129,19 @@ def _neuron_network_traces(
     edge_manifest: Mapping[str, Any],
     mechanism_dir: Path | None,
     mechanism_manifest_sha256: str,
-    *, current_output: Path | None = None,
+    *, current_output: Path | None = None, thread_receipts: list | None = None,
 ) -> tuple[dict[str, tuple[list[float], list[float]]], str]:
     """Execute one deterministic, fixed-step multi-cell NEURON network."""
 
+    started = time.perf_counter()
     os.environ.pop("DISPLAY", None)
     from neuron import h
     import neuron
 
     h("forall delete_section()")
+    reset_pc = h.ParallelContext()
+    reset_pc.partition()
+    reset_pc.nthread(1)
     h.load_file("stdrun.hoc")
     neuron_ids = tuple(cells)
     chemical_enabled = bool(condition.get("chemical_synapses_enabled", True))
@@ -3121,6 +3176,14 @@ def _neuron_network_traces(
         )
         total_segments += int(built[neuron_id]["nseg"])
     h.define_shape()
+
+    pc,partitions,thread_record = _neuron_thread_partition(h,built,experiment,electrical_edges if gap_enabled else ())
+    record_owners = {}
+    for neuron_id in neuron_ids:
+        section,x = built[neuron_id]['soma_site']
+        owner = h.IClamp(section(x))
+        owner.dur,owner.amp = 0,0
+        record_owners[neuron_id] = owner
 
     target_ids = {
         str(value) for value in stimulus.get("target_neuron_ids") or neuron_ids
@@ -3280,11 +3343,17 @@ def _neuron_network_traces(
         current_recorder = _currents.CurrentRecorder(h, built, cells, recording,
             experiment["duration_ms"], [p for p in clamps if hasattr(p, "get_segment")],
             [(p, {"contact_id":str(c["contact_id"]), "pre_id":str(c["pre_id"]), "post_id":str(c["post_id"])})
-                for p,c in zip(synapses, chemical_edges)], gap_current_details)
+                for p,c in zip(synapses, chemical_edges)], gap_current_details,
+            synchronized=thread_record['effective_threads']>1)
         current_recorder.check_storage(current_output)
     sample_dt = float(recording["sample_dt_ms"])
+    # A global t pointer needs an explicit cell owner when threads are active.
+    # This zero-duration, zero-current anchor supplies only that association.
+    clock_anchor = record_owners[neuron_ids[0]]
     time_vector = h.Vector()
-    time_vector.record(h._ref_t, sample_dt)
+    synchronized = thread_record['effective_threads']>1
+    if not synchronized:
+        time_vector.record(clock_anchor,h._ref_t,sample_dt)
     voltage_vectors: dict[str, Any] = {}
     for neuron_id in neuron_ids:
         if neuron_id not in record_ids:
@@ -3298,8 +3367,9 @@ def _neuron_network_traces(
             sec, x = built[neuron_id]["soma_site"]
             sites = [(neuron_id, sec, x)]
         for key, section, x in sites:
-            vector = h.Vector()
-            vector.record(section(float(x))._ref_v, sample_dt)
+            vector = section(float(x))._ref_v if synchronized else h.Vector()
+            if not synchronized:
+                vector.record(record_owners[neuron_id],section(float(x))._ref_v,sample_dt,sec=section)
             voltage_vectors[key] = vector
     h.dt = float(experiment["integration_dt_ms"])
     h.steps_per_ms = 1.0 / h.dt
@@ -3309,17 +3379,70 @@ def _neuron_network_traces(
         h.CVode().active(0)
     except Exception:
         pass
-    h.finitialize(float(experiment["initial_voltage_mV"]))
-    h.continuerun(h.tstop)
+    ready = time.perf_counter()
+    try:
+        pc.set_maxstep(10.)
+        h.finitialize(float(experiment["initial_voltage_mV"]))
+        initialized = time.perf_counter()
+        if synchronized:
+            # Gather after all native threads reach the same recording boundary.
+            # Per-thread Vector.record(Dt) in the qualified runtime samples other
+            # threads at inconsistent steps. Bulk PtrVector reads avoid that
+            # race without storing every integration step or changing the mesh.
+            import numpy as np
+            requested_times = []
+            next_time = 0.
+            while next_time <= float(experiment['duration_ms'])+1e-10:
+                requested_times.append(next_time)
+                next_time += sample_dt
+            sources = list(voltage_vectors.values())
+            if current_recorder is not None:
+                sources += [ref for ref,buffer in current_recorder.capture_sources]
+            pointers = h.PtrVector(len(sources)) if sources else None
+            gathered = h.Vector(len(sources))
+            for i,source in enumerate(sources):
+                pointers.pset(i,source)
+            matrix = np.empty((len(sources),len(requested_times)),dtype=np.float64)
+            for column,timestamp in enumerate(requested_times):
+                # Use the actual native clock, including its floating-point
+                # half-step boundary. Rounding timestamp/dt selects the wrong
+                # side for some half-grid samples. fadvance joins all threads.
+                while float(h.t)+float(h.dt)/2 < timestamp:
+                    h.fadvance()
+                if pointers is not None:
+                    pointers.gather(gathered)
+                    matrix[:,column] = gathered.as_numpy()
+            if float(h.t)<float(h.tstop)-float(h.dt)/2:
+                h.continuerun(h.tstop)
+            if current_recorder is not None:
+                current_recorder.times.extend(requested_times)
+                for i,(ref,buffer) in enumerate(current_recorder.capture_sources,len(voltage_vectors)):
+                    buffer.frombytes(matrix[i].tobytes())
+            voltage_vectors = {key:matrix[i] for i,key in enumerate(voltage_vectors)}
+            time_vector = requested_times
+            thread_record['recording_method'] = 'Synchronized native PtrVector gather at requested sample boundaries'
+        else:
+            h.continuerun(h.tstop)
+        integrated = time.perf_counter()
+        thread_record['end_soma_voltage_mV'] = {n:float(c['soma_site'][0](c['soma_site'][1]).v) for n,c in built.items()}
+        thread_record['end_thread_times_ms'] = [float(pc.t(i)) for i in range(thread_record['effective_threads'])]
+    finally:
+        pc.partition()
+        pc.nthread(1)
     if current_recorder is not None:
         current_recorder.write(current_output, str(condition["name"]), int(experiment.get("_current_repetition", 1)))
-    times = [float(value) for value in time_vector]
+    times = _storage.float64_samples(time_vector)
     traces = {
-        neuron_id: (times, [float(value) for value in voltage_vectors[neuron_id]])
+        neuron_id: (times, _storage.float64_samples(voltage_vectors[neuron_id]))
         for neuron_id in voltage_vectors
     }
+    thread_record.update(condition=str(condition['name']),construction_seconds=ready-started,
+        initialization_seconds=initialized-ready,integration_seconds=integrated-initialized,
+        collection_seconds=time.perf_counter()-integrated)
+    if thread_receipts is not None:
+        thread_receipts.append(thread_record)
     # Keep all hoc objects and sections alive through continuerun.
-    _ = (built, clamps, synapses, netcons, gap_processes)
+    _ = (built, clamps, synapses, netcons, gap_processes,clock_anchor,partitions,record_owners)
     return traces, str(getattr(neuron, "__version__", "unknown"))
 
 
@@ -3481,12 +3604,17 @@ def _execute_neuron_trial(path: Path, expected_sha256: str) -> None:
         raise ValueError("Independent trial cells do not match its active neuron identities")
     _load_precompiled_native_channels(trial["native_channel_execution"])
     mechanism_text = trial.get("neuron_gap_mechanisms") or ""
+    thread_receipts = []
     traces,version = _neuron_network_traces(trial["cells"],trial["experiment"],trial["stimulus"],trial["condition"],trial["edge_manifest"],
-        Path(mechanism_text) if mechanism_text else None,trial["neuron_gap_manifest_sha256"])
+        Path(mechanism_text) if mechanism_text else None,trial["neuron_gap_manifest_sha256"],thread_receipts=thread_receipts)
     _verify_trial_pins(trial["pins"])
-    _atomic_json(path.parent/"trial_result.json",{"schema_version":1,"trial_sha256":expected_sha256,"runtime_version":version,
-        "traces":[{"neuron_id":key[0] if isinstance(key,tuple) else key,"compartment_id":key[1] if isinstance(key,tuple) else "",
-                   "times":list(map(float,times)),"voltages":list(map(float,voltages))} for key,(times,voltages) in traces.items()]})
+    rows = _storage.VoltageRows()
+    for key,(times,values) in traces.items():
+        neuron,compartment = key if isinstance(key,tuple) else (key,'')
+        rows.add(str(trial['condition']['name']),1,neuron,compartment,times,values)
+    ready = rows.write_binary(path.parent)
+    _atomic_json(path.parent/'trial_result.json',{'schema_version':2,'trial_sha256':expected_sha256,'runtime_version':version,
+        'voltage_ready_sha256':_sha256(ready),'thread_execution':thread_receipts})
 
 
 def _prepare_neuron_trials(request_path: Path, request: Mapping[str,Any], cells: Mapping[str,Any], edges: Mapping[str,Any],
@@ -3499,9 +3627,12 @@ def _prepare_neuron_trials(request_path: Path, request: Mapping[str,Any], cells:
     runnable = sum(bool(_condition_cells(cells,c)) for c in conditions)*int(experiment["repetitions"])
     samples = max(2,int(math.ceil(float(experiment["duration_ms"])/float(experiment["recording"]["sample_dt_ms"]))))
     segments = sum(sum(s["nseg"] for s in cell.get("regional_plan",{}).get("sections",())) or len(_swc_rows(Path(cell["swc_path"]))) for cell in cells.values())
-    forecast = _trials.resource_forecast(int(experiment.get("workers",1)),runnable,engine="neuron",segments=segments,report_values=samples*max(1,segments))
+    threads = _trials.neuron_thread_count(experiment)
+    forecast = _trials.resource_forecast(int(experiment.get("workers",1)),runnable,engine="neuron",segments=segments,report_values=samples*max(1,segments),cpu_count=max(1,_trials.logical_cpu_count()//threads))
+    forecast.update(threads_per_process=threads,total_logical_cpus=_trials.logical_cpu_count(),
+                    cpu_policy='Effective processes times solver threads cannot exceed the available logical CPU count')
     _atomic_json(output_dir/"worker_resource_forecast.json",forecast)
-    paths = [request_path,Path(source_record["path"]),Path(__file__),Path(_trials.__file__),*map(lambda c:Path(c["swc_path"]),cells.values()),
+    paths = [request_path,Path(source_record["path"]),Path(__file__),Path(_trials.__file__),Path(_storage.__file__),Path(_currents.__file__),*map(lambda c:Path(c["swc_path"]),cells.values()),
              *[Path(record["path"]) for record in request.get("morphologies",{}).values()]]
     if native:
         paths.extend([Path(native["library"]),Path(native["builder"]["path"]),*[Path(record["path"]) for record in native["sources"].values()]])
@@ -3522,7 +3653,7 @@ def _prepare_neuron_trials(request_path: Path, request: Mapping[str,Any], cells:
             trial_dir.mkdir()
             path=trial_dir/"trial_request.json"
             seed=int(experiment.get("random_seed",1))+repetition-1
-            _atomic_json(path,{"schema":"digifly-independent-neuron-trial-v1","pins":pins,"cells":condition_cells,
+            _atomic_json(path,{"schema":"digifly-independent-neuron-trial-v1","pins":pins,"cells":{n:{k:v for k,v in c.items() if k!='regional_plan'} for n,c in condition_cells.items()},
                 "experiment":{**experiment,"workers":1,"random_seed":seed},"stimulus":stimulus,"condition":condition,"edge_manifest":condition_edges,
                 "source_edge_manifest": source_record, "active_neuron_ids": list(condition_cells),
                 "mapped_contact_manifest_sha256": mapped_digest,
@@ -3616,8 +3747,9 @@ def run(request_path: Path) -> Path:
         prefer_rostral_soma = str(
             morphology_record.get("family") or ""
         ).upper().startswith("DN")
+        normalized_rows = _swc_rows(normalized_swc_path)
         run_target_node_id, _target_point = _target_soma_node(
-            _swc_rows(normalized_swc_path),
+            normalized_rows,
             prefer_rostral=prefer_rostral_soma,
         )
         source_by_run_node = {
@@ -3631,7 +3763,7 @@ def run(request_path: Path) -> Path:
             else "widest non-root type-1 node"
         )
         root_stub = (
-            _arbor_root_stub_length(_swc_rows(normalized_swc_path))
+            _arbor_root_stub_length(normalized_rows)
             if engine == "arbor"
             else 0.0
         )
@@ -3646,15 +3778,16 @@ def run(request_path: Path) -> Path:
             simulation_cells[neuron_id].update(_regional_cell_data(circuit, neuron_id, node_map))
             simulation_cells[neuron_id]["electrical_contact_run_node_ids"] = _electrical_contact_run_nodes(edge_manifest, neuron_id, node_map)
             simulation_cells[neuron_id]["regional"] = True
-            regional_plan = _regional_plan(_swc_rows(normalized_swc_path), simulation_cells[neuron_id])
+            regional_plan = _regional_plan(normalized_rows, simulation_cells[neuron_id])
             simulation_cells[neuron_id]["regional_plan"] = regional_plan
             for contact in [*chemical_contacts, *electrical_contacts]:
                 if contact.get('located_contact'):
                     for end in ('pre','post'):
                         if str(contact[end+'_id']) == neuron_id:
                             contact.setdefault('contact_cv',{})[end] = _contact_cv_details(contact,end,regional_plan,
-                                _swc_rows(normalized_swc_path),node_map)
-            _atomic_json(cell_dir / "regional_map.json", regional_plan)
+                                normalized_rows,node_map)
+            _atomic_json(cell_dir / "regional_map.json", _storage.shared_regional_materials(regional_plan) if engine=='neuron' else regional_plan,
+                         compact=True)
         morphology_metadata[neuron_id] = {
             "run_path_component": path_component,
             "neuron_type": str(morphology_record.get("neuron_type") or "Unknown"),
@@ -3747,18 +3880,27 @@ def run(request_path: Path) -> Path:
     arbor_native_artifacts = []
     current_indices = []
     current_values = 0
+    thread_receipts = []
     for condition_index, condition in enumerate(conditions):
         condition_cells = _condition_cells(simulation_cells, condition)
         condition_edges = _condition_edges(resolved_edge_manifest, tuple(condition_cells))
         if stimulus.get("waveform") == "ramp":
             ramp_receipts.append(_ramp_quadrature_record(engine,experiment,stimulus,condition,condition_cells,condition_edges))
-        condition_receipts.append({"condition":str(condition["name"]),
+        receipt = {"condition":str(condition["name"]),
             "active_neuron_ids":list(condition_cells), "disabled_neuron_ids":list(condition.get("disabled_neuron_ids") or ()),
             "mechanism_scales":dict(condition.get("mechanism_scales") or {}),
             "ablation_policy":"Remove cells, all incident chemical/electrical contacts, clamps and recordings; no fabricated voltage",
             "scale_policy":"Multiply conductances after default/neuron/source-edge precedence; kinetics/reversals/source hashes unchanged",
             "cells": {n:{"hh":c["hh"], "membrane":c["membrane"], "regional_plan":c.get("regional_plan")} for n,c in condition_cells.items()},
-            "edge_manifest":condition_edges})
+            "edge_manifest":condition_edges}
+        if engine == 'neuron':
+            # The shared regional maps already contain the complete base edge
+            # settings. Conditions record their explicit transformations once.
+            receipt.pop('cells')
+            receipt.pop('edge_manifest')
+            receipt['model_settings'] = 'model_settings.json'
+            receipt['edge_manifest'] = resolved_edge_path.name
+        condition_receipts.append(receipt)
         for repetition in range(1, int(experiment["repetitions"]) + 1):
             if engine=="neuron" and int(experiment.get("workers",1))>1 and (output_dir/"cancel.requested").is_file():
                 raise _trials.TrialCancelled("Independent trial result aggregation cancelled by app request")
@@ -3776,8 +3918,16 @@ def run(request_path: Path) -> Path:
                 if result.get("trial_sha256") != _sha256(trial_path):
                     raise ValueError("Independent trial result does not bind its exact request")
                 runtime_version = result["runtime_version"]
-                traces = {(row["neuron_id"],row["compartment_id"]) if row["compartment_id"] else row["neuron_id"]:
-                          (row["times"],row["voltages"]) for row in result["traces"]}
+                if result.get('schema_version')==2:
+                    ready = trial_path.parent/'voltage/ready.json'
+                    if _sha256(ready)!=result['voltage_ready_sha256']:
+                        raise ValueError('Independent trial binary recording differs from its receipt')
+                    traces = {(key[2],key[3]) if key[3] else key[2]:(times,values)
+                        for key,times,values in _storage.iter_binary_traces(ready.parent)}
+                    thread_receipts.extend(result['thread_execution'])
+                else:
+                    traces = {(row["neuron_id"],row["compartment_id"]) if row["compartment_id"] else row["neuron_id"]:
+                              (row["times"],row["voltages"]) for row in result["traces"]}
             elif engine == "arbor" and (
                 len(neuron_ids) > 1 or chemical_contacts or electrical_contacts or _regional_execution(circuit, experiment)
             ):
@@ -3828,6 +3978,7 @@ def run(request_path: Path) -> Path:
                     mechanism_dir,
                     str(request.get("neuron_gap_manifest_sha256") or ""),
                     current_output=output_dir / "currents" / f"condition-{condition_index+1}-repetition-{repetition}",
+                    thread_receipts=thread_receipts,
                 )
                 current_index = output_dir / "currents" / f"condition-{condition_index+1}-repetition-{repetition}" / "index.json"
                 if current_index.is_file():
@@ -3888,7 +4039,18 @@ def run(request_path: Path) -> Path:
             completed += 1
 
     conditions_path = output_dir / "condition_execution.json"
-    _atomic_json(conditions_path, {"schema_version":1, "conditions":condition_receipts})
+    if engine == 'neuron':
+        _atomic_json(output_dir/'neuron_thread_execution.json',{'schema':'digifly-neuron-threads-v1','trials':thread_receipts})
+        _atomic_json(output_dir/'model_settings.json', {
+            'schema':'digifly-shared-model-settings-v1',
+            'cells':{n:{k:v for k,v in c.items() if k!='regional_plan'} for n,c in simulation_cells.items()},
+            'regional_maps':{n:{'path':(Path('morphologies')/morphology_metadata[n]['run_path_component']/'regional_map.json').as_posix(),
+                'decoded_sha256':_sha256(output_dir/'morphologies'/morphology_metadata[n]['run_path_component']/'regional_map.json')}
+                for n,c in simulation_cells.items() if c.get('regional')},
+            'condition_policy':'Select active IDs; apply mechanism_scales after cell/source-edge precedence with _condition_cells; filter all incident contacts with _condition_edges.',
+            'worker_sha256':_sha256(Path(__file__)),
+        })
+    _atomic_json(conditions_path, {"schema_version":2 if engine=='neuron' else 1, "conditions":condition_receipts})
     if ramp_receipts:
         _atomic_json(output_dir/"stimulus_quadrature.json", {"schema":"digifly-ramp-quadrature-v1",
             "source_stimulus_unchanged":True,"output_timestamp_adjustment_ms":0.0,"conditions":ramp_receipts,
@@ -3899,21 +4061,18 @@ def run(request_path: Path) -> Path:
                 "neuron_midpoint_evaluation":"https://github.com/neuronsimulator/nrn/blob/9.0.1/src/nrnoc/fadvance.cpp#L470"}})
 
     trace_path = output_dir / "voltage_traces.csv"
-    with trace_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=(
-                "condition",
-                "repetition",
-                "neuron_id",
-                "compartment_id",
-                "time_ms",
-                "voltage_mV",
-            ),
-        )
-        writer.writeheader()
-        if experiment["recording"].get("record_voltage", True):
-            writer.writerows(trace_rows)
+    if engine == 'neuron' and experiment['recording'].get('record_voltage',True):
+        _emit('saving','Saving binary voltage recording')
+        trace_path = trace_rows.write_binary(output_dir)
+    else:
+        with trace_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=("condition", "repetition", "neuron_id", "compartment_id", "time_ms", "voltage_mV"),
+            )
+            writer.writeheader()
+            if experiment["recording"].get("record_voltage", True):
+                writer.writerows(trace_rows)
     spike_path = output_dir / "spikes.csv"
     with spike_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
@@ -3924,7 +4083,7 @@ def run(request_path: Path) -> Path:
         writer.writerows(spike_rows)
 
     artifacts = [
-        {"kind": "table", "path": trace_path.name, "label": "Mapped membrane voltage traces"},
+        {"kind": "table", "path": trace_path.relative_to(output_dir).as_posix(), "label": "Mapped membrane voltage traces"},
         {"kind": "table", "path": spike_path.name, "label": "Threshold-crossing spikes"},
         {"kind": "document", "path": "experiment.json", "label": "Experiment document"},
         {"kind": "document", "path": "circuit.json", "label": "Circuit document"},
@@ -3933,6 +4092,12 @@ def run(request_path: Path) -> Path:
         {"kind": "document", "path": request_path.name, "label": "Resolved worker request"},
     ]
     artifacts.extend(morphology_artifacts)
+    if engine == 'neuron':
+        artifacts.append({'kind':'document','path':'model_settings.json','label':'Shared model settings'})
+        artifacts.append({'kind':'document','path':'neuron_thread_execution.json','label':'NEURON solver thread allocation and timings'})
+        if trace_path.name == 'ready.json':
+            artifacts.extend({'kind':'document','path':f'voltage/{name}','label':label} for name,label in
+                (('index.jsonl','Voltage trace and clock index'),('values.bin','Float64 voltage samples')))
     if current_indices:
         _atomic_json(output_dir / "current_recording.json", {
             "schema": "digifly-current-recording-v1",
@@ -3991,6 +4156,7 @@ def run(request_path: Path) -> Path:
         "Supporting files stored (bytes)": storage["stored_bytes"],
     }
     if engine == "neuron":
+        metadata['NEURON solver threads per process'] = _trials.neuron_thread_count(experiment)
         metadata["Requested independent trial workers"]=int(experiment.get("workers",1))
         metadata["Effective independent trial workers"]=manifest.get("worker_execution",{}).get("effective_workers",1)
         metadata.update(

@@ -96,7 +96,7 @@ def test_ramp_is_one_continuous_envelope_not_a_pulse_train():
 def test_neuron_ramp_uses_linear_play_and_keeps_vectors_alive():
     from types import SimpleNamespace
     class Vector(list):
-        def play(self,reference,times,continuous):
+        def play(self,owner,reference,times,continuous):
             self.play_call=(reference,list(times),continuous)
     h=SimpleNamespace(IClamp=lambda site:SimpleNamespace(_ref_amp="amp"),Vector=Vector)
     objects=common._neuron_current_clamps(h,"mapped-site",{"waveform":"ramp","delay_ms":1,"pulse_width_ms":2},.3)

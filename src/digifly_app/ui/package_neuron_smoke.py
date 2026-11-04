@@ -137,8 +137,9 @@ def run_neuron_package_smoke(destination: Path) -> int:
         root = Path(page._plan.working_directory)
         manifest = json.loads((root / "run_manifest.json").read_text())
         assert manifest["state"] == "completed", page.run_log.toPlainText()
-        rows = list(csv.DictReader((root / "voltage_traces.csv").open()))
-        volts = [float(row["voltage_mV"]) for row in rows]
+        from digifly_app.core.result_voltage import load_voltage_table
+        table = load_voltage_table(root/'voltage_traces.csv',cache_root=destination/'display-cache')
+        volts = [v for samples in table.series.values() for v in samples.values]
         assert len(volts)>50 and all(math.isfinite(v) for v in volts) and max(volts)-min(volts)>1
         assert hashlib.sha256(source.read_bytes()).hexdigest()==sha
         from .circuit_viewport import CircuitViewport, _WindowsCircuitViewport

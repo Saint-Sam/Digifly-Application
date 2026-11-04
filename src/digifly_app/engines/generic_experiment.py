@@ -1123,6 +1123,15 @@ class GenericExperimentAdapter:
             )
 
         parallel_ok = 1 <= experiment.workers <= 256 and (engine=="arbor" or experiment.workers==1 or os.name=="posix")
+        if engine == 'neuron':
+            from digifly_app.workers.independent_trials import neuron_thread_count
+            try:
+                threads = neuron_thread_count(experiment.to_dict())
+                thread_detail = f'{threads} NEURON solver thread(s) per process. Electrical partners stay on one thread.'
+                thread_ok = True
+            except ValueError as exc:
+                thread_detail,thread_ok = str(exc),False
+            checks.append(_check('neuron_threads','NEURON solver threads',CheckState.PASS if thread_ok else CheckState.FAIL,thread_detail,blocking=True))
         checks.append(
             _check(
                 "parallelism",
@@ -1246,7 +1255,7 @@ class GenericExperimentAdapter:
 
     def _located_download_rows(self, circuit, morphology_by_id):
         from digifly_app.core.pair_graph import selected_contact_sites, sha
-        from digifly_app.core.contact_mapping import project_contact
+        from digifly_app.core.contact_mapping import ContactProjector
         manifest, sites = selected_contact_sites(circuit.connectome, circuit.neuron_ids)
         convention = manifest['contact_coordinate_convention']
         scale = convention['scale_to_um']
@@ -1255,6 +1264,7 @@ class GenericExperimentAdapter:
                    for row in sites for end in ('source','target'))
         if work > 25_000_000:
             raise ValueError('Contact mapping exceeds the bounded 25-million cable comparison budget; select fewer neurons')
+        projectors = {}
         for serial, site in enumerate(sites, 1):
             mappings = {}
             for end, body in (('pre','source_body_id'), ('post','target_body_id')):
@@ -1267,7 +1277,10 @@ class GenericExperimentAdapter:
                         "coordinate details; no unit or frame guess is permitted"
                     )
                 point = [site[f'{end}_{axis}']*scale for axis in 'xyz']
-                mappings[end] = project_contact(morphology, point)
+                body_id = str(site[body])
+                if body_id not in projectors:
+                    projectors[body_id] = ContactProjector(morphology)
+                mappings[end] = projectors[body_id].project(point)
             rows.append({'source_edge_rowid':serial,
                 'source_edge_id':f"neuprint-{site['source_body_id']}-{site['target_body_id']}-{site['pre_synapse_id']}-{site['post_synapse_id']}",
                 'pre_id':str(site['source_body_id']), 'post_id':str(site['target_body_id']),

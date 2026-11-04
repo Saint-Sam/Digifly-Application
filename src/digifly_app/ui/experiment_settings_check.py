@@ -14,6 +14,7 @@ from pathlib import Path
 CONTROLS = (
     "name_edit", "template_combo", "engine_combo", "duration", "integration_dt",
     "initial_voltage", "temperature", "seed", "repetitions", "workers",
+    "neuron_multithreading", "neuron_threads",
     "stimulus_targets", "stimulus_region", "waveform_combo", "amplitude",
     "delay", "pulse_width", "frequency", "pulse_count", "control_enabled",
     "control_gap_enabled", "control_chemical_enabled", "manipulation_enabled",
@@ -43,6 +44,7 @@ FACTORS = {
     "ablation": (False, True), "scales": ("none", "hh_na", "hh_k"),
     "stimulus_off": (False, True), "parallel": (False, True),
     "current_tracking": ("off", "sparse", "full"),
+    "neuron_threading": ("off", "one", "multiple"),
 }
 
 
@@ -110,7 +112,7 @@ def check_edit_binding(name, config, value):
     root = {"name_edit": "name", "engine_combo": "engine", "duration": "duration_ms",
             "integration_dt": "integration_dt_ms", "initial_voltage": "initial_voltage_mV",
             "temperature": "temperature_C", "seed": "random_seed", "repetitions": "repetitions",
-            "workers": "workers"}
+            "workers": "workers", "neuron_multithreading":"neuron_multithreading", "neuron_threads":"neuron_threads"}
     stimulus = {"stimulus_region": "target_region", "waveform_combo": "waveform",
                 "amplitude": "amplitude_nA", "delay": "delay_ms", "pulse_width": "pulse_width_ms",
                 "frequency": "frequency_hz", "pulse_count": "pulse_count"}
@@ -186,6 +188,7 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
         "engine_combo": "neuron", "duration": 120., "integration_dt": .005,
         "initial_voltage": -64., "temperature": 23., "seed": 17, "repetitions": 2,
         "workers": 2, "stimulus_targets": "DNp01", "stimulus_region": "ais",
+        "neuron_multithreading":True,"neuron_threads":4,
         "waveform_combo": "ramp", "amplitude": 1.25, "delay": 2., "pulse_width": .5,
         "frequency": 200., "pulse_count": 3, "control_enabled": False,
         "control_gap_enabled": False, "control_chemical_enabled": False,
@@ -218,6 +221,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
         # Actual Qt keyboard/state signals, not just dataclass construction.
         for name in CONTROLS:
             page.set_config(ExperimentSpec())
+            if name in ('neuron_multithreading','neuron_threads'):
+                page.set_config(replace(ExperimentSpec(),engine='neuron',neuron_multithreading=name=='neuron_threads'))
             widget, value = getattr(page, name), values[name]
             page.document_preview.setPlainText("previous validation")
             count = len(changes)
@@ -267,6 +272,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
                 duration_ms=4., integration_dt_ms=.005, initial_voltage_mV=-64., temperature_C=23.,
                 random_seed=17, repetitions=2 if case["parallel"] else 1,
                 workers=2 if case["parallel"] else 1, stimuli=(stimulus,), conditions=tuple(conditions),
+                neuron_multithreading=case['neuron_threading']!='off',
+                neuron_threads=2 if case['neuron_threading']=='multiple' else 1,
                 recording=RecordingSpec(target_neuron_ids=("1",) if case["recording_targets"] == "subset" else (),
                     target_region=case["recording_region"], record_voltage=case["signals"] != "spikes",
                     detect_spikes=case["signals"] != "voltage", spike_threshold_mV=-30., make_plots=case["plots"],

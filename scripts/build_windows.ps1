@@ -1,8 +1,12 @@
 $ErrorActionPreference = "Stop"
 $project = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $project ".venv\Scripts\python.exe"
-$version = if ($env:DIGIFLY_RELEASE_VERSION) { $env:DIGIFLY_RELEASE_VERSION } else { "0.1.0-alpha.20261015.1" }
-if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]+$') { throw "Unsafe release version" }
+if (-not (Test-Path $python)) { throw "Run scripts/setup_dev.ps1 before building." }
+$versionArgs = @("$PSScriptRoot\release_version.py", "--source", $project)
+if ($env:DIGIFLY_RELEASE_VERSION) { $versionArgs += @("--value", $env:DIGIFLY_RELEASE_VERSION) }
+$version = & $python @versionArgs
+if ($LASTEXITCODE -ne 0) { throw "Release number check failed before staging." }
+$buildNumber = if ($env:DIGIFLY_BUILD_NUMBER) { $env:DIGIFLY_BUILD_NUMBER } else { "1" }
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("digifly-windows-" + [guid]::NewGuid().ToString("N"))
 $dist = Join-Path $project "dist"
 if (-not (Test-Path $python)) { throw "Run scripts/setup_dev.ps1 before building." }
@@ -12,7 +16,7 @@ $stageArgs = @("$PSScriptRoot\stage_windows_source.py", "--source", $project, "-
 if ($env:DIGIFLY_BUNDLED_PAIR_PARQUET) { $stageArgs += @("--pair-parquet", $env:DIGIFLY_BUNDLED_PAIR_PARQUET) }
 & $python @stageArgs
 if ($LASTEXITCODE -ne 0) { throw "Source staging failed." }
-@{ version = $version; build = $env:DIGIFLY_BUILD_NUMBER; source_commit = $env:GITHUB_SHA; platform = "Windows-x86_64"; arbor = "deferred"; native_simulators = "not_qualified" } | ConvertTo-Json | Set-Content (Join-Path $stage "digifly_build.json") -Encoding ascii
+@{ version = $version; build = $buildNumber; source_commit = $env:GITHUB_SHA; platform = "Windows-x86_64"; arbor = "deferred"; native_simulators = "not_qualified" } | ConvertTo-Json | Set-Content (Join-Path $stage "digifly_build.json") -Encoding ascii
 $iconSource = Join-Path $stage "src\digifly_app\assets\digifly_icon.png"
 $iconTarget = Join-Path $stage "src\digifly_app\assets\digifly_icon.ico"
 & $python -c "from PIL import Image; import sys; Image.open(sys.argv[1]).save(sys.argv[2], sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])" $iconSource $iconTarget

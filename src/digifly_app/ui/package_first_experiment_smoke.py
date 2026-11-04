@@ -66,7 +66,9 @@ def check_first_experiment_guide(window, destination):
             if guide.findChild(QWidget, name) is not None:
                 raise ValueError("Removed wizard panel still exists: " + name)
         if guide.instructions.toPlainText().split() != step.instructions.split():
-            raise ValueError("Step instructions are missing: " + step.key)
+            raise ValueError("Step instructions differ: " + step.key +
+                             "; actual=" + repr(guide.instructions.toPlainText()) +
+                             "; expected=" + repr(step.instructions))
         guide.grab().save(str(destination / ("wizard-task-" + step.key + ".png")))
     menu = window.menuBar()
     native_menu = menu.isNativeMenuBar()

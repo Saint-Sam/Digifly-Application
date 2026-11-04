@@ -201,6 +201,9 @@ def load_voltage_traces(
     from digifly_app.workers.result_storage import result_path, open_result_text, SampleSeries, MAX_PLAYBACK_VOLTAGE_SAMPLES
     from digifly_app.core.result_voltage import MappedSamples, MappedTraceMetadata, MappedSeries
     source = result_path(Path(path).expanduser().resolve())
+    if table is None and source.name == 'ready.json' and source.parent.name == 'voltage':
+        from digifly_app.core.result_voltage import load_voltage_table
+        table = load_voltage_table(source,cache_root=source.parent,cancelled=lambda: (check() or False))
     if table is None and not source.is_file():
         return ()
     grouped: dict[tuple[str, int, str, str], SampleSeries] = table.series if table is not None else {}

@@ -542,6 +542,29 @@ class DataLibraryPage(QWidget):
         table.setCellWidget(items.index(item), column, holder)
 
     @staticmethod
+    def _clear_table_rows(table):
+        # Transfer item ownership out of Qt before removing rows. Keep wrappers
+        # alive until the C++ model operation finishes, avoiding destruction
+        # callbacks through Shiboken inside recursive table teardown.
+        blocked = table.blockSignals(True)
+        retired_items = []
+        try:
+            for row in range(table.rowCount()):
+                for column in range(table.columnCount()):
+                    widget = table.cellWidget(row, column)
+                    if widget is not None:
+                        widget.setEnabled(False)
+                        widget.hide()
+                        table.removeCellWidget(row, column)
+                    item = table.takeItem(row, column)
+                    if item is not None:
+                        retired_items.append(item)
+            table.setRowCount(0)
+            retired_items.clear()
+        finally:
+            table.blockSignals(blocked)
+
+    @staticmethod
     def _fit_rows(table):
         for row in range(table.rowCount()):
             table.setRowHeight(row, 44)
@@ -611,7 +634,6 @@ class DataLibraryPage(QWidget):
 
     @Slot()
     def refresh(self) -> None:
-        self.table.setRowCount(0)
         self._resources = ()
         try:
             profile, _ = self._profile()
@@ -657,7 +679,7 @@ class DataLibraryPage(QWidget):
         self._render_linked()
         self.linked_card.setVisible(bool(self._linked))
         self.managed_card.setVisible(bool(self._resources))
-        self.table.setRowCount(0)
+        self._clear_table_rows(self.table)
         self.pair_graph_button.setVisible(dataset.startswith('manc:'))
         self.pair_graph_button.setText('Use connectivity Parquet…')
         self.pair_graph_label.clear()
@@ -751,7 +773,7 @@ class DataLibraryPage(QWidget):
     def _render_linked(self):
         previous = self._selected_linked()
         key = path_key(previous.root) if previous else None
-        self.linked_table.setRowCount(0)
+        self._clear_table_rows(self.linked_table)
         for linked in self._linked:
             count = self._linked_counts.get(path_key(linked.root))
             values = (linked.label, linked.dataset, 'Linked · read-only' if linked.available else 'Missing folder',

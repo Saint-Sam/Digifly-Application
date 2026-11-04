@@ -93,7 +93,7 @@ def test_all_controls_and_pairwise_bindings(tmp_path):
     from digifly_app.ui.experiment_settings_check import check_settings_interactions
     app = QApplication.instance() or QApplication([])
     result = check_settings_interactions(tmp_path / "settings")
-    assert result["experiment_settings_controls"] == 36
+    assert result["experiment_settings_controls"] == 38
     assert result["experiment_settings_cases"] > 1
     assert result["experiment_settings_pairs"] > 500
     app.processEvents()

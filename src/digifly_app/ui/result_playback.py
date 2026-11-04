@@ -198,6 +198,9 @@ def load_morphology_voltage_tracks(
     """
     run_root = Path(run_root)
     voltage_path = result_path(run_root / "voltage_traces.csv")
+    if table is None and voltage_path.name == 'ready.json' and voltage_path.parent.name == 'voltage':
+        from digifly_app.core.result_voltage import load_voltage_table
+        table = load_voltage_table(voltage_path,cache_root=voltage_path.parent,cancelled=lambda: (check() or False))
     if table is None and not voltage_path.is_file():
         return ()
     if edge_maps is None:
@@ -333,6 +336,9 @@ def load_activity_flow_tracks(
     """Load playback tracks from generic experiment voltage/spike CSV artifacts."""
 
     voltage_path = result_path(Path(run_root) / "voltage_traces.csv")
+    if table is None and voltage_path.name == 'ready.json' and voltage_path.parent.name == 'voltage':
+        from digifly_app.core.result_voltage import load_voltage_table
+        table = load_voltage_table(voltage_path,cache_root=voltage_path.parent,cancelled=lambda: (check() or False))
     try:
         experiment = json.loads((Path(run_root) / "experiment.json").read_text())
         recording = experiment.get("recording", {})
