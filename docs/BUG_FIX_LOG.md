@@ -11,6 +11,10 @@ computer or scientific model is verified. Dates are the dates of investigation
 or delivery, not necessarily when the bug was introduced. Release notes can
 summarize this log without replacing it.
 
+## Version 0.2.0
+
+The Mac and Windows packages include the current NEURON preparation, binary recording and solver-thread controls. Both pass package, native interface and updater checks. Earlier entries preserve the test and delivery status recorded during each repair.
+
 ## In progress — Mac student-readiness review, October 28, 2026
 
 Windows work is deferred for this review. The starting package is 20261026.9.
@@ -2643,6 +2647,20 @@ The initial inventory contains 301 UI construction sites; it does not mean
   Successor 03.6 passes all 198 full native flags, 80 focused Results flags
   and the actual project/Run/Results/replay path. Installed with complete
   recovery app; Windows deferred and no public release.
+
+## DF-0139: Windows performance checks lacked a shared recording helper
+
+- **Failure:** The first 0.2.0 Windows run stops during test collection because
+  the new preparation checks import result_helpers through another test module.
+  The allowlisted release snapshot omitted that helper. Compilation never starts.
+- **Repair:** Include the helper explicitly in release snapshots and add a
+  staging regression for its presence. Include the small native thread check
+  in the Windows workflow as well.
+- **Verification:** The new staging test reproduces the omission before the
+  repair, then all 20 focused version, staging and helper cases pass. The failed
+  Windows run and its original reports are preserved. The replacement Windows
+  package passes its source, native setup/Run, Results, threading and updater
+  checks. Application and simulator sources are unchanged by the staging repair.
 
 ## Maintenance and GitHub handoff
 

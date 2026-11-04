@@ -31,3 +31,11 @@ def test_legacy_updates_and_short_version_order():
     assert _version_key("0.2.0", "1") > _version_key("0.1.0", "20261103.6")
     assert _version_key("0.2.0", "1") > _version_key("0.1.0-alpha.20261102.10", "102")
     assert _version_key("0.2.1") > _version_key("0.2.0", "1")
+
+
+def test_current_windows_workflow_reads_the_shared_version():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/windows-neuron-bundle.yml").read_text()
+    assert "DIGIFLY_RELEASE_VERSION: 0." not in workflow
+    assert "python scripts/release_version.py --source ." in workflow
+    assert '"DIGIFLY_RELEASE_VERSION=$version"' in workflow
