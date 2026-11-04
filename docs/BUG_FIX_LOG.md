@@ -2678,6 +2678,32 @@ The initial inventory contains 301 UI construction sites; it does not mean
   and background-focus failures are retained in the local test records.
   Matching Windows package checks are pending.
 
+## DF-0141: Windows source test assumed an empty Qt version default
+
+- **Failure:** The first 0.2.1 Windows source check expects an empty string
+  after clearing Qt's application version. On Windows, Qt then supplies the
+  Python executable's version. The sidebar correctly displays Development
+  build when Digifly metadata is absent.
+- **Repair:** Measure Qt's default on the host, seed a stale value, construct
+  the window and verify that the stale value was cleared. Keep the same
+  visible-label check. Application and simulator code are unchanged.
+- **Verification:** The original Windows report records this single failed
+  assertion. The corrected footer tests pass on Mac. Replacement Windows
+  checks are in progress; no new public release has been uploaded.
+
+## DF-0142: Footer unit fixture deleted a running diagnostic thread
+
+- **Failure:** The local footer check visits Engines and starts a runtime
+  probe. Its fixture then deletes the test window while the probe is running,
+  causing Qt to abort during teardown. Normal app closing already refuses
+  closure during an active probe.
+- **Repair:** Stub the unrelated Engines refresh in the footer unit fixture.
+  The actual packaged tests still visit Engines and retain their native
+  assertions. No application or simulator source changes.
+- **Verification:** The original local abort is recorded. The corrected
+  footer/version group passes 19 cases. The unchanged checked Mac package
+  remains installed; replacement Windows checks are in progress.
+
 ## Maintenance and GitHub handoff
 
 For each new issue, record its symptom, cause when established, repair, before/

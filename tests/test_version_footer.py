@@ -19,6 +19,9 @@ from digifly_app.ui.style import DARK_THEME, LIGHT_THEME
 def window(tmp_path, monkeypatch):
     monkeypatch.setenv(SETTINGS_ROOT_ENV, str(tmp_path / "settings"))
     monkeypatch.setenv(PROFILE_PATH_ENV, str(tmp_path / "no-machine-profile.json"))
+    # These are inert footer/layout tests. Runtime probes have their own native
+    # coverage and must not outlive an intentionally deleted fixture window.
+    monkeypatch.setattr(main_window.EnginesPage, "refresh", lambda *args, **kwargs: None)
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Discard)
     dialogs = []
     def record_warning(parent, title, message, *args, **kwargs):
@@ -77,9 +80,13 @@ def test_footer_stays_bottom_left_on_all_pages_and_status_messages(window):
 
 
 def test_missing_build_metadata_is_honest_and_clears_stale_qt_version(window):
+    application = QApplication.instance() or QApplication([])
+    application.setApplicationVersion("")
+    platform_default = application.applicationVersion()
+    application.setApplicationVersion("stale-footer-version")
     ui, app = window({})
     assert ui.version_label.text() == "Development build"
-    assert app.applicationVersion() == ""
+    assert app.applicationVersion() == platform_default
 
 
 def test_native_check_refuses_a_stale_label(window, monkeypatch, tmp_path):

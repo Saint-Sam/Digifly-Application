@@ -150,8 +150,8 @@
       "sha256": "36760b0bebd0766c164c0b61feefe524507a0681f0f15502048d9277ac4cf9ab"
     },
     "tests/test_version_footer.py": {
-      "bytes": 4025,
-      "sha256": "becdda44b61841a73aaff5a3325dfc11d3d9233a68cfa2028937dbd9ecf0d693"
+      "bytes": 4508,
+      "sha256": "73d290681192c2ea15b94c48761d3df778642b57f0180982ade612c4204b3dc5"
     },
     "tests/test_result_loading_async.py": {
       "bytes": 35681,
@@ -390,8 +390,8 @@
       "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350"
     },
     "docs/BUG_FIX_LOG.md": {
-      "bytes": 178542,
-      "sha256": "490b20e2f43090d74aec543133f72719a54d428cf56dcdad74a99537b630cfd3"
+      "bytes": 180061,
+      "sha256": "4764d74d0e79fdc5f55c4212bf2a6dd56616dfad3c7e40aaed8ca6aabaab1048"
     },
     "docs/NETPYNE_WORKBENCH_PLAN.md": {
       "bytes": 8916,
