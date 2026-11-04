@@ -53,7 +53,7 @@ def stage(source: Path, destination: Path, *, release_snapshot=False, pair_parqu
             "scripts/windows_compiled_graphics_diagnostic.py",
             "scripts/windows_graphics_payload_diagnostic.py",
             "tests/test_windows_graphics_payload.py", "tests/test_windows_build_helpers.py",
-            "tests/test_release_version.py", "tests/test_binary_voltage.py", "tests/test_compact_voltage.py",
+            "tests/test_release_version.py", "tests/test_version_footer.py", "tests/test_binary_voltage.py", "tests/test_compact_voltage.py",
             "tests/test_contact_projection_index.py", "tests/test_worker_preparation.py",
             "tests/test_neuron_thread_controls.py", "tests/test_library_table_lifetime.py",
             "tests/result_helpers.py", "scripts/check_neuron_threading.py",

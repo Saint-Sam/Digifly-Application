@@ -49,7 +49,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from digifly_app import __version__
 from digifly_app.core.jobs import JobStore
 from digifly_app.core.circuit import CircuitSpec
 from digifly_app.core.connectomes import NeuronRecord
@@ -87,6 +86,7 @@ from digifly_app.core.workspace import DigiflyWorkspace
 from digifly_app.core.updates import (
     UpdateAsset,
     UpdateStatus,
+    build_info,
     check_for_update,
     download_verified_update,
     update_cache_root,
@@ -3362,6 +3362,10 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        version = str(build_info().get("version", ""))
+        application = QApplication.instance()
+        if application is not None:
+            application.setApplicationVersion(version)
         self.setWindowTitle(APPLICATION_NAME)
         self.resize(1440, 940)
         self.setMinimumSize(1120, 760)
@@ -3425,15 +3429,12 @@ class MainWindow(QMainWindow):
             sidebar_layout.addWidget(button)
             self.nav_buttons.append(button)
         sidebar_layout.addStretch(1)
-        boundary = Card(inset=True)
-        boundary_layout = QVBoxLayout(boundary)
-        boundary_layout.setContentsMargins(11, 10, 11, 10)
-        boundary_layout.addWidget(StatusPill(CheckState.PASS, f"v{__version__}"))
-        boundary_text = QLabel("Separate repository\nNative-file adapters")
-        boundary_text.setObjectName("Muted")
-        boundary_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        boundary_layout.addWidget(boundary_text)
-        sidebar_layout.addWidget(boundary)
+        self.version_label = QLabel(f"Version {version}" if version else "Development build")
+        self.version_label.setObjectName("ApplicationVersion")
+        self.version_label.setAccessibleName("Application version")
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        sidebar_layout.addWidget(self.version_label)
         shell.addWidget(sidebar)
 
         right = QVBoxLayout()
@@ -4252,7 +4253,6 @@ def launch(argv: list[str] | None = None) -> int:
     application = QApplication(argv or [])
     application.setApplicationName(APPLICATION_NAME)
     application.setOrganizationName(ORGANIZATION_NAME)
-    application.setApplicationVersion(__version__)
     icon_path = package_root() / "assets" / "digifly_icon.png"
     if icon_path.is_file():
         application.setWindowIcon(QIcon(str(icon_path)))

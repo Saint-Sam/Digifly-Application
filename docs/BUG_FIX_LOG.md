@@ -2662,6 +2662,22 @@ The initial inventory contains 301 UI construction sites; it does not mean
   package passes its source, native setup/Run, Results, threading and updater
   checks. Application and simulator sources are unchanged by the staging repair.
 
+## DF-0140: The sidebar displayed an outdated app version
+
+- **Failure:** The installed Mac package was 0.2.0, but the sidebar badge and
+  Qt application identity read a separate 0.1.0 library constant.
+- **Repair:** Read the embedded build metadata for both. Keep a plain version
+  label at the bottom left of the fixed sidebar, outside page scrolling and
+  temporary status messages. A missing metadata record displays Development
+  build. Remove the repository/adapter text from that corner.
+- **Verification:** Five new regressions fail before the repair. All 81 source
+  UI/version cases pass. Mac 0.2.1 passes its complete package audit, 201 full
+  native flags, 28 footer combinations, 80 focused Results flags and all three
+  updater cases. Installed startup and Results also pass; normal preferences
+  are unchanged and the complete 0.2.0 app is preserved. The first notice-file
+  and background-focus failures are retained in the local test records.
+  Matching Windows package checks are pending.
+
 ## Maintenance and GitHub handoff
 
 For each new issue, record its symptom, cause when established, repair, before/

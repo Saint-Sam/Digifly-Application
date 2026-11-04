@@ -54,6 +54,53 @@ def dispose_fixture_window(window, app, *, timeout_seconds=3):
         raise RuntimeError('Fixture window deletion is still pending')
 
 
+def check_version_footer(window, app, destination):
+    """Check the real build label without changing any saved preferences."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    from digifly_app.core.updates import build_info
+    from .style import DARK_THEME, LIGHT_THEME
+    version = str(build_info().get('version', ''))
+    expected = f'Version {version}' if version else 'Development build'
+    original_size, original_theme = window.size(), window.theme
+    original_page = window.pages.currentIndex()
+    original_status = window.statusBar().currentMessage()
+    checks = 0
+    try:
+        for theme in (LIGHT_THEME, DARK_THEME):
+            window._apply_theme(theme, persist=False)
+            for width, height in ((1440, 940), (1120, 760)):
+                window.resize(width, height)
+                for index, button in enumerate(window.nav_buttons):
+                    button.click()
+                    window.statusBar().showMessage('Checking the app version')
+                    app.processEvents()
+                    label = window.version_label
+                    position = label.mapTo(window, QPoint(0, 0))
+                    if not (window.pages.currentIndex() == index and label.isVisible()
+                            and label.text() == expected and app.applicationVersion() == version
+                            and 0 <= position.x() < 225
+                            and window.height() - 110 < position.y() < window.height()
+                            and label.visibleRegion().boundingRect().contains(label.rect())):
+                        raise ValueError('The running build label is missing, wrong or clipped')
+                    checks += 1
+    finally:
+        window.resize(original_size)
+        window._apply_theme(original_theme, persist=False)
+        window.nav_buttons[original_page].click()
+        window.statusBar().showMessage(original_status)
+        app.processEvents()
+    QTest.qWait(30)
+    if not window.grab().save(str(destination / 'version-footer.png'), 'PNG'):
+        raise ValueError('Could not capture the version label')
+    evidence = dict(version_footer_matches_embedded_build=True,
+        version_footer_visible_all_pages_themes_sizes=True, version_footer_combinations=checks,
+        qt_application_version_matches_build=True, displayed_version=expected,
+        embedded_version=version)
+    (destination / 'version-footer.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    return evidence
+
+
 def prepare_library_review(destination: Path, workspace: Path, existing_profile: Path | None = None):
     """Validate before writing; an explicit existing task profile is never reset."""
     from digifly_app.core.resource_profile import ResourceProfile, make_default_profile
@@ -188,6 +235,7 @@ def run_library_smoke(destination: Path) -> int:
         window.show()
         from .package_first_experiment_smoke import check_first_experiment_guide
         record.update(check_first_experiment_guide(window, destination))
+        record.update(check_version_footer(window, app, destination))
         page = window.data_library_page
         # Test direct entry before the chooser is initialized, then with a
         # remembered different family. Card-first checks missed this failure.
