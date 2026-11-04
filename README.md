@@ -72,6 +72,14 @@ execution. The [channel execution record](docs/CHANNEL_EXECUTION_REPAIR.md)
 documents supported settings and simulator comparisons. The older 49-cell
 Escape-SIZ comparison has an unresolved voltage mismatch.
 
+## Coming soon
+
+Planned additions:
+
+- Download and install custom ion channels from Channelpedia and ModelDB in Circuit Builder.
+- Leaky integrate-and-fire models, with point-neuron and compartment-based options.
+- Additional simulators, including Brian2.
+
 ## Development
 
 With Python 3.11 or later installed, run:
