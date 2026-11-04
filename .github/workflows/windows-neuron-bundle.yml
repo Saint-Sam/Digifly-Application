@@ -100,6 +100,8 @@ jobs:
           if ($sourceCheck.ExitCode -ne 0) { Get-Content source-neuron-ui-evidence/receipt.json,source-neuron-ui-evidence/thread-stacks.txt,source-ui-stderr.txt -ErrorAction Continue; throw 'Source app setup/Run gate failed before compiler' }
           $sourceReceipt = Get-Content source-neuron-ui-evidence/receipt.json | ConvertFrom-Json
           if (-not $sourceReceipt.ok) { throw 'Source UI receipt did not pass' }
+          & $sourceReceipt.installed_python scripts/check_neuron_threading.py --worker src/digifly_app/workers/generic_experiment_worker.py --output threaded-neuron-evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows threaded voltage/current check failed' }
           ./.venv/Scripts/python.exe scripts/check_swc_library_gui.py --source --output source-library-ui-evidence
           if ($LASTEXITCODE -ne 0) { Get-Content source-library-ui-evidence/receipt.json,source-library-ui-evidence/gui-stderr.txt -ErrorAction Continue; throw 'Native source library/wizard gate failed before compiler' }
           ./scripts/build_windows.ps1
@@ -156,6 +158,7 @@ jobs:
             experiment-settings-source-tests.xml
             graphics-payload-source-tests.xml
             performance-source-tests.xml
+            threaded-neuron-evidence/*.json
             source-display.json
             source-neuron-ui-evidence/*.json
             source-neuron-ui-evidence/*.txt

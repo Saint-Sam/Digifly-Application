@@ -14,16 +14,16 @@
       "sha256": "a57b0fc6aab805562e8d4abf8a9d3264a79089c0915b2b2d90c5b3f3196376d9"
     },
     ".github/workflows/windows-neuron-bundle.yml": {
-      "bytes": 16909,
-      "sha256": "310037196e04e62b2cd85e30cefd89763e914f47319f182b8649febc1d2410ee"
+      "bytes": 17227,
+      "sha256": "1ce835a84dc50823380d260804cf88423a9438578a4526f063dd7bd2cf290356"
     },
     "LICENSE": {
       "bytes": 1067,
       "sha256": "ddff84afdac51697e2bcd237ffe0a363cb2f4b25dfa0d6efa3457ac31613bc5d"
     },
     "README.md": {
-      "bytes": 4077,
-      "sha256": "8844046060a25371791200de1298621b343223d8f254f83374396cd002fdd843"
+      "bytes": 4334,
+      "sha256": "65d3d7e40b9c5cd88f9ab4f5e1a3e3159c07a826fd21fed061d90d498723d237"
     },
     "THIRD_PARTY_LICENSES/Arbor-BSD-3-Clause.txt": {
       "bytes": 1531,
@@ -245,6 +245,10 @@
       "bytes": 3868,
       "sha256": "874754a1876590f5c7cd4e7b5bae52323a9514741519b41f107c285c50c5e081"
     },
+    "scripts/check_neuron_threading.py": {
+      "bytes": 6193,
+      "sha256": "b6d74af4f71c6d49d5b99b99c94b208f5cd4ebd2c5fc493b23e5e84d4c543eab"
+    },
     "scripts/check_packaged_updater.py": {
       "bytes": 18120,
       "sha256": "e0712f08254c48a34d38056346d4bda9b906b5adc2428432fb273b2d82945030"
@@ -382,8 +386,8 @@
       "sha256": "58fe601746709f95690882acbe7794944ebbaa0f37d2d8cc1b6811af999843a0"
     },
     "scripts/stage_windows_source.py": {
-      "bytes": 9343,
-      "sha256": "83c62e895834d18f005fb522717af6a9db35a5377fd27266f986b33eb99b11cf"
+      "bytes": 9419,
+      "sha256": "313c423c62275132cbd8d078608cc379c4d452532c0207033772df44d9e68cd7"
     },
     "scripts/windows_compiled_graphics_diagnostic.py": {
       "bytes": 3691,
@@ -1089,6 +1093,10 @@
       "bytes": 409,
       "sha256": "18f32ffae5514beec06e6f698b4a558fc765463894bb842003f561956b731b96"
     },
+    "tests/result_helpers.py": {
+      "bytes": 635,
+      "sha256": "f988e07701fc9f4c5801efb9a889f7dc33a1384cf9ea04440da1e88be57b1ff2"
+    },
     "tests/test_aggregate_chemical_execution.py": {
       "bytes": 8684,
       "sha256": "7b1cf3294711e1c5d7be961416a0318b6774ae89d7904f9866747d12746685d5"
@@ -1414,8 +1422,8 @@
       "sha256": "196275f6275d81143e457e8fe99f7ea99a0835d862634e5edf5f4271d5f5d99a"
     },
     "tests/test_windows_release.py": {
-      "bytes": 3064,
-      "sha256": "3590791da6f338cddeca7700ccdaf9c69600bb36ef3529bf63524b1babc0906a"
+      "bytes": 3412,
+      "sha256": "6f8338a8fd55708c4761a8646de8d09cec16815a0e4b8f917b1a0344c33ad208"
     },
     "tests/test_windows_test_display.py": {
       "bytes": 769,

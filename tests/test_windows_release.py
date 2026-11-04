@@ -21,6 +21,13 @@ def test_windows_native_workflow_tests_are_in_frozen_snapshot(tmp_path) -> None:
     assert not missing, f"Native Windows workflow tests absent from frozen input: {missing}"
 
 
+def test_performance_tests_include_their_shared_recording_helper(tmp_path) -> None:
+    from scripts.stage_windows_source import stage
+    staged = tmp_path / "performance-inputs"
+    stage(ROOT, staged, release_snapshot=True)
+    assert (staged / "tests/result_helpers.py").is_file(), "Recording test helper is absent from the Windows snapshot"
+
+
 def test_windows_build_packages_and_asserts_simulator_workers() -> None:
     script = (ROOT / "scripts" / "build_windows.ps1").read_text("utf-8")
     assert 'Get-ChildItem "src\\digifly_app\\workers\\*.py"' in script
