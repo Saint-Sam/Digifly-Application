@@ -9,7 +9,7 @@ connectome data and running electrophysiology experiments. Download neurons from
 neuPrint, edit their membrane properties and connections, then inspect voltage
 propagation, spike events and recorded currents.
 
-[Download 0.2.1 for macOS or Windows](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.1)
+[Download 0.2.2 for macOS or Windows](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.2)
 
 ## Install
 

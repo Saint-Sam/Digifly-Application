@@ -2721,6 +2721,16 @@ The initial inventory contains 301 UI construction sites; it does not mean
   remains installed. The replacement Windows source and native package checks
   also pass, including the real Engines-page navigation.
 
+## DF-0143: Circuit Builder hides the reason skeleton loading fails
+
+- **Report:** Male CNS v1.0 records fail to display on Windows 0.2.1 with a
+  generic morphology-loading error.
+- **Finding:** The load loop collects each exception but omits the details
+  from its all-failed message. Partial loads show only a failure count.
+- **Status:** A new download restored loading in the reported case. The
+  original file and read error were unavailable for inspection. Detailed
+  morphology-load errors remain open; this release repairs target selection.
+
 ## DF-0144: Recording and ablation fields rejected neuron names
 
 - **Failure:** TTMn loads in Circuit Builder but is rejected as a recording
@@ -2733,8 +2743,12 @@ The initial inventory contains 301 UI construction sites; it does not mean
   conversion at simulator validation and request serialization.
 - **Verification:** Eight new regressions fail before repair. All 145 affected
   source cases pass. Native source checks pass named selections and refusals,
-  including 29 settings cases and 1,376 interaction pairs. New platform packages
-  and updater delivery are pending.
+  including 29 settings cases and 1,376 interaction pairs. Mac 0.2.2 passes 204
+  native flags and Windows passes 203, including a real NEURON Run selected by
+  name. Both exact packages, Results and updater checks pass. All 170 shared
+  app sources match between platforms. Windows source checks contain 993 passes
+  and 15 platform skips. The paired guard also refuses missing named-target
+  evidence, a missing platform and a stale displayed version.
 
 ## DF-0145: Refreshed neuron labels could retain an old target cache
 
@@ -2744,7 +2758,8 @@ The initial inventory contains 301 UI construction sites; it does not mean
 - **Repair:** Include family and type/alias labels in the snapshot identity.
 - **Verification:** A new same-geometry label-refresh regression fails before
   repair and passes afterward. The shared native check also exercises the label
-  refresh. Platform delivery is pending.
+  refresh in both actual 0.2.2 packages. Package and updater checks pass for both
+  platforms, with matching application source inputs.
 
 ## Maintenance and GitHub handoff
 
