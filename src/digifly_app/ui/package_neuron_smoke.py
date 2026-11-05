@@ -115,7 +115,7 @@ def run_neuron_package_smoke(destination: Path) -> int:
         source = destination / "fixture.swc"
         source.write_text("1 1 0 0 0 5 -1\n2 1 0 0 5 5 1\n3 3 0 0 10 2 2\n4 3 0 0 50 1 3\n", "utf-8")
         sha = hashlib.sha256(source.read_bytes()).hexdigest()
-        morphology = load_swc(NeuronRecord("1", "test", "software fixture", str(source), "test:v1"))
+        morphology = load_swc(NeuronRecord("1", "MN", "TTMn", str(source), "test:v1", ("TTMn_R",)))
         circuit = CircuitSpec(connectome=ConnectomeRef("test:v1", "Software fixture", str(destination)),
             neuron_ids=("1",), morphology_sha256={"1": sha})
         config = ExperimentSpec(name="Included NEURON installation Run check", engine="neuron",
@@ -126,6 +126,10 @@ def run_neuron_package_smoke(destination: Path) -> int:
         page = window.experiment_page
         page.set_circuit_snapshot(circuit, (morphology,))
         page.set_config(config)
+        page.stimulus_targets.setText("ttmn_r")
+        page.recording_targets.setText("TTMn")
+        assert page.config().stimuli[0].target_neuron_ids == ("1",)
+        assert page.config().recording.target_neuron_ids == ("1",)
         window.pages.setCurrentWidget(page)
         checkpoint("click actual app Run; synchronous preflight")
         page.run_button.click()

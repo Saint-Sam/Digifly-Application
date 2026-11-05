@@ -32,6 +32,7 @@ from digifly_app.core.experiment import (
     ExperimentSpec,
     RecordingSpec,
     StimulusSpec,
+    resolve_neuron_targets,
 )
 from digifly_app.core.jobs import JobStore
 from digifly_app.core.models import CheckState
@@ -152,7 +153,8 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Keep chemical synaptic connections active in the manipulation condition."
     ),
     "disabled_neurons": (
-        "Neuron IDs to disable only for the manipulation run, separated by spaces or commas."
+        "Neuron IDs or exact types and aliases to disable for the comparison, separated by spaces or commas. "
+        "A type selects every matching neuron in the loaded circuit. Leave blank to disable none."
     ),
     "stimulus_scale": (
         "Multiplier applied to the primary stimulus amplitude in the manipulation condition."
@@ -161,8 +163,8 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Optional JSON map of mechanism names to runtime multipliers, for example {\"para\": 0.5}."
     ),
     "recording_targets": (
-        "Neuron IDs to record, separated by spaces or commas (for example 10110, 10068). "
-        "Cell-type names such as TTMn are not IDs; use Circuit Builder to select a type. "
+        "Neuron IDs or exact types and aliases to record, separated by spaces or commas. "
+        "TTMn selects every loaded TTMn neuron. "
         "Leave blank to record every circuit neuron."
     ),
     "recording_region": (
@@ -259,7 +261,7 @@ class ExperimentBuilderPage(QWidget):
         ).expanduser()
         self._circuit = CircuitSpec()
         self._morphologies: tuple[Morphology, ...] = ()
-        self._morphology_signature: tuple[tuple[str, str, str, int], ...] = ()
+        self._morphology_signature: tuple[tuple[Any, ...], ...] = ()
         self._restoring = False
         self._runtime_paths = {
             "neuron": str(neuron_runtime or ""),
@@ -567,7 +569,7 @@ class ExperimentBuilderPage(QWidget):
         self.manip_chemical_enabled = QCheckBox("Chemical synapses enabled")
         self.manip_chemical_enabled.setChecked(True)
         self.disabled_neurons = QLineEdit()
-        self.disabled_neurons.setPlaceholderText("optional neuron IDs to ablate")
+        self.disabled_neurons.setPlaceholderText("IDs or types to disable; blank = none")
         self.stimulus_scale = _double_spin(0.0, 1_000_000.0, 1.0, decimals=6)
         self.mechanism_scales = QLineEdit("{}")
         self.mechanism_scales.setPlaceholderText('{"para": 0.5}')
@@ -616,7 +618,7 @@ class ExperimentBuilderPage(QWidget):
         )
         recording_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.recording_targets = QLineEdit()
-        self.recording_targets.setPlaceholderText("Neuron IDs, e.g. 10110, 10068; blank = all")
+        self.recording_targets.setPlaceholderText("IDs or types, e.g. TTMn; blank = all")
         self.recording_region = QComboBox()
         self.recording_region.addItem("Soma", "soma")
         self.recording_region.addItem("All compartments", "all")
@@ -654,7 +656,7 @@ class ExperimentBuilderPage(QWidget):
         add_help_row(
             recording_form,
             "recording_targets",
-            "Target neuron IDs",
+            "Target neurons",
             self.recording_targets,
         )
         add_help_row(
@@ -957,7 +959,8 @@ class ExperimentBuilderPage(QWidget):
             if neuron_id in by_id
         )
         signature = tuple(
-            (item.record.connectome_key, item.record.neuron_id, item.record.swc_path, len(item.segments))
+            (item.record.connectome_key, item.record.neuron_id, item.record.swc_path,
+             len(item.segments), item.record.family, item.record.type_names)
             for item in ordered
         )
         if signature != self._morphology_signature:
@@ -1028,35 +1031,9 @@ class ExperimentBuilderPage(QWidget):
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Resolve explicit IDs and exact type names against the loaded circuit."""
 
-        selectors = _parse_ids(self.stimulus_targets.text())
-        circuit_ids = tuple(self._circuit.neuron_ids)
-        if not selectors:
-            return (circuit_ids if all_if_blank else ()), ()
-
-        available_ids = set(circuit_ids)
-        type_matches: dict[str, list[str]] = {}
-        for morphology in self._morphologies:
-            neuron_id = morphology.record.neuron_id
-            for name in morphology.record.type_names:
-                neuron_type = name.strip().casefold()
-                if neuron_id in available_ids and neuron_type:
-                    type_matches.setdefault(neuron_type, []).append(neuron_id)
-
-        resolved: list[str] = []
-        unmatched: list[str] = []
-        for selector in selectors:
-            matches = (
-                (selector,)
-                if selector in available_ids
-                else tuple(type_matches.get(selector.casefold(), ()))
-            )
-            if not matches:
-                unmatched.append(selector)
-                continue
-            for neuron_id in matches:
-                if neuron_id not in resolved:
-                    resolved.append(neuron_id)
-        return tuple(resolved), tuple(unmatched)
+        return resolve_neuron_targets(_parse_ids(self.stimulus_targets.text()),
+            self._circuit.neuron_ids, (m.record for m in self._morphologies),
+            all_if_blank=all_if_blank)
 
     def _target_neuron_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         resolved, unmatched = self._resolve_stimulus_targets(all_if_blank=True)
@@ -1220,7 +1197,7 @@ class ExperimentBuilderPage(QWidget):
             stimuli=(stimulus,),
             conditions=tuple(conditions),
             recording=recording,
-        )
+        ).resolve_targets(self._circuit, (m.record for m in self._morphologies))
 
     def set_config(self, config: ExperimentSpec) -> None:
         self._restoring = True

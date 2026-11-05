@@ -87,6 +87,51 @@ def _morphology_hashes(
     }
 
 
+@pytest.mark.parametrize("engine", ("neuron", "arbor", "bmtk"))
+def test_named_targets_are_canonical_at_both_adapter_boundaries(tmp_path, monkeypatch, engine):
+    cells = tuple(replace(_morphology(tmp_path, str(i)),
+        record=NeuronRecord(str(i), "MN" if i > 1 else "DN", "TTMn" if i > 1 else "DNp01",
+            str(tmp_path / f"{i}.swc"), "test:v1", ("GF",) if i == 1 else (f"TTMn_{i}",)))
+        for i in (1, 2, 3))
+    circuit = CircuitSpec(connectome=ConnectomeRef("test:v1", "Test", str(tmp_path)),
+        neuron_ids=("1", "2", "3"), morphology_sha256=_morphology_hashes(cells))
+    for first, second in (("1", "2"), ("1", "3"), ("2", "3")):
+        circuit.set_connection_class_enabled(first, second, "chemical", False)
+        circuit.set_connection_class_enabled(first, second, "gap_junction", False)
+    experiment = ExperimentSpec(engine=engine,
+        stimuli=(StimulusSpec(target_neuron_ids=("GF",)),),
+        conditions=(ConditionSpec(name="Comparison", disabled_neuron_ids=("TTMn_2",)),),
+        recording=RecordingSpec(target_neuron_ids=("TTMn",)))
+    adapter = generic.GenericExperimentAdapter({engine: os.sys.executable})
+    report = adapter.validate(circuit, experiment, iter(cells), output_root=tmp_path / "runs")
+    documents = next(c for c in report.checks if c.key == "documents")
+    assert documents.state == CheckState.PASS
+    payload = adapter.request_payload(circuit, experiment, iter(cells), report, output_root=tmp_path / "runs")
+    config = payload["experiment"]
+    assert tuple(config["stimuli"][0]["target_neuron_ids"]) == ("1",)
+    assert tuple(config["conditions"][0]["disabled_neuron_ids"]) == ("2",)
+    assert tuple(config["recording"]["target_neuron_ids"]) == ("2", "3")
+    assert experiment.recording.target_neuron_ids == ("TTMn",)
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("field", ("stimuli", "conditions", "recording"))
+def test_direct_worker_request_refuses_unmatched_target_names(tmp_path, field):
+    cell = _morphology(tmp_path)
+    circuit = CircuitSpec(neuron_ids=("1",), morphology_sha256=_morphology_hashes((cell,)))
+    experiment = ExperimentSpec()
+    if field == "stimuli":
+        experiment = replace(experiment, stimuli=(StimulusSpec(target_neuron_ids=("missing",)),))
+    elif field == "conditions":
+        experiment = replace(experiment, conditions=(ConditionSpec(disabled_neuron_ids=("missing",)),))
+    else:
+        experiment = replace(experiment, recording=RecordingSpec(target_neuron_ids=("missing",)))
+    adapter = generic.GenericExperimentAdapter({})
+    with pytest.raises(ValueError, match="missing"):
+        adapter.request_payload(circuit, experiment, (cell,), PreflightReport(()), output_root=tmp_path / "runs")
+    assert not (tmp_path / "runs").exists()
+
+
 def test_classic_arbor_request_pins_hh_table_translator_without_native_channels(tmp_path):
     morphology = _morphology(tmp_path)
     circuit = CircuitSpec(connectome=ConnectomeRef('test:v1', 'Test', str(tmp_path)),

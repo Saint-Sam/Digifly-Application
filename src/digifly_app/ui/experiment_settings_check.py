@@ -40,8 +40,8 @@ FACTORS = {
     "control_gap": (False, True), "control_chemical": (False, True),
     "comparison_gap": (False, True), "comparison_chemical": (False, True),
     "signals": ("voltage", "spikes", "both"), "plots": (False, True),
-    "targets": ("all", "id", "type"), "recording_targets": ("all", "subset"),
-    "ablation": (False, True), "scales": ("none", "hh_na", "hh_k"),
+    "targets": ("all", "id", "type"), "recording_targets": ("all", "subset", "type", "alias"),
+    "ablation": (False, True, "type", "alias"), "scales": ("none", "hh_na", "hh_k"),
     "stimulus_off": (False, True), "parallel": (False, True),
     "current_tracking": ("off", "sparse", "full"),
     "neuron_threading": ("off", "one", "multiple"),
@@ -176,7 +176,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
     for body, family, cell_type in (("1", "DN", "DNp01"), ("2", "MN", "TTMn")):
         swc = destination / (body + ".swc")
         swc.write_text("1 1 0 0 0 2 -1\n2 1 0 0 4 2 1\n3 2 0 0 8 1 2\n", encoding="utf-8")
-        records.append(load_swc(NeuronRecord(body, family, cell_type, str(swc), "engineering:v1")))
+        aliases = ("GF",) if body == "1" else ("TTMn_R",)
+        records.append(load_swc(NeuronRecord(body, family, cell_type, str(swc), "engineering:v1", aliases)))
     page.set_circuit_snapshot(circuit, tuple(records))
     before_circuit = page.circuit_spec().to_dict()
     check_inventory(page)
@@ -194,8 +195,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
         "control_gap_enabled": False, "control_chemical_enabled": False,
         "manipulation_enabled": False, "manipulation_name": "Changed comparison",
         "manip_gap_enabled": True, "manip_chemical_enabled": False,
-        "disabled_neurons": "2", "stimulus_scale": .5,
-        "mechanism_scales": '{"hh_na": 0.5}', "recording_targets": "1",
+        "disabled_neurons": "TTMn", "stimulus_scale": .5,
+        "mechanism_scales": '{"hh_na": 0.5}', "recording_targets": "GF",
         "recording_region": "all", "record_voltage": False, "detect_spikes": False,
         "sample_dt": .1, "spike_threshold": -30., "make_plots": False, "current_tracking":"full",
     }
@@ -274,7 +275,7 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
                 workers=2 if case["parallel"] else 1, stimuli=(stimulus,), conditions=tuple(conditions),
                 neuron_multithreading=case['neuron_threading']!='off',
                 neuron_threads=2 if case['neuron_threading']=='multiple' else 1,
-                recording=RecordingSpec(target_neuron_ids=("1",) if case["recording_targets"] == "subset" else (),
+                recording=RecordingSpec(target_neuron_ids=("1",) if case["recording_targets"] != "all" else (),
                     target_region=case["recording_region"], record_voltage=case["signals"] != "spikes",
                     detect_spikes=case["signals"] != "voltage", spike_threshold_mV=-30., make_plots=case["plots"],
                     current_tracking=case["current_tracking"]))
@@ -283,6 +284,10 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
                 page.stimulus_targets.setText("DNp01")
             elif case["targets"] == "all":
                 page.stimulus_targets.clear()
+            if case["recording_targets"] in {"type", "alias"}:
+                page.recording_targets.setText("DNp01" if case["recording_targets"] == "type" else "gf")
+            if case["ablation"] in {"type", "alias"}:
+                page.disabled_neurons.setText("TTMn" if case["ablation"] == "type" else "ttmn_r")
             actual = page.config()
             from digifly_app.workers.current_tracking import check_mode
             must_refuse = case["current_tracking"] != "off" and (case["engine"] != "neuron" or case["parallel"])
@@ -305,7 +310,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
         # locally without opening a simulator, including unfinished drafts.
         refusals = {}
         for case in ("conditions_off", "signals_off", "recording_faster_than_integration",
-                     "missing_target", "active_invalid_json", "reserved_comparison_name"):
+                     "missing_target", "missing_recording_target", "missing_ablation_target",
+                     "active_invalid_json", "reserved_comparison_name"):
             page.set_config(ExperimentSpec())
             if case == "conditions_off":
                 page.control_enabled.setChecked(False)
@@ -324,6 +330,10 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
             elif case == "missing_target":
                 page.stimulus_targets.setText("not-loaded")
                 expected_message = "not present in the loaded circuit"
+            elif case in {"missing_recording_target", "missing_ablation_target"}:
+                widget = page.recording_targets if case == "missing_recording_target" else page.disabled_neurons
+                widget.setText("TTMn, not-loaded")
+                expected_message = "not-loaded"
             elif case == "active_invalid_json":
                 page.mechanism_scales.setText('{"hh_na":')
                 expected_message = "Expecting value"
@@ -342,6 +352,23 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
         page.control_enabled.setChecked(True)
         if page.config().errors(circuit) or len(page.config().conditions) != 1:
             raise ValueError("Inactive comparison still affects Control")
+        page.set_config(ExperimentSpec(engine="neuron"))
+        page.stimulus_targets.setText("gf")
+        page.recording_targets.setText("TTMn, 2, ttmn_r")
+        page.disabled_neurons.setText("ttmn_r")
+        named = page.config()
+        if (named.stimuli[0].target_neuron_ids, named.recording.target_neuron_ids,
+                named.conditions[1].disabled_neuron_ids) != (("1",), ("2",), ("2",)):
+            raise ValueError("Named stimulus/recording/ablation selections differ")
+        if named.errors(circuit):
+            raise ValueError("Resolved names failed the document check")
+        page.grab().save(str(destination / "named-targets.png"))
+        renamed = tuple(replace(m, record=replace(m.record, neuron_type="RenamedMotor"))
+                        if m.record.neuron_id == "2" else m for m in records)
+        page.set_circuit_snapshot(circuit, renamed)
+        page.recording_targets.setText("RenamedMotor")
+        if page.config().recording.target_neuron_ids != ("2",):
+            raise ValueError("Target label cache did not refresh")
         if (destination / "not-created-runs").exists() or page._process is not None:
             raise ValueError("Setting-only inspection unexpectedly launched/created a run")
         result = {"scope": "production widgets and document bindings; synthetic, no simulator execution",
@@ -354,6 +381,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
                 "experiment_settings_refusals": True,
                 "experiment_settings_external_edits": True,
                 "all_compartment_playback_readiness": True,
+                "experiment_target_names": True, "experiment_target_rejections": True,
+                "experiment_target_label_refresh": True,
                 "experiment_settings_controls": len(edited), "experiment_settings_cases": len(cases),
                 "experiment_settings_pairs": pairs}
     finally:

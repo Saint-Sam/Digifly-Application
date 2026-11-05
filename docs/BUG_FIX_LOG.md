@@ -11,6 +11,12 @@ computer or scientific model is verified. Dates are the dates of investigation
 or delivery, not necessarily when the bug was introduced. Release notes can
 summarize this log without replacing it.
 
+## Version 0.2.2
+
+Recording and comparison ablations now accept the same exact neuron types and
+aliases as stimulation. Saved settings, readiness and simulator requests share
+one resolver. Unknown targets remain errors tied to the affected field.
+
 ## Version 0.2.1
 
 Both packages show their installed version at the bottom left of every page.
@@ -2714,6 +2720,31 @@ The initial inventory contains 301 UI construction sites; it does not mean
   footer/version group passes 19 cases. The unchanged checked Mac package
   remains installed. The replacement Windows source and native package checks
   also pass, including the real Engines-page navigation.
+
+## DF-0144: Recording and ablation fields rejected neuron names
+
+- **Failure:** TTMn loads in Circuit Builder but is rejected as a recording
+  target. Only the stimulation field resolves names to IDs; recording and
+  comparison ablations pass text directly to ID validation. Saved string fields
+  also treat semicolons differently from the editors.
+- **Repair:** Resolve exact types and saved aliases consistently across every
+  stimulus, recording and condition. Deduplicate mixed IDs/names, preserve blank
+  defaults and retain unknown names as field-specific errors. Apply the same
+  conversion at simulator validation and request serialization.
+- **Verification:** Eight new regressions fail before repair. All 145 affected
+  source cases pass. Native source checks pass named selections and refusals,
+  including 29 settings cases and 1,376 interaction pairs. New platform packages
+  and updater delivery are pending.
+
+## DF-0145: Refreshed neuron labels could retain an old target cache
+
+- **Failure:** The experiment preview cache compares source, IDs, paths and
+  segment counts but ignores changed type names and aliases. Refreshing a label
+  at the same path can leave name resolution using the older record.
+- **Repair:** Include family and type/alias labels in the snapshot identity.
+- **Verification:** A new same-geometry label-refresh regression fails before
+  repair and passes afterward. The shared native check also exercises the label
+  refresh. Platform delivery is pending.
 
 ## Maintenance and GitHub handoff
 

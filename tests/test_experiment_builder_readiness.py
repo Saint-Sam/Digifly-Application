@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
@@ -12,6 +13,98 @@ from digifly_app.core.circuit import CircuitSpec
 from digifly_app.core.experiment import ConditionSpec, ExperimentSpec
 from digifly_app.core.models import CheckState, PreflightCheck, PreflightReport
 from digifly_app.ui.experiment_builder import ExperimentBuilderPage
+
+
+@pytest.fixture
+def named_targets_page(tmp_path):
+    """Synthetic files with the reported Male CNS type and both TTMn labels."""
+    from digifly_app.core.circuit import ConnectomeRef
+    from digifly_app.core.connectomes import NeuronRecord
+    from digifly_app.core.morphology import load_swc
+    app = QApplication.instance() or QApplication([])
+    source = ConnectomeRef("library:male-cns:v1.0", "Male CNS", str(tmp_path), "male-cns:v1.0")
+    cells = []
+    for body, family, name, aliases in (("1", "DN", "DNp01", ("GF",)),
+            ("800146", "MN", "TTMn", ("TTMn_R",)),
+            ("804642", "MN", "TTMn", ("TTMn_L",)),
+            ("3", "IN", "PSI", ())):
+        path = tmp_path / (body + ".swc")
+        path.write_text("1 1 0 0 0 2 -1\n2 2 0 0 4 1 1\n", encoding="utf-8")
+        cells.append(load_swc(NeuronRecord(body, family, name, str(path), source.key, aliases)))
+    page = ExperimentBuilderPage(output_root=tmp_path / "runs-not-created")
+    circuit = CircuitSpec(connectome=source, neuron_ids=tuple(c.record.neuron_id for c in cells))
+    page.set_circuit_snapshot(circuit, cells)
+    yield page, circuit, tuple(cells)
+    page.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("dataset", ("male-cns:v0.9", "male-cns:v1.0", "manc:v1.2.1"))
+def test_all_target_fields_resolve_names_and_aliases(named_targets_page, dataset, monkeypatch):
+    from dataclasses import replace
+    page, circuit, cells = named_targets_page
+    source = replace(circuit.connectome, key="library:" + dataset, dataset=dataset)
+    ids = {"800146": "10068", "804642": "10110"} if dataset.startswith("manc:") else {}
+    cells = tuple(replace(c, record=replace(c.record, connectome_key=source.key,
+        neuron_id=ids.get(c.record.neuron_id, c.record.neuron_id))) for c in cells)
+    circuit = replace(circuit, connectome=source, neuron_ids=tuple(c.record.neuron_id for c in cells))
+    page.set_circuit_snapshot(circuit, cells)
+    before = circuit.to_dict()
+    page.stimulus_targets.setText("gf")
+    right, left = ids.get("800146", "800146"), ids.get("804642", "804642")
+    page.recording_targets.setText(f"ttmn;{right};TTMn_L")
+    page.disabled_neurons.setText("TTMn_R; psi")
+    calls = []
+    monkeypatch.setattr("digifly_app.ui.experiment_builder.GenericExperimentAdapter.validate",
+        lambda adapter, c, e, m, **kw: calls.append(e) or PreflightReport(()))
+    config = page.config()
+    assert config.stimuli[0].target_neuron_ids == ("1",)
+    assert config.recording.target_neuron_ids == (right, left)
+    assert config.conditions[1].disabled_neuron_ids == (right, "3")
+    assert not config.errors(circuit)
+    page.validate_draft()
+    assert "Preflight passed" in page.validation_state.text()
+    assert calls == [config]
+    assert page.target_region_viewport.highlighted_soma_ids == {"1"}
+    page.set_config(ExperimentSpec.from_dict(config.to_dict()))
+    assert page.config() == config
+    assert circuit.to_dict() == before
+    assert not page._output_root().exists()
+
+
+@pytest.mark.parametrize("field", ("stimulus_targets", "recording_targets", "disabled_neurons"))
+def test_every_target_field_keeps_missing_names_as_errors(named_targets_page, field, monkeypatch):
+    page, circuit, cells = named_targets_page
+    getattr(page, field).setText("TTMn, not-loaded")
+    monkeypatch.setattr("digifly_app.ui.experiment_builder.GenericExperimentAdapter.validate",
+        lambda *a, **kw: pytest.fail("Unknown target reached simulator readiness"))
+    page.validate_draft()
+    assert "not-loaded" in page.validation_state.text()
+    assert "TTMn" not in page.validation_state.text()
+    assert not page._output_root().exists()
+
+
+def test_target_resolution_refreshes_changed_labels_without_geometry_change(named_targets_page):
+    from dataclasses import replace
+    page, circuit, cells = named_targets_page
+    page.recording_targets.setText("RenamedMotor")
+    updated = tuple(replace(c, record=replace(c.record, neuron_type="RenamedMotor"))
+                    if c.record.neuron_type == "TTMn" else c for c in cells)
+    page.set_circuit_snapshot(circuit, updated)
+    assert page.config().recording.target_neuron_ids == ("800146", "804642")
+    page.recording_targets.setText("TTMn")
+    assert "TTMn" in " ".join(page.config().errors(circuit))
+
+
+def test_blank_targets_keep_record_all_and_ablate_none(named_targets_page):
+    page, circuit, cells = named_targets_page
+    page.stimulus_targets.clear()
+    page.recording_targets.clear()
+    page.disabled_neurons.clear()
+    config = page.config()
+    assert config.stimuli[0].target_neuron_ids == circuit.neuron_ids
+    assert config.recording.target_neuron_ids == ()
+    assert config.conditions[1].disabled_neuron_ids == ()
 
 
 def test_readiness_rejects_job_history_name_without_raw_run_folder(tmp_path, monkeypatch):

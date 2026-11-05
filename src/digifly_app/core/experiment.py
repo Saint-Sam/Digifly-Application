@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import math
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .circuit import CircuitSpec
 
@@ -15,8 +15,44 @@ def _ids(values: Any) -> tuple[str, ...]:
     if values is None:
         return ()
     if isinstance(values, str):
-        values = values.replace(",", " ").split()
+        values = values.replace(",", " ").replace(";", " ").split()
     return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def resolve_neuron_targets(
+    selectors: Iterable[str] | str,
+    circuit_ids: Iterable[str],
+    records: Iterable[Any],
+    *,
+    all_if_blank: bool = False,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Resolve exact IDs/types/aliases using only the attached circuit records.
+
+    Names are case-insensitive. Explicit IDs take precedence; partial names and
+    wildcards never expand a simulation target. Unknown selectors stay visible
+    to document validation, rather than becoming an empty/all-neuron target.
+    """
+    selectors, circuit_ids = _ids(selectors), tuple(circuit_ids)
+    if not selectors:
+        return (circuit_ids if all_if_blank else ()), ()
+    available = set(circuit_ids)
+    names: dict[str, list[str]] = {}
+    for record in records:
+        if record.neuron_id not in available:
+            continue
+        for name in record.type_names:
+            key = name.strip().casefold()
+            if key:
+                names.setdefault(key, []).append(record.neuron_id)
+    resolved, unmatched = [], []
+    for selector in selectors:
+        matches = (selector,) if selector in available else names.get(selector.casefold(), ())
+        if not matches:
+            unmatched.append(selector)
+        for neuron_id in matches:
+            if neuron_id not in resolved:
+                resolved.append(neuron_id)
+    return tuple(resolved), tuple(unmatched)
 
 
 @dataclass(frozen=True)
@@ -170,6 +206,25 @@ class ExperimentSpec:
     conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
     recording: RecordingSpec = field(default_factory=RecordingSpec)
 
+    def resolve_targets(self, circuit: CircuitSpec, records: Iterable[Any]) -> "ExperimentSpec":
+        """Copy every target-bearing field to canonical IDs without mutating a draft."""
+        records = tuple(records)
+        def resolve(selectors):
+            resolved, unmatched = resolve_neuron_targets(selectors, circuit.neuron_ids, records)
+            return tuple(dict.fromkeys((*resolved, *unmatched)))
+        return replace(self,
+            stimuli=tuple(replace(s, target_neuron_ids=resolve(s.target_neuron_ids)) for s in self.stimuli),
+            conditions=tuple(replace(c, disabled_neuron_ids=resolve(c.disabled_neuron_ids)) for c in self.conditions),
+            recording=replace(self.recording, target_neuron_ids=resolve(self.recording.target_neuron_ids)))
+
+    def target_errors(self, circuit: CircuitSpec) -> list[str]:
+        circuit_ids = set(circuit.neuron_ids)
+        groups = [(f"Stimulus {s.name!r}", s.target_neuron_ids) for s in self.stimuli]
+        groups += [(f"Condition {c.name!r} disabled-neuron", c.disabled_neuron_ids) for c in self.conditions]
+        groups.append(("Recording", self.recording.target_neuron_ids))
+        return [f"{label} targets are not present in the loaded circuit: " + ", ".join(sorted(set(ids) - circuit_ids))
+                for label, ids in groups if set(ids) - circuit_ids]
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -257,19 +312,5 @@ class ExperimentSpec:
             circuit_ids = set(circuit.neuron_ids)
             if not circuit_ids:
                 errors.append("Load a circuit with at least one neuron before running an experiment.")
-            referenced = {
-                neuron_id
-                for stimulus in self.stimuli
-                for neuron_id in stimulus.target_neuron_ids
-            } | {
-                neuron_id
-                for condition in self.conditions
-                for neuron_id in condition.disabled_neuron_ids
-            } | set(self.recording.target_neuron_ids)
-            missing = sorted(referenced - circuit_ids)
-            if missing:
-                errors.append(
-                    "Experiment targets are not present in the loaded circuit: "
-                    + ", ".join(missing)
-                )
+            errors.extend(self.target_errors(circuit))
         return errors

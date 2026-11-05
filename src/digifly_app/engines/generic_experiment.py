@@ -626,6 +626,8 @@ class GenericExperimentAdapter:
         *,
         output_root: str | Path,
     ) -> PreflightReport:
+        morphologies = tuple(morphologies)
+        experiment = experiment.resolve_targets(circuit, (m.record for m in morphologies))
         checks: list[PreflightCheck] = []
         errors = experiment.errors(circuit)
         checks.append(
@@ -1672,6 +1674,10 @@ class GenericExperimentAdapter:
         morphology_by_id = {
             item.record.neuron_id: item for item in morphologies
         }
+        experiment = experiment.resolve_targets(circuit, (m.record for m in morphology_by_id.values()))
+        target_errors = experiment.target_errors(circuit)
+        if target_errors:
+            raise ValueError(target_errors[0])
         integrity_error = _morphology_integrity_error(circuit, morphology_by_id)
         if integrity_error:
             raise ValueError(

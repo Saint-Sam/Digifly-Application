@@ -18,12 +18,12 @@
       "sha256": "f70e39fd695bcc431a8c0ff92c043cd9575c76e786fc30bfc4cbc0ca8afc3116"
     },
     "README.md": {
-      "bytes": 4334,
-      "sha256": "65d3d7e40b9c5cd88f9ab4f5e1a3e3159c07a826fd21fed061d90d498723d237"
+      "bytes": 4351,
+      "sha256": "b72cbec75bfaeb4954908cee406e68545adacded0b2dfdb5cfd597e34ec4a357"
     },
     "VERSION": {
       "bytes": 6,
-      "sha256": "71015c979ccb0fc8a0be7ca0ae83046ab045cdc2c8faa09fb2f0f7e440f9b4a6"
+      "sha256": "998f6b887ed7a6ef44e84210d0237b715bed42ea7254f48dc418afec0a484103"
     },
     ".gitattributes": {
       "bytes": 140,
@@ -122,8 +122,8 @@
       "sha256": "86af3bd955d2a47c20d5de29abc233c8a2a7680d71d13f816bbf478f9addbaca"
     },
     "tests/test_generic_experiment.py": {
-      "bytes": 54306,
-      "sha256": "a9f48200326e01c6748156f67e79cbf44c2a0c732be4b8545beb0f0ed7af66f5"
+      "bytes": 57090,
+      "sha256": "585caba9a185fdb9aa34124699803d96dd83b8fe7424623f11dd6fd5d212117c"
     },
     "tests/test_aggregate_chemical_execution.py": {
       "bytes": 8684,
@@ -142,8 +142,8 @@
       "sha256": "b9de4562eddba36c756a7f4e44c86e93de0248da642cdf9a0228182bc8436267"
     },
     "tests/test_experiment.py": {
-      "bytes": 1719,
-      "sha256": "97f2cd6beb423ef718ee815a61ab422f69b39222b281c7e263d68f9520d41fd9"
+      "bytes": 4433,
+      "sha256": "1b4a367005f6a07fcea01d59c9a3ac85be3f221e378fdd3f36dd9c0e6d8c9b3d"
     },
     "tests/test_morphology.py": {
       "bytes": 5360,
@@ -214,8 +214,8 @@
       "sha256": "b483054941aa2bcc5139956229aa0566a35e17fe106aa8c107aa4305456aa473"
     },
     "tests/test_experiment_builder_readiness.py": {
-      "bytes": 9820,
-      "sha256": "99b4c71a9c53eca0f6d854c2b272fef5c1e27a8382ef8a19d1e137d599e80edc"
+      "bytes": 14551,
+      "sha256": "06ce2e48f735eff6b6ce7b8df7211bcecafb64fd3825d6af5016a663974ef4c9"
     },
     "tests/test_update_cleanup.py": {
       "bytes": 9262,
@@ -390,8 +390,8 @@
       "sha256": "cc39a419624d2d87622314bb7f14568a1d4f93d071554357c0e2cee905fa2350"
     },
     "docs/BUG_FIX_LOG.md": {
-      "bytes": 180061,
-      "sha256": "4764d74d0e79fdc5f55c4212bf2a6dd56616dfad3c7e40aaed8ca6aabaab1048"
+      "bytes": 182440,
+      "sha256": "f0fe35d5bf302b13843b8d8372b399e9071ee1e45bfe3e2a7890a33ed00de250"
     },
     "docs/NETPYNE_WORKBENCH_PLAN.md": {
       "bytes": 8916,
@@ -878,8 +878,8 @@
       "sha256": "a2441d4c85c661ed152dc77fa78cf62760702b8b2dc6d656805a1eee4df45a3f"
     },
     "src/digifly_app/ui/experiment_builder.py": {
-      "bytes": 83951,
-      "sha256": "b7633a149425b8a89355fc7cf6c6cb564a4402c7017a4681df3fdbbc32a9e697"
+      "bytes": 83168,
+      "sha256": "dc660cefc0f6f81518131913cce9c71aeafba9788767c9a8fffa8d476014ca78"
     },
     "src/digifly_app/ui/neuprint_import.py": {
       "bytes": 48977,
@@ -918,8 +918,8 @@
       "sha256": "20810201a62677742a5b5ebcc3bde65c5a32161d0c2f56f0d8dd3a7a8ac2d2e2"
     },
     "src/digifly_app/ui/experiment_settings_check.py": {
-      "bytes": 20563,
-      "sha256": "e5521cdec0e3101175bee62c0a8511803a0d0e98e1142fb9b5f2a70eb2a7d953"
+      "bytes": 22566,
+      "sha256": "638c3651e04dae8a73d57e7c556d471ec53849f42fd74f3e5cd1192b6f948829"
     },
     "src/digifly_app/ui/package_smoke.py": {
       "bytes": 6000,
@@ -938,8 +938,8 @@
       "sha256": "ed7546fc4ac45fbc4f11648e766b79225c56ab9f746adbe9ad493f0b072441d2"
     },
     "src/digifly_app/ui/package_neuron_smoke.py": {
-      "bytes": 9932,
-      "sha256": "e8b6e02ce034e0fea5e61dae4c7eebd3096d983f1b7ca7d1818cee67771109f5"
+      "bytes": 10161,
+      "sha256": "e61bbfc6e0dbc12e6cbde0161cefdff1cd483ddad3ac4b012a8db47fcdbe936f"
     },
     "src/digifly_app/core/pdcm_campaign_results.py": {
       "bytes": 41516,
@@ -1070,8 +1070,8 @@
       "sha256": "5ce48c5b6a752cf641ec1e056723f0e6f3799b0c3431cd038674f209d5eaf929"
     },
     "src/digifly_app/core/experiment.py": {
-      "bytes": 11422,
-      "sha256": "41f2a0652e0acb3d57389642b9609872000881b206668d038e46d1aba636d183"
+      "bytes": 13639,
+      "sha256": "cf7ad5ae6f917ab4884e639b47fb083a822a3ee9463060eab6d7685bac45e74c"
     },
     "src/digifly_app/core/result_voltage.py": {
       "bytes": 28872,
@@ -1198,8 +1198,8 @@
       "sha256": "e41e4d9230dc482caf63f45ea19039cf5b54d9bd9df9629d90807471f10f4eaa"
     },
     "src/digifly_app/engines/generic_experiment.py": {
-      "bytes": 87861,
-      "sha256": "48c096070cd095c64593f2db559d07dc87c67a48f3f5c80b0827850ddad938e6"
+      "bytes": 88230,
+      "sha256": "70a2654933cc57fa53b69b2493cbbdfbe45beef8d71540ead17030d48ac0f13b"
     },
     "src/digifly_app/engines/base.py": {
       "bytes": 1159,
@@ -1437,9 +1437,9 @@
       "bytes": 1272,
       "sha256": "d25f643ff90083706aadf4f2f992183d2d267289b9e38e542fca7439b74c1ebc"
     },
-    "docs/RELEASE_0.2.1.md": {
-      "bytes": 522,
-      "sha256": "0863c30d5bfe6f2eeb3bcd303e1e36ed96efe137e818faf8ab1c93cb2639660f"
+    "docs/RELEASE_0.2.2.md": {
+      "bytes": 648,
+      "sha256": "61bf2d4295c3624ca320f6f5e3fdc6eb9bb1e7b7a4d690d8b09614842a69b04c"
     }
   }
 }
