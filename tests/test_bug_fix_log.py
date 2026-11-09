@@ -32,7 +32,7 @@ def test_readme_distinguishes_current_bounded_support_from_older_milestones():
     assert 'BMTK also rejects electrical contacts' not in body
     assert 'chemical-only soma subset' not in body
     assert 'https://github.com/Saint-Sam/Digifly-Application/releases)' in body
-    assert 'explicitly assigned to MANC v1.2.1' in body
+    assert 'MANC v1.2.1 connectivity table in Parquet format' in body
     assert 'Escape-SIZ comparison has an unresolved voltage mismatch.' in body
     assert 'Windows 11 testing is still' in body
     assert 'Morphology voltage' in body and 'soma-only recordings' in body

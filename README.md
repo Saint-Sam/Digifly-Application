@@ -46,15 +46,18 @@ The main pages follow the same workflow:
 
 ## Data and saved experiments
 
-SWCs, simulator installations and run data stay outside the application.
-Each connectome release has a shared SWC library organized by family, type and
-neuron ID. Existing neurons are kept unless you approve replacement. Local
-library shortcuts remember folders stored elsewhere on the device.
+Your neuron files, simulator installations and experiment results are saved
+outside the app. Downloaded SWCs are grouped by connectome and release, then by
+family, type and neuron ID. Digifly asks before replacing a neuron you've already
+downloaded. If your SWCs are stored elsewhere, link the folder once and the app
+will remember it.
 
-Connectivity is stored by connectome and release. The included Windows MANC
-connectivity Parquet is explicitly assigned to MANC v1.2.1. SWCs and contact
-locations are acquired separately. Saved runs retain their circuit, experiment
-settings and recordings.
+Connection tables are kept with their connectome and release. The Windows
+download includes a MANC v1.2.1 connectivity table in Parquet format; download
+neuron skeletons and individual synapse locations separately.
+
+Each saved run includes the circuit, settings and recordings, so you can reopen
+it in **Results** to review the traces and replay.
 
 ## Current support
 
