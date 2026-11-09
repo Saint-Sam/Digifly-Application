@@ -5,59 +5,58 @@
 </p>
 
 Digifly Workstation is a desktop app for building Drosophila neural circuits from
-connectome data and running electrophysiology experiments. Download neurons from
-neuPrint, edit their membrane properties and connections, then inspect voltage
-propagation, spike events and recorded currents.
+connectome data and running electrophysiology experiments. It supports neuPrint
+downloads, membrane and connection editing, and analysis of voltage propagation,
+spike events and recorded currents.
 
 [Download 0.2.2 for macOS or Windows](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.2)
 
 ## Install
 
-- **macOS:** Apple silicon, macOS 14 or later. Extract the `macOS-arm64` ZIP
-  and open Digifly Workstation. Current builds are ad-hoc signed; Developer ID
+- **macOS:** Apple silicon, macOS 14 or later. Digifly Workstation runs from the
+  extracted `macOS-arm64` ZIP. Current builds are ad-hoc signed; Developer ID
   signing and notarization are pending.
-- **Windows:** Extract the `Windows-x86_64` ZIP and open
-  `Digifly Workstation.exe`. Keep the extracted files together. An offline
-  NEURON installation is included and installed with your approval.
+- **Windows:** `Digifly Workstation.exe` runs from the extracted
+  `Windows-x86_64` ZIP, with the accompanying files in the same folder.
+  An offline NEURON installation is included; setup requires confirmation.
 
-The app includes its interface runtime. On Mac, select an existing NEURON
-installation or use the runtime setup in **Workspace**.
+The app includes its interface runtime. On Mac, **Workspace** supports an
+existing NEURON installation or a new installation through runtime setup.
 
 ## First experiment
 
-Open **First experiment** in the app for a guided Male CNS v1.0 experiment with
-DNp01, TTMn, PSI and DLMn. The guide covers neuron downloads, NEURON setup, SWC
-repairs and the first run.
+The **First experiment** tutorial covers a Male CNS v1.0 circuit with DNp01,
+TTMn, PSI and DLMn, from neuron downloads and NEURON setup through SWC repairs
+and the first run.
 
 The main pages follow the same workflow:
 
-1. **Data Library:** Choose a connectome and release. Download SWCs and
-   connectivity from neuPrint with your account token, or link a local SWC
-   folder. Review any suggested morphology repairs before saving a repaired copy.
-2. **Circuit Builder:** Select neurons and inspect their skeletons. Set membrane
-   properties, channel densities and connection parameters for the circuit,
-   individual neurons or selected compartments.
-3. **Experiment Builder:** Choose the simulator, stimulus, conditions and
-   recording settings. Check the draft, resolve any readiness errors, then run.
-4. **Results:** Open the saved experiment to inspect traces and replay.
-   Select **Morphology voltage** for measured voltage colors. Choose
-   **All compartments** when setting up the recording to capture propagation
-   along the full skeleton; soma-only recordings color the recorded soma edges.
+1. **Data Library:** SWC and connectivity downloads are organized by connectome
+   and release. neuPrint access uses an account token. Local SWC folders can be
+   linked, and suggested morphology repairs are reviewed before a copy is saved.
+2. **Circuit Builder:** Neuron selection and skeleton views accompany membrane,
+   channel and connection settings. Changes can apply to the circuit, individual
+   neurons or selected compartments.
+3. **Experiment Builder:** Simulator, stimulus, condition and recording controls
+   define each experiment. Readiness checks identify settings that prevent a run.
+4. **Results:** Saved experiments include traces and replay. **Morphology voltage**
+   displays measured voltages on the skeleton. **All compartments** recording
+   captures propagation along the full skeleton; soma-only recordings color the
+   recorded soma edges.
 
 ## Data and saved experiments
 
-Your neuron files, simulator installations and experiment results are saved
-outside the app. Downloaded SWCs are grouped by connectome and release, then by
-family, type and neuron ID. Digifly asks before replacing a neuron you've already
-downloaded. If your SWCs are stored elsewhere, link the folder once and the app
-will remember it.
+Digifly stores neuron files, simulator installations and experiment results
+outside the application. Each connectome release has an SWC library organized by
+family, type and neuron ID. Existing neurons are replaced only after confirmation.
+Links to SWC folders elsewhere on the device are saved between sessions.
 
-Connection tables are kept with their connectome and release. The Windows
-download includes a MANC v1.2.1 connectivity table in Parquet format; download
-neuron skeletons and individual synapse locations separately.
+Connectivity tables are stored by connectome and release. The Windows package
+includes a MANC v1.2.1 connectivity table in Parquet format. Neuron skeletons and
+individual synapse locations are downloaded separately.
 
-Each saved run includes the circuit, settings and recordings, so you can reopen
-it in **Results** to review the traces and replay.
+Saved runs contain the circuit, experiment settings and recordings. Traces and
+voltage replay are available in **Results**.
 
 ## Current support
 
@@ -79,25 +78,25 @@ Escape-SIZ comparison has an unresolved voltage mismatch.
 
 Planned additions:
 
-- Download and install custom ion channels from Channelpedia and ModelDB in Circuit Builder.
+- Custom ion-channel downloads and installation from Channelpedia and ModelDB in Circuit Builder.
 - Leaky integrate-and-fire models, with point-neuron and compartment-based options.
 - Additional simulators, including Brian2.
 
 ## Development
 
-With Python 3.11 or later installed, run:
+Development requires Python 3.11 or later. Setup and launch commands:
 
 ```bash
 ./scripts/setup_dev.sh
 ./scripts/run_dev.sh
 ```
 
-See [Contributing](CONTRIBUTING.md) for tests,
-[Architecture](docs/ARCHITECTURE.md) for the code structure and
-[Packaging](docs/PACKAGING_BOUNDARY.md) for distribution requirements.
+[Contributing](CONTRIBUTING.md) covers tests,
+[Architecture](docs/ARCHITECTURE.md) describes the code structure, and
+[Packaging](docs/PACKAGING_BOUNDARY.md) documents distribution requirements.
 
 ## License
 
 Digifly's original code, documentation and interface assets use the
 [MIT License](LICENSE). Third-party software, models and datasets retain their
-own licenses; see [Third-party notices](THIRD_PARTY_NOTICES.md).
+own licenses, listed in [Third-party notices](THIRD_PARTY_NOTICES.md).
