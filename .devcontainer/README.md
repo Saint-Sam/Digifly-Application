@@ -1,7 +1,8 @@
 # Workstation in GitHub Codespaces
 
 This configuration runs the native Qt app from DigiFly Workstation v0.2.3.
-The startup command starts the desktop and noVNC on forwarded port 6080.
+The container starts the desktop and noVNC on forwarded port 6080. Startup
+messages also appear in `~/.local/state/digifly-browser/session.log`.
 Keep port 6080 **Private**. The Codespaces HTTPS tunnel is the authentication
 boundary for the session. The VNC listener is internal to the container.
 

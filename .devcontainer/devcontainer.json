@@ -5,12 +5,18 @@
     "context": ".."
   },
   "remoteUser": "digifly",
-  "forwardPorts": [6080],
+  "forwardPorts": [
+    6080
+  ],
   "portsAttributes": {
-    "6080": { "label": "DigiFly Workstation", "onAutoForward": "notify" }
+    "6080": {
+      "label": "DigiFly Workstation",
+      "onAutoForward": "notify"
+    }
   },
   "otherPortsAttributes": {
     "onAutoForward": "ignore"
   },
-  "postStartCommand": "mkdir -p ~/.local/state/digifly-browser && (nohup /usr/local/bin/run-digifly > ~/.local/state/digifly-browser/session.log 2>&1 </dev/null &)"
+  "overrideCommand": false,
+  "init": true
 }

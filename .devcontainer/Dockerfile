@@ -29,3 +29,4 @@ RUN chmod 755 /usr/local/bin/run-digifly
 USER digifly
 ENV DISPLAY=:99 QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1 PYTHONUNBUFFERED=1
 EXPOSE 6080
+CMD ["/usr/local/bin/run-digifly"]
