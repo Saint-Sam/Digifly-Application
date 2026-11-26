@@ -1,3 +1,0 @@
-# Frozen scientific sources and license hashes bind exact bytes on every OS.
-# Windows must not rewrite LF to CRLF during checkout.
-* -text

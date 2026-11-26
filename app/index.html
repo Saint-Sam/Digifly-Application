@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DigiFly research and desktop workbench for fruit fly neural simulations.">
+  <meta name="theme-color" content="#1d1b1f">
+  <title>DigiFly App · DigiFly</title>
+  <link rel="stylesheet" href="../assets/site.css">
+  <script defer src="../assets/site.js"></script>
+</head>
+<body class="page-app">
+  <a class="skip" href="#main">Skip to content</a>
+  <main id="main">
+<section class="hero" aria-labelledby="title">
+  <p class="eyebrow">DIGIFLY · DESKTOP WORKBENCH</p>
+  <h1 id="title">DigiFly App.<br><em>Inside the circuit.</em></h1>
+  <p>Launch the native DigiFly Workstation when you need it to browse circuits, configure experiments, and review recordings.</p>
+  <a class="action primary" href="#workbench">Open Workstation</a>
+</section>
+<section class="viewer instrument live-workbench" id="workbench" aria-labelledby="workbench-label" data-session-url="">
+  <div class="window-bar"><span aria-hidden="true">▥</span> <span id="workbench-label">DigiFly Workstation</span><span class="window-meta">v0.2.3</span></div>
+  <div class="session-notice" data-session-notice>
+    <p>Start or resume the private Workstation session on GitHub.</p>
+    <a class="action primary" href="https://codespaces.new/Saint-Sam/Digifly-Application/tree/browser-codespace?quickstart=1">Start or resume Workstation</a>
+    <a class="action system-button" href="https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.3">Get the desktop app</a>
+    <a class="action system-button" href="https://github.com/codespaces">Manage sessions</a>
+  </div>
+  <div class="session-launch" data-session-launch hidden>
+    <a class="action primary" data-session-link target="_blank" rel="noopener">Open full-window session</a>
+  </div>
+  <iframe data-session-frame loading="lazy" title="DigiFly Workstation remote desktop" allow="fullscreen" hidden></iframe>
+</section>
+</main>
+  <div class="taskbar">
+    <a class="task-home" href="../" aria-label="DigiFly home"><span aria-hidden="true">✳</span> DigiFly · home</a>
+    <nav aria-label="Main navigation"><a href="../">Home</a><a href="../app/" aria-current="page">DigiFly App</a><a href="../about/">About</a><a href="../contact/">Contact</a></nav>
+    <div class="page-tools" aria-label="Page tools"><a href="#workbench">Workstation</a><a data-session-link target="_blank" rel="noopener" hidden>Open in new tab</a></div>
+    <div class="task-tray"><time data-clock aria-label="Local time"></time><a class="task-cta" href="https://github.com/Saint-Sam/Digifly-Public">GitHub</a></div>
+  </div>
+</body>
+</html>
