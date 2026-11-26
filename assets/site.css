@@ -178,3 +178,9 @@ figcaption { padding: .4rem .55rem; font: .74rem/1.35 var(--mono); }
   .taskbar a, .taskbar button { min-height: 36px; }
   body { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
 }
+
+.session-connect { margin-top: .8rem; }
+.session-connect-controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+.session-connect input { flex: 1 1 18rem; min-width: 0; padding: .4rem .6rem; color: var(--ink); background: white; border: 1px solid #82937c; }
+.session-connect p:empty { display: none; }
+.session-launch { flex-wrap: wrap; gap: .4rem; }

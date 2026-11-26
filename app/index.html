@@ -21,13 +21,22 @@
 <section class="viewer instrument live-workbench" id="workbench" aria-labelledby="workbench-label" data-session-url="">
   <div class="window-bar"><span aria-hidden="true">▥</span> <span id="workbench-label">DigiFly Workstation</span><span class="window-meta">v0.2.3</span></div>
   <div class="session-notice" data-session-notice>
-    <p>Start or resume the private Workstation session on GitHub.</p>
+    <p>Start or resume the private Workstation session on GitHub. In your Codespace, open <strong>Ports</strong> and copy the private <strong>DigiFly Workstation</strong> address.</p>
     <a class="action primary" href="https://codespaces.new/Saint-Sam/Digifly-Application/tree/browser-codespace?quickstart=1">Start or resume Workstation</a>
     <a class="action system-button" href="https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.3">Get the desktop app</a>
     <a class="action system-button" href="https://github.com/codespaces">Manage sessions</a>
+    <form class="session-connect" data-codespace-form>
+      <label for="codespace-address">Private Codespaces port URL</label>
+      <div class="session-connect-controls">
+        <input id="codespace-address" name="address" type="url" placeholder="https://your-codespace-6080.app.github.dev" required>
+        <button class="action primary" type="submit">Connect Workstation</button>
+      </div>
+      <p data-connect-status role="status"></p>
+    </form>
   </div>
   <div class="session-launch" data-session-launch hidden>
     <a class="action primary" data-session-link target="_blank" rel="noopener">Open full-window session</a>
+    <a class="action system-button" data-codespace-site target="_blank" rel="noopener" hidden>Open site inside Codespace</a>
   </div>
   <iframe data-session-frame loading="lazy" title="DigiFly Workstation remote desktop" allow="fullscreen" hidden></iframe>
 </section>
