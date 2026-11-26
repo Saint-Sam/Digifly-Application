@@ -9,7 +9,7 @@ connectome data and running electrophysiology experiments. It supports neuPrint
 downloads, membrane and connection editing, and analysis of voltage propagation,
 spike events and recorded currents.
 
-[Download 0.2.2 for macOS or Windows](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.2)
+[Download 0.2.3 for macOS or Windows](https://github.com/Saint-Sam/Digifly-Application/releases/tag/v0.2.3)
 
 ## Install
 

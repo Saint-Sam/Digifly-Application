@@ -275,7 +275,7 @@ class ExperimentSpec:
             errors.append(f"Unsupported experiment schema {self.schema_version}.")
         if not self.name.strip():
             errors.append("Experiment name is required.")
-        if self.engine not in {"arbor", "neuron", "bmtk"}:
+        if self.engine not in {"arbor", "neuron", "bmtk", "point_hh", "reduced_hh"}:
             errors.append(f"Unsupported experiment engine {self.engine!r}.")
         if self.duration_ms <= 0:
             errors.append("Simulation duration must be positive.")

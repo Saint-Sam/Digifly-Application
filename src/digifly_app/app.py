@@ -124,6 +124,9 @@ def main() -> int:
                 result=1
             receipt_path.write_text(json.dumps(receipt,indent=2)+'\n')
             return result
+    if len(sys.argv) == 4 and sys.argv[1] == "--package-reduced-hh-test":
+        from digifly_app.ui.package_neuron_smoke import run_reduced_hh_package_smoke
+        return run_reduced_hh_package_smoke(Path(sys.argv[2]), Path(sys.argv[3]))
     if len(sys.argv) > 1 and sys.argv[1] == "--package-neuron-test":
         import argparse
         from digifly_app.ui.package_neuron_smoke import run_neuron_package_smoke

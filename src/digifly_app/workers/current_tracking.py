@@ -35,8 +35,8 @@ def check_mode(recording, engine="neuron", workers=1, integration_dt=None):
     mode = recording.get("current_tracking", "off")
     if mode not in {"off", "sparse", "full"}:
         raise ValueError("Choose Off, Sparse or Full current tracking")
-    if mode != "off" and (engine != "neuron" or int(workers) != 1):
-        raise ValueError("Current tracking currently requires NEURON and one experiment worker; no current setting is silently ignored")
+    if mode != "off" and (engine not in {"neuron", "point_hh"} or int(workers) != 1):
+        raise ValueError("Current tracking requires NEURON or Point HH and one experiment worker; no current setting is silently ignored")
     if mode != "off" and integration_dt is not None:
         ratio = float(recording["sample_dt_ms"]) / float(integration_dt)
         if not math.isfinite(ratio) or ratio < 1 or not math.isclose(ratio, round(ratio), rel_tol=1e-9, abs_tol=1e-9):

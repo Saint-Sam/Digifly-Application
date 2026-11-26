@@ -1359,15 +1359,19 @@ def _ramp_quadrature_record(engine: str, experiment: Mapping[str, Any], stimulus
         if neuron_id not in targets:
             continue
         mapped = _regional_sites(cell["regional_plan"], stimulus["target_region"], cell) if cell.get("regional") else [None]
-        amplitude = float(stimulus["amplitude_nA"])*float(condition.get("stimulus_scale",1.0))/len(mapped)
-        for site in mapped:
+        fractions = _area_weighted_fractions([float(site["surface_area_um2"]) for site in mapped]) if mapped[0] is not None else [1.0]
+        for site, fraction in zip(mapped, fractions):
+            amplitude = float(stimulus["amplitude_nA"])*float(condition.get("stimulus_scale",1.0))*fraction
             sites.append({"neuron_id":neuron_id,"source_node_id":site["source_node_id"] if site else None,
-                "site":"source-edge midpoint" if site else "soma-center", "amplitude_nA":amplitude,
+                "site":"source-edge midpoint" if site else "soma-center",
+                "membrane_area_um2":site["surface_area_um2"] if site else None,
+                "area_fraction":fraction, "amplitude_nA":amplitude,
                 "physical_envelope_ms_nA":_ramp_envelope(stimulus,amplitude),
                 "api_envelope_ms_nA":_arbor_ramp_envelope(stimulus,amplitude,dt,float(experiment["duration_ms"]),interval)
                     if engine == "arbor" else _ramp_envelope(stimulus,amplitude)})
     return {"condition":str(condition["name"]),"engine":engine,"physical_stimulus":copy.deepcopy(dict(stimulus)),
         "integration_dt_ms":dt,"arbor_epoch_interval_ms":interval,"quadrature":"physical midpoint current",
+        "site_distribution":"Total current is apportioned in proportion to target membrane area.",
         "api_time_offset_ms":0.0,"nominal_midpoint_offset_ms":dt/2,
         "api_envelope_kind":"Arbor i_clamp envelope" if engine == "arbor" else "Equivalent continuous Vector.play plus IClamp duration cutoff",
         "mapping":"Arbor E(t_left)=I(t_left+(t_right-t_left)/2) at exact native grid knots; NEURON continuous Vector.play evaluates I(t_midpoint)",
@@ -1652,6 +1656,40 @@ def _validate_aggregate_chemical_contact(contact: Mapping[str, Any], policy: Map
         raise ValueError("Aggregate chemical strength differs from its declared count model")
 
 
+def _validate_reduced_hh(circuit, experiment, edge_manifest):
+    """Reduced HH restrictions shared by readiness and the worker."""
+    if (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
+            or edge_manifest.get("electrical_edges")):
+        raise ValueError("Reduced HH supports chemical synapses. Select gap-junction mode None or use NEURON.")
+    if any(_active_native_channels(m) or m.get("replace_builtin_hh") for m in _native_payloads(circuit)):
+        raise ValueError("Reduced HH uses classic HH channels. Choose NEURON for native or replacement channels.")
+    recording = experiment["recording"]
+    if recording.get("current_tracking", "off") != "off":
+        raise ValueError("Choose NEURON for current tracking, or set Current tracking to Off.")
+    if int(experiment.get("workers", 1)) != 1:
+        raise ValueError("Reduced HH requires one experiment worker.")
+    dt = float(experiment["integration_dt_ms"])
+    duration = float(experiment["duration_ms"])
+    sample = float(recording["sample_dt_ms"])
+    if not 0 < dt <= sample <= duration or not all(
+        math.isfinite(value) and math.isclose(value / dt, round(value / dt), abs_tol=1e-8, rel_tol=0)
+        for value in (duration, sample)
+    ):
+        raise ValueError("Reduced HH requires duration and recording interval to be whole multiples of the integration step.")
+    for contact in edge_manifest.get("chemical_edges") or ():
+        steps = float(contact["delay_ms"]) / dt
+        if not math.isfinite(steps) or steps < 1 or not math.isclose(steps, round(steps), abs_tol=1e-8, rel_tol=0):
+            raise ValueError("Reduced HH requires chemical delays to be whole multiples of the integration step.")
+    if dict(edge_manifest.get("chemical_synapse_policy") or {}).get("source_mode", "soma_threshold") != "soma_threshold":
+        raise ValueError("Reduced HH uses soma-threshold chemical release.")
+
+
+def _validate_reduced_mesh(plan):
+    if any(site["nseg"] != 1 or len(site["path"]) != 2 or site["uses_degenerate_stub"]
+           for site in plan["sections"]):
+        raise ValueError("Reduced HH requires nonzero SWC edges with one solver segment per edge. Use NEURON for this morphology.")
+
+
 def _validate_request_capabilities(
     engine: str,
     circuit: Mapping[str, Any],
@@ -1660,13 +1698,15 @@ def _validate_request_capabilities(
 ) -> None:
     """Defend the fail-closed execution boundary inside the worker process."""
 
-    if engine not in {"arbor", "neuron"}:
+    if engine not in {"arbor", "neuron", "reduced_hh"}:
         raise ValueError(f"Unsupported generic experiment engine: {engine}")
     neuron_ids = tuple(str(value) for value in circuit.get("neuron_ids") or ())
     if not neuron_ids:
         raise ValueError("The generic worker requires at least one neuron")
     if len(set(neuron_ids)) != len(neuron_ids):
         raise ValueError("The generic worker received duplicate neuron IDs")
+    if engine == "reduced_hh":
+        _validate_reduced_hh(circuit, experiment, dict(edge_manifest or {}))
     if len(neuron_ids) > 1:
         manifest = dict(edge_manifest or {})
         if int(manifest.get("schema_version", 0)) != EDGE_MANIFEST_SCHEMA_VERSION:
@@ -2199,9 +2239,11 @@ def _arbor_network_traces(
             amplitude = float(stimulus["amplitude_nA"]) * float(
                 condition.get("stimulus_scale", 1.0)
             )
-            sites = [f'(on-components 0.5 (tag {1_000_000+s["node_id"]}))' for s in _regional_sites(plan, stimulus["target_region"], cell_data)] if plan else ['"soma-center"']
-            for site in sites:
-              for clamp in _arbor_current_clamps(arbor, stimulus, amplitude/len(sites),
+            regional_sites = _regional_sites(plan, stimulus["target_region"], cell_data) if plan else [None]
+            sites = [f'(on-components 0.5 (tag {1_000_000+s["node_id"]}))' if s else '"soma-center"' for s in regional_sites]
+            fractions = _area_weighted_fractions([float(s["surface_area_um2"]) for s in regional_sites]) if regional_sites[0] is not None else [1.0]
+            for site, fraction in zip(sites, fractions):
+              for clamp in _arbor_current_clamps(arbor, stimulus, amplitude*fraction,
                       integration_dt_ms=float(experiment["integration_dt_ms"]), duration_ms=float(experiment["duration_ms"]),
                       epoch_interval_ms=_arbor_ramp_epoch_interval(edge_manifest,chemical_enabled)):
                 decor.place(
@@ -2638,7 +2680,8 @@ def _regional_execution(circuit: Mapping[str, Any], experiment: Mapping[str, Any
     # measurable geometry-dependent error during spikes.
     membranes = [dict(circuit.get("membrane") or {}),
                  *[dict(x) for x in dict(circuit.get("neuron_mechanism_overrides") or {}).values()]]
-    return bool(circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
+    return bool(experiment.get("engine") == "reduced_hh"
+                or circuit.get("compartment_overrides") or circuit.get("compartment_mechanism_overrides")
                 or dict(circuit.get('connectome') or {}).get('pair_graph_path')
                 or dict(circuit.get("chemical_synapse_policy") or {}).get("placement_policy") in {"aggregate_post_soma", "aggregate_post_ais"}
                 or (dict(circuit.get("gap_junction_policy") or {}).get("mode", "none") != "none"
@@ -2742,6 +2785,10 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
         node_id, kind, _, _, _, _, parent_id = row
         parent = by_id.get(parent_id, row)
         length = math.dist(parent[2:5], row[2:5])
+        cable_length = length if length > 0.0 else 0.001
+        surface_area_um2 = math.pi * (max(float(parent[5]), 0.0) + max(float(row[5]), 0.0)) * math.hypot(
+            cable_length, float(row[5]) - float(parent[5])
+        )
         hh = {**base_hh, **dict(dict(cell.get("compartment_overrides") or {}).get(str(node_id)) or {})}
         if set(hh) - set(base_hh):
             raise ValueError("Unknown per-compartment HH parameter")
@@ -2764,7 +2811,8 @@ def _regional_plan(rows: Sequence[Any], cell: Mapping[str, Any]) -> dict[str, An
                          "section_group": "soma" if soma else "axon" if kind == 2 else "dend" if kind != 4 else "apic",
                          "path": [parent_id, node_id] if parent_id in by_id else [node_id],
                          "node_id": node_id, "source_node_id": int(source_by_run.get(str(node_id), node_id)),
-                         "length_um": max(length, .001), "nseg": _neuron_nseg_for_length(max(length, .001), target_spacing_um=ELECTRICAL_CONTACT_TARGET_SEGMENT_UM if node_id in contact_edges else None),
+                         "length_um": max(length, .001), "surface_area_um2": surface_area_um2,
+                         "nseg": _neuron_nseg_for_length(max(length, .001), target_spacing_um=ELECTRICAL_CONTACT_TARGET_SEGMENT_UM if node_id in contact_edges else None),
                          "parent_section_id": index.get(parent_id), "parent_section_pos": 1.0,
                          "uses_degenerate_stub": length == 0, "is_target_soma": node_id == target,
                          "soma": soma, "ais_proxy": node_id in ais, "is_filler": node_id in filler_edges,
@@ -2816,10 +2864,21 @@ def _regional_sites(plan: Mapping[str, Any], region: str, cell: Mapping[str, Any
     return sites
 
 
+def _area_weighted_fractions(areas_um2: Sequence[float]) -> list[float]:
+    """Split a total current by membrane area to apply uniform current density."""
+    areas = [float(area) for area in areas_um2]
+    if not areas or any(not math.isfinite(area) or area < 0.0 for area in areas):
+        raise ValueError("Stimulus target areas must be finite nonnegative values")
+    total = math.fsum(areas)
+    if total <= 0.0:
+        raise ValueError("Stimulus targets have no positive membrane surface area")
+    return [area / total for area in areas]
+
+
 def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, Any]) -> int:
     """Bound actual backend reports, separately from integration work.
 
-    NEURON records at sample_dt_ms; BioNet retains its integration-step report.
+    NEURON and Reduced HH record at sample_dt_ms; BioNet retains its integration-step report.
     Arbor additionally enforces its separate dense native-probe forecast.
     """
     _require_neuron_segment_budget(0, sum(int(p["estimated_nseg"]) for p in plans.values()), segment_budget=NEURON_MAX_TOTAL_SEGMENTS)
@@ -2831,11 +2890,12 @@ def _regional_report_budget(plans: Mapping[str, Any], experiment: Mapping[str, A
     interval = float(recording.get("sample_dt_ms", experiment["integration_dt_ms"]))
     if not math.isfinite(interval) or interval <= 0:
         raise ValueError("Recording sample interval must be finite and positive")
-    report_interval = interval if engine == "neuron" else float(experiment["integration_dt_ms"])
+    sampled_engine = engine in {"neuron", "reduced_hh"}
+    report_interval = interval if sampled_engine else float(experiment["integration_dt_ms"])
     samples = math.ceil(float(experiment["duration_ms"])/report_interval)+1
     trials = int(experiment.get("repetitions", 1))*sum(bool(c.get("enabled", True)) for c in experiment.get("conditions") or ({},))
     values = columns*samples*trials
-    native_limit = _storage.MAX_PLAYBACK_VOLTAGE_SAMPLES if engine == "neuron" else 25_000_000
+    native_limit = _storage.MAX_PLAYBACK_VOLTAGE_SAMPLES if sampled_engine else 25_000_000
     if recording.get("record_voltage", True) and recording.get("target_region") == "all":
         edges = sum(len(plans[n].get("sections") or ()) or int(plans[n]["estimated_nseg"])
                     for n in targets)
@@ -3202,10 +3262,13 @@ def _neuron_network_traces(
         if cells[neuron_id].get("regional"):
             specs = _regional_sites(built[neuron_id]["regional_plan"], stimulus["target_region"], cells[neuron_id])
             sites = [(built[neuron_id]["sections"][s["section_id"]], .5) for s in specs]
+            areas = [math.fsum(float(h.area(seg.x, sec=section)) for seg in section) for section, _x in sites]
+            site_fractions = _area_weighted_fractions(areas)
         else:
             sites = [built[neuron_id]["soma_site"]]
-        for section, x in sites:
-            clamps.extend(_neuron_current_clamps(h, section(float(x)), stimulus, amplitude/len(sites)))
+            site_fractions = [1.0]
+        for (section, x), fraction in zip(sites, site_fractions):
+            clamps.extend(_neuron_current_clamps(h, section(float(x)), stimulus, amplitude*fraction))
 
     synapses: list[Any] = []
     netcons: list[Any] = []
@@ -3678,6 +3741,8 @@ def run(request_path: Path) -> Path:
     experiment = dict(request["experiment"])
     circuit = dict(request["circuit"])
     engine = str(request["engine"])
+    if engine == "reduced_hh" and experiment.get("engine") != engine:
+        raise ValueError("Reduced HH request and experiment engines differ.")
     edge_manifest = _load_edge_manifest(request, output_dir)
     _validate_request_capabilities(engine, circuit, experiment, edge_manifest)
     _validate_edge_source_identity(edge_manifest)
@@ -3779,6 +3844,8 @@ def run(request_path: Path) -> Path:
             simulation_cells[neuron_id]["electrical_contact_run_node_ids"] = _electrical_contact_run_nodes(edge_manifest, neuron_id, node_map)
             simulation_cells[neuron_id]["regional"] = True
             regional_plan = _regional_plan(normalized_rows, simulation_cells[neuron_id])
+            if engine == "reduced_hh":
+                _validate_reduced_mesh(regional_plan)
             simulation_cells[neuron_id]["regional_plan"] = regional_plan
             for contact in [*chemical_contacts, *electrical_contacts]:
                 if contact.get('located_contact'):
@@ -3786,7 +3853,7 @@ def run(request_path: Path) -> Path:
                         if str(contact[end+'_id']) == neuron_id:
                             contact.setdefault('contact_cv',{})[end] = _contact_cv_details(contact,end,regional_plan,
                                 normalized_rows,node_map)
-            _atomic_json(cell_dir / "regional_map.json", _storage.shared_regional_materials(regional_plan) if engine=='neuron' else regional_plan,
+            _atomic_json(cell_dir / "regional_map.json", _storage.shared_regional_materials(regional_plan) if engine in {"neuron", "reduced_hh"} else regional_plan,
                          compact=True)
         morphology_metadata[neuron_id] = {
             "run_path_component": path_component,
@@ -3881,10 +3948,24 @@ def run(request_path: Path) -> Path:
     current_indices = []
     current_values = 0
     thread_receipts = []
+    if engine == "reduced_hh":
+        try:
+            from . import reduced_hh_solver as reduced
+        except ImportError:
+            spec = importlib.util.spec_from_file_location("digifly_reduced_hh_solver", Path(__file__).with_name("reduced_hh_solver.py"))
+            if spec is None or spec.loader is None:
+                raise ImportError("The Reduced HH solver file is missing.")
+            reduced = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(reduced)
+
+        def check_reduced_cancel():
+            if (output_dir / "cancel.requested").is_file():
+                raise _trials.TrialCancelled("Reduced HH run cancelled.")
+
     for condition_index, condition in enumerate(conditions):
         condition_cells = _condition_cells(simulation_cells, condition)
         condition_edges = _condition_edges(resolved_edge_manifest, tuple(condition_cells))
-        if stimulus.get("waveform") == "ramp":
+        if stimulus.get("waveform") == "ramp" and engine != "reduced_hh":
             ramp_receipts.append(_ramp_quadrature_record(engine,experiment,stimulus,condition,condition_cells,condition_edges))
         receipt = {"condition":str(condition["name"]),
             "active_neuron_ids":list(condition_cells), "disabled_neuron_ids":list(condition.get("disabled_neuron_ids") or ()),
@@ -3893,7 +3974,7 @@ def run(request_path: Path) -> Path:
             "scale_policy":"Multiply conductances after default/neuron/source-edge precedence; kinetics/reversals/source hashes unchanged",
             "cells": {n:{"hh":c["hh"], "membrane":c["membrane"], "regional_plan":c.get("regional_plan")} for n,c in condition_cells.items()},
             "edge_manifest":condition_edges}
-        if engine == 'neuron':
+        if engine in {"neuron", "reduced_hh"}:
             # The shared regional maps already contain the complete base edge
             # settings. Conditions record their explicit transformations once.
             receipt.pop('cells')
@@ -3902,6 +3983,8 @@ def run(request_path: Path) -> Path:
             receipt['edge_manifest'] = resolved_edge_path.name
         condition_receipts.append(receipt)
         for repetition in range(1, int(experiment["repetitions"]) + 1):
+            if engine == "reduced_hh":
+                check_reduced_cancel()
             if engine=="neuron" and int(experiment.get("workers",1))>1 and (output_dir/"cancel.requested").is_file():
                 raise _trials.TrialCancelled("Independent trial result aggregation cancelled by app request")
             _emit(
@@ -3928,6 +4011,12 @@ def run(request_path: Path) -> Path:
                 else:
                     traces = {(row["neuron_id"],row["compartment_id"]) if row["compartment_id"] else row["neuron_id"]:
                               (row["times"],row["voltages"]) for row in result["traces"]}
+            elif engine == "reduced_hh":
+                traces, runtime_version, detail = reduced.run_condition(
+                    condition_cells, experiment, stimulus, condition, condition_edges,
+                    sys.modules[__name__], check_reduced_cancel,
+                )
+                receipt.setdefault("reduced_hh_trials", []).append({"repetition": repetition, **detail})
             elif engine == "arbor" and (
                 len(neuron_ids) > 1 or chemical_contacts or electrical_contacts or _regional_execution(circuit, experiment)
             ):
@@ -4039,8 +4128,9 @@ def run(request_path: Path) -> Path:
             completed += 1
 
     conditions_path = output_dir / "condition_execution.json"
-    if engine == 'neuron':
-        _atomic_json(output_dir/'neuron_thread_execution.json',{'schema':'digifly-neuron-threads-v1','trials':thread_receipts})
+    if engine == "neuron":
+        _atomic_json(output_dir/"neuron_thread_execution.json", {"schema": "digifly-neuron-threads-v1", "trials": thread_receipts})
+    if engine in {"neuron", "reduced_hh"}:
         _atomic_json(output_dir/'model_settings.json', {
             'schema':'digifly-shared-model-settings-v1',
             'cells':{n:{k:v for k,v in c.items() if k!='regional_plan'} for n,c in simulation_cells.items()},
@@ -4050,7 +4140,7 @@ def run(request_path: Path) -> Path:
             'condition_policy':'Select active IDs; apply mechanism_scales after cell/source-edge precedence with _condition_cells; filter all incident contacts with _condition_edges.',
             'worker_sha256':_sha256(Path(__file__)),
         })
-    _atomic_json(conditions_path, {"schema_version":2 if engine=='neuron' else 1, "conditions":condition_receipts})
+    _atomic_json(conditions_path, {"schema_version": 2 if engine in {"neuron", "reduced_hh"} else 1, "conditions": condition_receipts})
     if ramp_receipts:
         _atomic_json(output_dir/"stimulus_quadrature.json", {"schema":"digifly-ramp-quadrature-v1",
             "source_stimulus_unchanged":True,"output_timestamp_adjustment_ms":0.0,"conditions":ramp_receipts,
@@ -4061,7 +4151,7 @@ def run(request_path: Path) -> Path:
                 "neuron_midpoint_evaluation":"https://github.com/neuronsimulator/nrn/blob/9.0.1/src/nrnoc/fadvance.cpp#L470"}})
 
     trace_path = output_dir / "voltage_traces.csv"
-    if engine == 'neuron' and experiment['recording'].get('record_voltage',True):
+    if engine in {"neuron", "reduced_hh"} and experiment["recording"].get("record_voltage", True):
         _emit('saving','Saving binary voltage recording')
         trace_path = trace_rows.write_binary(output_dir)
     else:
@@ -4092,12 +4182,13 @@ def run(request_path: Path) -> Path:
         {"kind": "document", "path": request_path.name, "label": "Resolved worker request"},
     ]
     artifacts.extend(morphology_artifacts)
-    if engine == 'neuron':
+    if engine in {"neuron", "reduced_hh"}:
         artifacts.append({'kind':'document','path':'model_settings.json','label':'Shared model settings'})
+    if engine == "neuron":
         artifacts.append({'kind':'document','path':'neuron_thread_execution.json','label':'NEURON solver thread allocation and timings'})
-        if trace_path.name == 'ready.json':
-            artifacts.extend({'kind':'document','path':f'voltage/{name}','label':label} for name,label in
-                (('index.jsonl','Voltage trace and clock index'),('values.bin','Float64 voltage samples')))
+    if trace_path.name == "ready.json":
+        artifacts.extend({"kind": "document", "path": f"voltage/{name}", "label": label} for name, label in
+            (("index.jsonl", "Voltage trace and clock index"), ("values.bin", "Float64 voltage samples")))
     if current_indices:
         _atomic_json(output_dir / "current_recording.json", {
             "schema": "digifly-current-recording-v1",
@@ -4165,6 +4256,10 @@ def run(request_path: Path) -> Path:
                 "NEURON total segment safety limit": NEURON_MAX_TOTAL_SEGMENTS,
             }
         )
+    if engine == "reduced_hh":
+        metadata["Cable grouping length cap (µm)"] = reduced.MAX_GROUP_LENGTH_UM
+        metadata["Voltage mapping"] = "Source edges in a group share one voltage trace."
+        metadata["Stimulus integration"] = "Current evaluated at the midpoint of each integration step."
     if electrical_contacts:
         metadata.update(
             {
@@ -4228,6 +4323,8 @@ def run(request_path: Path) -> Path:
     summary_path = output_dir / "summary.json"
     if engine=="neuron" and int(experiment.get("workers",1))>1 and (output_dir/"cancel.requested").is_file():
         raise _trials.TrialCancelled("Independent trial result publication cancelled by app request")
+    if engine == "reduced_hh":
+        check_reduced_cancel()
     _atomic_json(summary_path, summary)
     manifest.update(
         {

@@ -274,6 +274,8 @@ cp "$stage_root/src/digifly_app/workers/result_storage.py" \
   "$stage_bundle/Contents/MacOS/digifly_app/workers/result_storage.py"
 cp "$stage_root/src/digifly_app/workers/current_tracking.py" \
   "$stage_bundle/Contents/MacOS/digifly_app/workers/current_tracking.py"
+cp "$stage_root/src/digifly_app/workers/reduced_hh_solver.py" \
+  "$stage_bundle/Contents/MacOS/digifly_app/workers/reduced_hh_solver.py"
 cp "$stage_root/src/digifly_app/workers/pdcm_bionet_scalable_app_worker.py" \
   "$stage_bundle/Contents/MacOS/digifly_app/workers/pdcm_bionet_scalable_app_worker.py"
 cp "$stage_root/src/digifly_app/workers/pdcm_bionet_5pct_app_worker.py" \

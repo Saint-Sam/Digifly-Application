@@ -25,14 +25,14 @@ CONTROLS = (
 )
 OPTIONS = {
     "template_combo": ("blank", "pulse_train_comparison"),
-    "engine_combo": ("arbor", "neuron", "bmtk"),
+    "engine_combo": ("arbor", "neuron", "bmtk", "point_hh", "reduced_hh"),
     "stimulus_region": ("soma", "ais", "selected_compartments", "all"),
     "waveform_combo": ("pulse_train", "step", "ramp"),
     "recording_region": ("soma", "all", "ais", "selected_compartments"),
     "current_tracking": ("off", "sparse", "full"),
 }
 FACTORS = {
-    "engine": ("arbor", "neuron", "bmtk"),
+    "engine": OPTIONS["engine_combo"],
     "waveform": ("pulse_train", "step", "ramp"),
     "stimulus_region": ("soma", "ais", "selected_compartments", "all"),
     "recording_region": ("soma", "ais", "selected_compartments", "all"),
@@ -290,7 +290,8 @@ def check_settings_interactions(destination: Path, *, parent=None) -> dict:
                 page.disabled_neurons.setText("TTMn" if case["ablation"] == "type" else "ttmn_r")
             actual = page.config()
             from digifly_app.workers.current_tracking import check_mode
-            must_refuse = case["current_tracking"] != "off" and (case["engine"] != "neuron" or case["parallel"])
+            must_refuse = case["current_tracking"] != "off" and (
+                case["engine"] not in {"neuron", "point_hh"} or case["parallel"])
             try:
                 check_mode(actual.to_dict()["recording"], actual.engine, actual.workers, actual.integration_dt_ms)
             except ValueError:

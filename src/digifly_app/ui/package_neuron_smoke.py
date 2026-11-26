@@ -177,3 +177,101 @@ def run_neuron_package_smoke(destination: Path) -> int:
         stacks.close()
     (destination / "receipt.json").write_text(json.dumps(record, indent=2) + "\n", "utf-8")
     return 0 if record["ok"] else 1
+
+
+def run_reduced_hh_package_smoke(destination: Path, runtime: Path) -> int:
+    """Run a short Reduced HH experiment in the packaged GUI."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from digifly_app.core.app_settings import SETTINGS_ROOT_ENV, app_settings
+    from digifly_app.core.circuit import CircuitSpec, ConnectomeRef
+    from digifly_app.core.connectomes import NeuronRecord
+    from digifly_app.core.experiment import ExperimentSpec, StimulusSpec, ConditionSpec, RecordingSpec
+    from digifly_app.core.morphology import load_swc
+    from digifly_app.core.resource_profile import PROFILE_PATH_ENV, make_standalone_profile
+    from digifly_app.ui.student_readiness_check import capture_qt_callback_errors
+
+    destination = destination.resolve()
+    destination.mkdir(parents=True, exist_ok=False)
+    workspace = destination / "workspace"
+    profile = workspace / "config/resources.json"
+    make_standalone_profile(workstation_root=workspace).save(profile)
+    os.environ[PROFILE_PATH_ENV] = str(profile)
+    os.environ[SETTINGS_ROOT_ENV] = str(destination / "settings")
+    from digifly_app.ui.main_window import MainWindow, ORGANIZATION_NAME, APPLICATION_NAME
+
+    app = QApplication.instance() or QApplication([])
+    settings = app_settings(ORGANIZATION_NAME, APPLICATION_NAME)
+    settings.setValue("output_root", str(workspace / "runs"))
+    warning = QMessageBox.warning
+    warnings = []
+    QMessageBox.warning = lambda *args, **kwargs: warnings.append(str(args[1:])) or QMessageBox.StandardButton.Ok
+    outcome = {"ok": False, "engine": "reduced_hh", "playback": False}
+    window = None
+    try:
+        with capture_qt_callback_errors() as callbacks:
+            source = destination / "fixture.swc"
+            source.write_text(
+                "1 1 0 0 0 0.5 -1\n2 1 0 0 0.05 0.5 1\n3 2 0 0 0.10 0.1 2\n"
+                "4 2 0 0 0.15 0.1 3\n5 2 0 0 0.20 0.1 4\n6 2 0 0 0.25 0.1 5\n", "utf-8")
+            identity = hashlib.sha256(source.read_bytes()).hexdigest()
+            record = NeuronRecord("1", "IN", "Fixture", str(source), "test:v1")
+            morphology = load_swc(record)
+            circuit = CircuitSpec(connectome=ConnectomeRef("test:v1", "Fixture", str(destination)),
+                                  neuron_ids=("1",), morphology_sha256={"1": identity})
+            config = ExperimentSpec(
+                name="Reduced HH package check", engine="reduced_hh", duration_ms=2.0,
+                integration_dt_ms=0.01,
+                stimuli=(StimulusSpec(waveform="step", target_neuron_ids=("1",), delay_ms=0.2,
+                                     pulse_width_ms=0.6, amplitude_nA=0.003),),
+                recording=RecordingSpec(target_region="all", target_neuron_ids=("1",),
+                                        sample_dt_ms=0.05, make_plots=False),
+                conditions=(ConditionSpec(name="Control"),),
+            )
+            window = MainWindow()
+            window.show()
+            page = window.experiment_page
+            page.set_neuron_runtime(runtime)
+            page.set_circuit_snapshot(circuit, (morphology,))
+            page.set_config(config)
+            assert page.engine_combo.currentText() == "Reduced HH"
+            window.pages.setCurrentWidget(page)
+            page.run_button.click()
+            assert page._plan is not None and not warnings, warnings or page.validation_state.text()
+            assert _wait_until(lambda: page._process is None, 45)
+            result = window.results_page
+            assert _wait_until(lambda: not result.loading, 30)
+            assert result._voltage_table is not None, result.result_load_note.text()
+            assert result._voltage_table.sample_count == 205
+            assert result.voltage_morphology_button.isEnabled()
+            result.voltage_morphology_button.click()
+            assert result.activity_slider.isEnabled()
+            assert "grouped edges share a trace" in result.activity_method.text()
+            result.activity_slider.setValue(14)
+            run = Path(page._plan.working_directory)
+            summary = json.loads((run / "summary.json").read_text("utf-8"))
+            assert summary["engine"] == "reduced_hh" and summary["status"] == "complete"
+            assert hashlib.sha256(source.read_bytes()).hexdigest() == identity
+            series = result._voltage_table.series
+            voltages = [v for samples in series.values() for v in samples.values]
+            assert all(math.isfinite(v) for v in voltages) and max(voltages) - min(voltages) > 0.01
+            outcome.update(ok=True, playback=True, voltage_samples=len(voltages),
+                           engine_runtime=summary["metadata"]["Simulator version"],
+                           run_summary_sha256=hashlib.sha256((run / "summary.json").read_bytes()).hexdigest())
+            dispose_neuron_fixture(window, app)
+            window = None
+            assert not callbacks, callbacks
+    except Exception:
+        outcome.update(ok=False, error=traceback.format_exc())
+    finally:
+        if window is not None:
+            if window.experiment_page._process is not None:
+                window.experiment_page._process.kill()
+                window.experiment_page._process.waitForFinished(3000)
+                app.processEvents()
+            try:
+                dispose_neuron_fixture(window, app)
+            except Exception:
+                outcome.update(ok=False, shutdown_error=traceback.format_exc())
+        QMessageBox.warning = warning
+    (destination / "receipt.json").write_text(json.dumps(outcome, indent=2) + "\n", "utf-8")
+    return 0 if outcome["ok"] else 1

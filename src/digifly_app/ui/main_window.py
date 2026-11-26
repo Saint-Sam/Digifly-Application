@@ -2509,7 +2509,7 @@ class ResultsPage(QWidget):
         self._set_trace_view_expanded(False)
         self._set_result_circuit_mode(DISPLAY_MODE_FULL_SKELETONS)
         self._select_playback_tracks()
-        self.status_message.emit("Measured edge-center voltage playback; gray edges were not recorded")
+        self.status_message.emit(self.activity_method.text())
 
     def _show_spike_raster(self) -> None:
         if self.spike_raster.index is None and self.spike_raster.window is None:
@@ -2712,8 +2712,12 @@ class ResultsPage(QWidget):
         self.activity_play_button.setEnabled(enabled)
         self.activity_slider.setEnabled(enabled)
         if enabled:
+            reduced = (self._displayed_result is not None
+                       and self._displayed_result.metadata.get("Engine") == "reduced_hh")
             self.activity_method.setText(
-                "Measured edge-center voltage · blue −90 to red +50 mV (display clipped) · gray = unrecorded · temporal interpolation only within recorded support"
+                ("Reduced HH voltage · grouped edges share a trace · blue −90 to red +50 mV · gray = unrecorded"
+                 if reduced else
+                 "Measured edge-center voltage · blue −90 to red +50 mV (display clipped) · gray = unrecorded · temporal interpolation only within recorded support")
                 if self._morphology_voltage_active else "Inferred activity flow · soma spikes + SWC path distance"
             )
             self.activity_method.setToolTip(self.activity_method.text())

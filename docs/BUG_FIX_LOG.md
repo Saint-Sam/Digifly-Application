@@ -2761,6 +2761,16 @@ The initial inventory contains 301 UI construction sites; it does not mean
   refresh in both actual 0.2.2 packages. Package and updater checks pass for both
   platforms, with matching application source inputs.
 
+## DF-0146 to DF-0150: Point HH agreement and reduced cable simulation
+
+Point HH now uses tapered membrane area, combines passive and HH leak,
+applies the classic HH temperature factor, and normalizes the chemical
+conductance to the Exp2Syn peak. A one-state model still missed repeated
+motor output in the connected comparison. Reduced HH adds a grouped cable
+with separate soma and synaptic sites. Its 0.125 µm grouping passed all
+18 voltage and threshold comparisons on two three-cell MANC circuits.
+Results labels edges that share a trace.
+
 ## Maintenance and GitHub handoff
 
 For each new issue, record its symptom, cause when established, repair, before/

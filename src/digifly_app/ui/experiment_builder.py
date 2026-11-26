@@ -98,7 +98,7 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Choose a starting configuration. Blank keeps the generic defaults; templates populate app-owned controls without running a notebook."
     ),
     "engine": (
-        "The simulator backend expected to execute this experiment after its execution adapter passes validation."
+        "Point HH uses one voltage per neuron. Reduced HH uses classic HH on a grouped cable with mapped input, recording and chemical contact sites. Use NEURON for native channels, gap junctions or current tracking."
     ),
     "duration": "Total simulated biological time from start to finish, in milliseconds.",
     "integration_dt": (
@@ -119,13 +119,14 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
     "workers": (
         "Arbor: maximum CPU threads. NEURON/BioNet: maximum concurrent independent "
         "condition/repetition processes, limited by trial count, CPU and memory. "
-        "This does not split one network across workers or use MPI."
+        "Point HH uses one vectorized process and requires Workers = 1. "
+        "This does not split one connected network across workers or use MPI."
     ),
     "stimulus_targets": (
         "Neuron IDs or exact neuron types that receive this stimulus, separated by spaces or commas. Types such as DNp01 or TTMn resolve to every matching neuron in the loaded circuit. Leave blank to target every circuit neuron."
     ),
     "stimulus_region": (
-        "Morphological region where the execution adapter will place the injected current."
+        "NEURON, Arbor and BioNet place current on the mapped region. Point HH applies total current to its whole-cell state; the region label does not select a spatial site."
     ),
     "waveform": "Temporal shape of the injected current: pulse train, single square step, or ramp.",
     "amplitude": "Magnitude of the injected current in nanoamperes.",
@@ -168,10 +169,11 @@ EXPERIMENT_SETTING_HELP: dict[str, str] = {
         "Leave blank to record every circuit neuron."
     ),
     "recording_region": (
-        "Morphological region from which signals will be sampled. All compartments "
-        "records each mapped SWC edge midpoint, not a copy of soma voltage. Large "
-        "recordings and maps are saved with lossless compression; sample interval "
-        "and numeric precision are unchanged."
+        "NEURON, Arbor and BioNet sample the mapped morphology. All compartments "
+        "records each mapped SWC edge midpoint, not a copy of soma voltage. Point "
+        "HH saves one whole-cell trace regardless of this region label. Large "
+        "recordings and maps use lossless storage; sample interval and numeric "
+        "precision are unchanged."
     ),
     "signals": "Choose which simulator signals and events are saved for analysis.",
     "record_voltage": "Record membrane voltage traces from the selected neurons and region.",
@@ -375,6 +377,8 @@ class ExperimentBuilderPage(QWidget):
         self.engine_combo.addItem("Arbor", "arbor")
         self.engine_combo.addItem("NEURON", "neuron")
         self.engine_combo.addItem("BMTK / SONATA", "bmtk")
+        self.engine_combo.addItem("Point HH (fast)", "point_hh")
+        self.engine_combo.addItem("Reduced HH", "reduced_hh")
         self.name_availability = QLabel()
         self.name_availability.setObjectName("ExperimentNameAvailability")
         self.name_availability.setAccessibleName("Experiment name availability")

@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 from typing import Any, Iterable, Mapping
 
@@ -39,7 +40,8 @@ from digifly_app.core.process_environment import (
 GENERIC_EXPERIMENT_SCHEMA_VERSION = 1
 GENERIC_RESULT_SCHEMA_VERSION = 1
 EDGE_MANIFEST_SCHEMA_VERSION = 2
-SUPPORTED_ENGINES = {"arbor", "neuron", "bmtk"}
+SUPPORTED_ENGINES = {"arbor", "neuron", "bmtk", "point_hh", "reduced_hh"}
+NUMPY_ENGINE_LABELS = {"point_hh": "Point HH", "reduced_hh": "Reduced HH"}
 _SAFE_COMPONENT = re.compile(r"[^a-z0-9]+")
 _ARBOR_GAP_CATALOGUE_NAME = "digifly_gap"
 _ARBOR_GAP_CATALOGUE_FILE = "digifly_gap-catalogue.so"
@@ -81,7 +83,16 @@ def experiment_run_directory(output_root: str | Path, name: str) -> Path:
 
 
 def _runtime_check(engine: str, executable: Path, make_plots: bool) -> PreflightCheck:
-    if engine == "bmtk":
+    if engine in NUMPY_ENGINE_LABELS:
+        code = (
+            "import json, sys; import numpy as np; "
+            + ("import matplotlib; " if make_plots else "")
+            + "print(json.dumps({'python': sys.executable, 'numpy': np.__version__"
+            + (", 'matplotlib': matplotlib.__version__" if make_plots else "")
+            + "}))"
+        )
+        module = "NumPy"
+    elif engine == "bmtk":
         plotting = "import matplotlib; modules['matplotlib'] = matplotlib; " if make_plots else ""
         code = (
             "import importlib, json, pathlib, sys; "
@@ -168,14 +179,18 @@ def _runtime_check(engine: str, executable: Path, make_plots: bool) -> Preflight
         f" with NEURON {identity.get('neuron')}, h5py {identity.get('h5py')}, "
         f"and NumPy {identity.get('numpy')}"
         if engine == "bmtk"
+        else f" with NumPy {identity.get('numpy')}"
+        if engine in NUMPY_ENGINE_LABELS
         else ""
     )
     return _check(
         "runtime",
-        f"{engine.upper()} runtime",
+        f"{NUMPY_ENGINE_LABELS.get(engine, engine.upper())} runtime",
         CheckState.PASS,
-        f"{engine.upper()} {identity.get('version')} loaded in {executable}"
-        f"{dependency_detail}{plot_detail}.",
+        ((f"{NUMPY_ENGINE_LABELS[engine]} NumPy {identity.get('numpy')} loaded in {executable}"
+          if engine in NUMPY_ENGINE_LABELS else
+          f"{engine.upper()} {identity.get('version')} loaded in {executable}")
+         + f"{dependency_detail}{plot_detail}."),
         path=executable,
     )
 
@@ -258,6 +273,37 @@ def _optional_finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _point_hh_area_components_cm2(morphology: Morphology) -> tuple[float, float, float]:
+    """Measure total, soma-tagged and branch cable area from one SWC.
+
+    Point HH has one state per neuron, so it cannot preserve cable geometry.
+    Use the lateral area of each tapered SWC frustum, matching the surface
+    area used by NEURON for the imported cable. Coordinates and radii are
+    already in micrometres when a Morphology is loaded.
+    """
+
+    area_by_region = {"soma": 0.0, "branch": 0.0}
+    nodes_by_id = {node.node_id: node for node in morphology.nodes}
+    for segment in morphology.segments:
+        parent = nodes_by_id.get(segment.parent_id)
+        parent_radius = max(float(parent.radius), 0.0) if parent else max(float(segment.radius), 0.0)
+        child_radius = max(float(segment.radius), 0.0)
+        length_um = math.dist(segment.child, segment.parent)
+        cable_length_um = length_um if length_um > 0.0 else 0.001
+        area_um2 = math.pi * (parent_radius + child_radius) * math.hypot(
+            cable_length_um, child_radius - parent_radius
+        )
+        area_by_region["soma" if int(segment.swc_type) == 1 else "branch"] += area_um2
+    soma = area_by_region["soma"] * 1e-8
+    branch = area_by_region["branch"] * 1e-8
+    # 1 µm² = 1e-8 cm². A tiny positive floor protects a valid point preview
+    # whose source contains no drawable segment; ordinary SWCs are much larger.
+    total = max(soma + branch, 1e-12)
+    if soma + branch <= 1e-12:
+        return total, total, 0.0
+    return total, soma, branch
 
 
 def _selected_morphology_issues(
@@ -363,6 +409,23 @@ class GenericExperimentAdapter:
             for key, value in runtime_paths.items()
             if str(value).strip()
         }
+        # Point HH is an app-owned NumPy worker. Prefer an already selected
+        # scientific Python, but keep it usable on a clean machine where no
+        # simulator has been installed yet.
+        self.runtime_paths.setdefault(
+            "point_hh",
+            self.runtime_paths.get("neuron")
+            or self.runtime_paths.get("arbor")
+            or self.runtime_paths.get("bmtk")
+            or Path(sys.executable).resolve(),
+        )
+        # A native app executable cannot run the Python worker. In a bundle
+        # use a configured simulator Python that provides NumPy.
+        if "reduced_hh" not in self.runtime_paths:
+            executable = self.runtime_paths["point_hh"]
+            bundled = "__compiled__" in globals() or getattr(sys, "frozen", False)
+            if not bundled or executable.resolve() != Path(sys.executable).resolve():
+                self.runtime_paths["reduced_hh"] = executable
         self.digifly_public_root = (
             Path(digifly_public_root).expanduser().resolve()
             if digifly_public_root and str(digifly_public_root).strip()
@@ -378,7 +441,11 @@ class GenericExperimentAdapter:
         return worker_path("bmtk_bionet_worker.py")
 
     def execution_worker_path(self, engine: str) -> Path:
-        return self.bmtk_worker_path if engine == "bmtk" else self.worker_path
+        if engine == "bmtk":
+            return self.bmtk_worker_path
+        if engine == "point_hh":
+            return worker_path("point_hh_worker.py")
+        return self.worker_path
 
     @property
     def gap_catalogue_builder_path(self) -> Path:
@@ -465,6 +532,7 @@ class GenericExperimentAdapter:
             self.runtime_paths.get("arbor")
             or self.runtime_paths.get("neuron")
             or self.runtime_paths.get("bmtk")
+            or self.runtime_paths.get("point_hh")
         )
         if runtime is None or not runtime.is_file():
             raise ValueError(
@@ -517,6 +585,214 @@ class GenericExperimentAdapter:
                 raise ValueError("Male-CNS edge query returned a non-object row.")
             rows.append(payload)
         return tuple(rows)
+
+    def _point_edge_manifest(self, circuit: CircuitSpec) -> dict[str, Any]:
+        """Build a cell-level edge manifest without reading or changing SWCs.
+
+        Point HH has no cable coordinates. The source edge identity, pair
+        direction, declared kinetics, and gap policy are retained, while all
+        contacts are attached to the single electrical state of each cell.
+        """
+        neuron_ids = tuple(str(value) for value in circuit.neuron_ids)
+        if not neuron_ids:
+            raise ValueError("Select at least one neuron before running Point HH.")
+        if len(set(neuron_ids)) != len(neuron_ids):
+            raise ValueError("The selected circuit contains duplicate neuron IDs.")
+
+        def pair_allows(first: str, second: str, kind: str) -> bool:
+            override = circuit.connection_override(first, second)
+            if override is None:
+                return True
+            value = (override.chemical_enabled
+                     if kind == "chemical"
+                     else override.gap_junction_enabled)
+            return value is not False
+
+        catalog = self._edge_catalog(circuit)
+        chemical_policy = circuit.chemical_synapse_policy
+        gap_policy = circuit.gap_junction_policy
+        sources: list[dict[str, Any]] = []
+        raw_rows: tuple[dict[str, Any], ...]
+        if chemical_policy.is_aggregate:
+            if not circuit.connectome.pair_graph_path:
+                raise ValueError("Aggregate Point HH connectivity requires a selected pair graph.")
+            from digifly_app.core.pair_graph import selected_subgraph, sha
+            graph_manifest, pairs = selected_subgraph(circuit.connectome, neuron_ids)
+            raw_rows = tuple(
+                {
+                    "source_edge_rowid": index,
+                    "source_edge_id": f"aggregate-pair-{row['preId']}-{row['postId']}",
+                    "pre_id": str(row["preId"]),
+                    "post_id": str(row["postId"]),
+                    "aggregate_connection_count": int(row["total_weight"]),
+                    "neurotransmitter": row.get("preNt"),
+                }
+                for index, row in enumerate(pairs, 1)
+            )
+            manifest_path = Path(circuit.connectome.pair_graph_index).expanduser().resolve().parent / "manifest.json"
+            for path, expected in (
+                (Path(circuit.connectome.pair_graph_path).expanduser().resolve(), graph_manifest["source_sha256"]),
+                (Path(circuit.connectome.pair_graph_index).expanduser().resolve(), graph_manifest["index_sha256"]),
+            ):
+                sources.append({
+                    "kind": "sha256_files",
+                    "path": str(path),
+                    "sha256": expected,
+                    "manifest_path": str(manifest_path),
+                    "manifest_sha256": sha(manifest_path),
+                    "source_scope": graph_manifest.get("source_scope", "Selected aggregate pair rows only"),
+                    "electrical_data": "not_supplied_by_chemical_count_graph",
+                })
+        elif circuit.connectome.pair_graph_path:
+            from digifly_app.core.pair_graph import selected_contact_sites, sha
+            graph_manifest, sites = selected_contact_sites(circuit.connectome, neuron_ids)
+            raw_rows = tuple(
+                {
+                    "source_edge_rowid": index,
+                    "source_edge_id": f"neuprint-{site['source_body_id']}-{site['target_body_id']}-{site['pre_synapse_id']}-{site['post_synapse_id']}",
+                    "pre_id": str(site["source_body_id"]),
+                    "post_id": str(site["target_body_id"]),
+                    "neurotransmitter": site.get("pre_neurotransmitter"),
+                }
+                for index, site in enumerate(sites, 1)
+            )
+            manifest_path = Path(circuit.connectome.pair_graph_index).expanduser().resolve().parent / "manifest.json"
+            sources.append({
+                "kind": "sha256_files",
+                "path": str(Path(circuit.connectome.pair_graph_index).expanduser().resolve()),
+                "sha256": graph_manifest["index_sha256"],
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": sha(manifest_path),
+                "source_scope": graph_manifest.get("source_scope"),
+                "contact_rows": len(raw_rows),
+                "electrical_data": "chemical contacts only; point mode uses cell-level synaptic placement",
+            })
+        elif catalog.is_male_cns:
+            raw_rows = self._male_cns_chemical_contacts(catalog, neuron_ids)
+            sources.append(catalog.male_cns_source_record())
+        else:
+            try:
+                raw_rows = catalog.selected_chemical_contacts(neuron_ids)
+                sources.append(catalog.chemical_source_record())
+            except ValueError:
+                # A one-cell point test has no pairwise edge source to open.
+                # Multi-cell runs still refuse an unavailable source below.
+                if len(neuron_ids) == 1 or all(
+                    (override := circuit.connection_override(a, b)) is not None
+                    and override.chemical_enabled is False
+                    for a, b in combinations(neuron_ids, 2)
+                ):
+                    raw_rows = ()
+                else:
+                    raise
+
+        chemical_edges: list[dict[str, Any]] = []
+        for index, row in enumerate(raw_rows, 1):
+            pre_id, post_id = str(row["pre_id"]), str(row["post_id"])
+            if pre_id not in neuron_ids or post_id not in neuron_ids or not pair_allows(pre_id, post_id, "chemical"):
+                continue
+            source_weight = _optional_finite_float(row.get("weight_uS"))
+            count = int(row.get("aggregate_connection_count") or 1)
+            if chemical_policy.is_aggregate and chemical_policy.weight_policy == "count_times_default":
+                weight = chemical_policy.default_weight_uS * chemical_policy.weight_scale * count
+                weight_source = "declared_aggregate_policy"
+            else:
+                weight = (source_weight if source_weight is not None else chemical_policy.default_weight_uS) * chemical_policy.weight_scale
+                weight_source = "connectome_row" if source_weight is not None else "circuit_policy"
+            source_delay = _optional_finite_float(row.get("delay_ms"))
+            source_tau1 = _optional_finite_float(row.get("tau1_ms"))
+            source_tau2 = _optional_finite_float(row.get("tau2_ms"))
+            source_reversal = _optional_finite_float(row.get("syn_e_rev_mV"))
+            chemical_edges.append({
+                "contact_id": f"chem-{len(chemical_edges) + 1:07d}",
+                "source_edge_rowid": str(row.get("source_edge_rowid") or index),
+                "source_edge_id": str(row.get("source_edge_id") or ""),
+                "pre_id": pre_id,
+                "post_id": post_id,
+                "weight_uS": float(weight),
+                "delay_ms": float(source_delay if source_delay is not None else chemical_policy.default_delay_ms),
+                "tau1_ms": float(chemical_policy.tau1_ms if chemical_policy.kinetics_policy == "global_override" or source_tau1 is None else source_tau1),
+                "tau2_ms": float(chemical_policy.tau2_ms if chemical_policy.kinetics_policy == "global_override" or source_tau2 is None else source_tau2),
+                "reversal_mV": float(chemical_policy.reversal_mV if chemical_policy.kinetics_policy == "global_override" or source_reversal is None else source_reversal),
+                "parameter_sources": {
+                    "weight": weight_source,
+                    "delay": "connectome_row" if source_delay is not None else "circuit_policy",
+                    "tau1": "circuit_policy" if source_tau1 is None else "connectome_row",
+                    "tau2": "circuit_policy" if source_tau2 is None else "connectome_row",
+                    "reversal": "circuit_policy" if source_reversal is None else "connectome_row",
+                },
+                "source_annotations": {
+                    "neurotransmitter": row.get("neurotransmitter"),
+                    "confidence": row.get("confidence"),
+                },
+                "point_placement": "separate Exp2Syn state per contact; contact currents act on the shared postsynaptic point voltage and contact locations are not resolved",
+            })
+
+        electrical_edges: list[dict[str, Any]] = []
+        if gap_policy.mode != "none" and len(neuron_ids) > 1:
+            if circuit.connectome.pair_graph_path and chemical_policy.is_aggregate:
+                raise ValueError("The selected aggregate chemical graph supplies no electrical contacts; choose gap-junction mode None for Point HH.")
+            try:
+                gap_rows = catalog.selected_gap_contacts(neuron_ids)
+                sources.append(catalog.gap_source_record())
+            except ValueError as exc:
+                all_pairs_disabled = all(
+                    (override := circuit.connection_override(a, b)) is not None
+                    and override.gap_junction_enabled is False
+                    for a, b in combinations(neuron_ids, 2)
+                )
+                if not all_pairs_disabled:
+                    raise ValueError(str(exc)) from exc
+                gap_rows = ()
+            grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for row in gap_rows:
+                pre_id, post_id = str(row.get("pre_id") or ""), str(row.get("post_id") or "")
+                if pre_id in neuron_ids and post_id in neuron_ids and pre_id != post_id and pair_allows(pre_id, post_id, "gap_junction"):
+                    grouped.setdefault(tuple(sorted((pre_id, post_id))), []).append(dict(row))
+            serial = 0
+            for (first, second), rows in sorted(grouped.items()):
+                g = gap_policy.g_uS / len(rows) if gap_policy.conductance_basis == "pair_total" else gap_policy.g_uS
+                contacts = []
+                for row in rows:
+                    serial += 1
+                    contacts.append({
+                        "contact_id": f"gap-{serial:07d}",
+                        "source_edge_rowid": str(row.get("source_edge_rowid") or ""),
+                        "pre_id": first,
+                        "post_id": second,
+                        "effective_g_uS": float(g),
+                        "preferred_direction": gap_policy.preferred_direction,
+                        "mode": gap_policy.mode,
+                        "g_closed_frac": gap_policy.g_closed_frac,
+                        "vhalf_mV": gap_policy.vhalf_mV,
+                        "vslope_mV": gap_policy.vslope_mV,
+                        "point_placement": "one cell-level electrical state per endpoint",
+                    })
+                electrical_edges.append({
+                    "edge_id": f"gap-pair-{first}-{second}",
+                    "neuron_a": first,
+                    "neuron_b": second,
+                    "contact_count": len(contacts),
+                    "contacts": contacts,
+                })
+
+        identity = hashlib.sha256(json.dumps(
+            {"chemical": chemical_edges, "electrical": electrical_edges},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return {
+            "schema_version": EDGE_MANIFEST_SCHEMA_VERSION,
+            "kind": "point_selected_subgraph",
+            "neuron_ids": list(neuron_ids),
+            "sources": sources,
+            "selected_contact_identity_sha256": identity,
+            "connection_overrides": [override.to_dict() for override in sorted(circuit.connection_overrides.values(), key=lambda item: (item.neuron_a, item.neuron_b))],
+            "chemical_synapse_policy": chemical_policy.to_dict(),
+            "gap_junction_policy": gap_policy.to_dict(),
+            "mapping_policy": {"chemical": "Cell-level point model; imported contact coordinates are not used to move a synapse.", "electrical": "Cell-level point model; imported pair direction and declared gap policy are retained."},
+            "chemical_edges": chemical_edges,
+            "electrical_edges": electrical_edges,
+        }
 
     def needs_gap_catalogue(self, circuit: CircuitSpec, experiment: ExperimentSpec) -> bool:
         return bool(
@@ -649,17 +925,18 @@ class GenericExperimentAdapter:
                     "engine",
                     "Executable engine adapter",
                     CheckState.FAIL,
-                    f"{engine.upper()} is not connected yet. Choose Arbor, NEURON, or BMTK BioNet.",
+                    f"{engine.upper()} is not connected yet. Choose Arbor, NEURON, BMTK BioNet, Point HH or Reduced HH.",
                     blocking=True,
                 )
             )
         else:
+            engine_label = NUMPY_ENGINE_LABELS.get(engine, engine.upper())
             checks.append(
                 _check(
                     "engine",
                     "Executable engine adapter",
                     CheckState.PASS,
-                    f"The simulator-neutral draft can target the {engine.upper()} classic-HH worker.",
+                    f"The simulator-neutral draft can target the {engine_label} worker.",
                     blocking=True,
                 )
             )
@@ -670,9 +947,11 @@ class GenericExperimentAdapter:
                 checks.append(
                     _check(
                         "runtime",
-                        f"{engine.upper()} runtime",
+                        f"{NUMPY_ENGINE_LABELS.get(engine, engine.upper())} runtime",
                         CheckState.FAIL,
-                        f"Choose an executable {engine.upper()} Python in Workspace before running.",
+                        ("Set a simulator Python with NumPy in Workspace before running Reduced HH."
+                         if engine == "reduced_hh" else
+                         f"Choose an executable {engine.upper()} Python in Workspace before running."),
                         blocking=True,
                         path=runtime,
                     )
@@ -734,8 +1013,10 @@ class GenericExperimentAdapter:
         scope_error = ""
         if engine in SUPPORTED_ENGINES:
             try:
-                candidate_manifest = self._edge_manifest(
-                    circuit, morphology_by_id.values()
+                candidate_manifest = (
+                    self._point_edge_manifest(circuit)
+                    if engine == "point_hh"
+                    else self._edge_manifest(circuit, morphology_by_id.values())
                 )
             except (OSError, ValueError) as exc:
                 scope_error = str(exc)
@@ -767,6 +1048,180 @@ class GenericExperimentAdapter:
                 blocking=True,
             )
         )
+        if engine == "point_hh":
+            active_native = {
+                channel.mechanism_key
+                for membrane in _effective_membrane_specs(circuit)
+                for channel in membrane.active_channels
+            }
+            replaces_hh = any(
+                membrane.replace_builtin_hh
+                for membrane in _effective_membrane_specs(circuit)
+            )
+            native_ok = not active_native
+            checks.append(_check(
+                "point_mechanisms",
+                "Point HH membrane model",
+                CheckState.PASS if native_ok else CheckState.FAIL,
+                "Classic point HH is ready; regional built-in HH densities are area-weighted from each selected SWC, and temperature-scaled rates follow the selected temperature."
+                if native_ok and not replaces_hh
+                else "Passive point cells are ready; built-in HH was explicitly replaced and no native channel equations are active."
+                if native_ok
+                else "Point HH currently executes the portable built-in HH equations only. Disable native channel assignments or choose NEURON for native mechanisms.",
+                blocking=True,
+            ))
+            point_scopes = {
+                _effective_hh(circuit, neuron_id).active_scope
+                for neuron_id in circuit.neuron_ids
+            }
+            point_region_ok = (
+                point_scopes <= {"all", "soma"}
+                and not circuit.compartment_overrides
+                and not circuit.compartment_mechanism_overrides
+            )
+            checks.append(_check(
+                "point_regions", "Point HH regional mapping",
+                CheckState.PASS if point_region_ok else CheckState.FAIL,
+                "Soma and branch built-in HH densities are combined by their source-SWC cable areas."
+                if point_region_ok else
+                "A single point state cannot preserve a soma/AIS split or per-compartment overrides. Use NEURON for soma/AIS or compartment-specific settings.",
+                blocking=True,
+            ))
+            enabled_stimuli = tuple(stimulus for stimulus in experiment.stimuli if stimulus.enabled)
+            stimuli_ok = len(enabled_stimuli) == 1 and all(
+                stimulus.target_region in {"soma", "ais", "selected_compartments", "all"}
+                and stimulus.waveform in {"pulse_train", "step", "ramp"}
+                for stimulus in enabled_stimuli
+            )
+            checks.append(_check(
+                "point_stimuli", "Point HH stimulus translation", CheckState.PASS if stimuli_ok else CheckState.FAIL,
+                "Pulse train, step and ramp amplitudes drive each whole-neuron state. Region labels stay in the saved experiment; Point HH has no spatial injection sites. Use NEURON for soma, AIS or selected-compartment injection."
+                if stimuli_ok else "Choose one enabled Pulse train, Single step, or Ramp stimulus.",
+                blocking=True,
+            ))
+            condition_errors = []
+            from digifly_app.workers import generic_experiment_worker as regional_worker
+            for condition in experiment.conditions:
+                if condition.enabled:
+                    try:
+                        regional_worker._validate_condition_manipulations(circuit.to_dict(), asdict(condition))
+                    except (ValueError, TypeError) as exc:
+                        condition_errors.append(str(exc))
+                    unsupported_point_scales = sorted(
+                        set(condition.mechanism_scales)
+                        - {"hh", "hh_na", "hh_k", "hh_leak", "pas"}
+                    )
+                    if unsupported_point_scales:
+                        condition_errors.append(
+                            "Point HH does not execute native channel scales: "
+                            + ", ".join(unsupported_point_scales)
+                            + ". Disable them or choose NEURON."
+                        )
+            checks.append(_check(
+                "point_conditions", "Point HH conditions", CheckState.PASS if not condition_errors else CheckState.FAIL,
+                "Cell ablation, chemical/electrical connection toggles, stimulus scales, and HH conductance scales are applied per condition."
+                if not condition_errors else "; ".join(condition_errors),
+                blocking=True,
+            ))
+            recording_ok = (
+                experiment.recording.target_region in {"soma", "ais", "selected_compartments", "all"}
+                and (experiment.recording.record_voltage or experiment.recording.detect_spikes or experiment.recording.current_tracking != "off")
+            )
+            checks.append(_check(
+                "point_recording", "Point HH recording", CheckState.PASS if recording_ok else CheckState.FAIL,
+                "Voltage and spike recordings use one whole-neuron trace per selected cell; region labels do not create spatial recording sites."
+                if recording_ok else "Enable voltage recording, spike detection, or current tracking.",
+                blocking=True,
+            ))
+            from digifly_app.workers.current_tracking import check_mode, MAX_CURRENT_VALUES
+            try:
+                check_mode(asdict(experiment.recording), engine, experiment.workers, experiment.integration_dt_ms)
+                current_detail = "Off: voltage and spike recording are unchanged." if experiment.recording.current_tracking == "off" else "Point HH records one compartment-level current set per selected cell; Sparse and Full are equivalent because the model has one state per neuron."
+                current_ok = True
+            except ValueError as exc:
+                current_detail, current_ok = str(exc), False
+            if current_ok and experiment.recording.current_tracking != "off":
+                current_samples = math.floor(experiment.duration_ms / experiment.recording.sample_dt_ms) + 1
+                current_targets = len(experiment.recording.target_neuron_ids or circuit.neuron_ids)
+                current_conditions = max(1, sum(1 for condition in experiment.conditions if condition.enabled))
+                current_values = current_samples * current_targets * 3 * current_conditions
+                if current_values > MAX_CURRENT_VALUES:
+                    current_ok = False
+                    current_detail = (
+                        f"Point HH current recording would write about {current_values:,} values, "
+                        f"above the local limit of {MAX_CURRENT_VALUES:,}; record fewer cells, "
+                        "increase the sample interval or shorten the run."
+                    )
+            checks.append(_check("current_tracking", "Point HH current recording", CheckState.PASS if current_ok else CheckState.FAIL, current_detail, blocking=True))
+            sample_ratio = experiment.duration_ms / experiment.recording.sample_dt_ms
+            integration_ratio = experiment.recording.sample_dt_ms / experiment.integration_dt_ms
+            grid_ok = math.isclose(integration_ratio, round(integration_ratio), rel_tol=1e-9, abs_tol=1e-9)
+            expected_samples = math.floor(sample_ratio) + 1
+            checks.append(_check(
+                "recording_samples", "Point HH recording window", CheckState.PASS if expected_samples >= 2 and grid_ok else CheckState.FAIL,
+                f"The Point HH worker will write {expected_samples} samples per recorded cell on the integration grid."
+                if expected_samples >= 2 and grid_ok else "Point HH requires at least two samples and a recording interval that is a whole multiple of the integration step.",
+                blocking=True,
+            ))
+            parallel_ok = experiment.workers == 1
+            checks.append(_check(
+                "parallelism", "Point HH compute allocation", CheckState.PASS if parallel_ok else CheckState.FAIL,
+                "Point HH uses one vectorized worker process; NumPy advances all selected cells together."
+                if parallel_ok else "Point HH uses one vectorized process. Set Workers to 1; it does not split one connected network across worker processes.",
+                blocking=True,
+            ))
+            repetitions_ok = experiment.repetitions == 1
+            checks.append(_check(
+                "point_repetitions", "Point HH repetitions", CheckState.PASS if repetitions_ok else CheckState.FAIL,
+                "Point HH runs one deterministic pass; set Repetitions to 1."
+                if repetitions_ok else "Point HH currently supports one pass per run. Set Repetitions to 1 or choose a morphology-backed engine.",
+                blocking=True,
+            ))
+            checks.append(_check(
+                "point_morphology", "Morphology use", CheckState.INFO,
+                "Point HH uses one electrical state per selected neuron. Source SWC frustum area sets capacitance and conductance; stimulus and recording region labels do not create spatial sites. The SWC is never rewritten.",
+            ))
+            checks.append(_check(
+                "point_temperature", "Point HH temperature", CheckState.INFO,
+                "Classic HH gating rates use the NEURON Q10 temperature factor (3^((temperature − 6.3 °C)/10 °C)); native channel kinetics still require NEURON.",
+            ))
+            return PreflightReport(tuple(checks))
+        if engine == "reduced_hh":
+            from digifly_app.workers import generic_experiment_worker as worker
+
+            detail = ("Classic HH, mapped chemical synapses, and grouped cable voltage are supported. "
+                      "Edges in the same group share a voltage trace.")
+            state = CheckState.PASS
+            try:
+                integrity_error = _morphology_integrity_error(circuit, morphology_by_id)
+                if integrity_error:
+                    raise ValueError(integrity_error)
+                if not selected_worker.with_name("reduced_hh_solver.py").is_file():
+                    raise ValueError("The Reduced HH solver file is missing.")
+                circuit_document, experiment_document = circuit.to_dict(), experiment.to_dict()
+                worker._validate_request_capabilities(engine, circuit_document, experiment_document, candidate_manifest)
+                plans = {}
+                stimuli = [s for s in experiment.stimuli if s.enabled]
+                for neuron_id in circuit.neuron_ids:
+                    morphology = morphology_by_id[neuron_id]
+                    rows = worker._SwcRows(
+                        [(n.node_id, n.swc_type, n.x, n.y, n.z, n.radius, n.parent_id) for n in morphology.nodes],
+                        morphology.filler_metadata,
+                    )
+                    data = worker._regional_cell_data(circuit_document, neuron_id, {r[0]: r[0] for r in rows})
+                    data["prefer_rostral_soma"] = morphology.record.family.upper().startswith("DN")
+                    plan = worker._regional_plan(rows, data)
+                    worker._validate_reduced_mesh(plan)
+                    plans[neuron_id] = plan
+                    if neuron_id in (stimuli[0].target_neuron_ids or circuit.neuron_ids):
+                        worker._regional_sites(plan, stimuli[0].target_region, data)
+                    if neuron_id in (experiment.recording.target_neuron_ids or circuit.neuron_ids):
+                        worker._regional_sites(plan, experiment.recording.target_region, data)
+                worker._regional_report_budget(plans, experiment_document)
+            except (OSError, ValueError, KeyError, OverflowError) as exc:
+                state, detail = CheckState.FAIL, str(exc)
+            checks.append(_check("reduced_hh", "Reduced HH settings", state, detail, blocking=True))
+            return PreflightReport(tuple(checks))
         located = [row for row in (candidate_manifest or {}).get('chemical_edges',()) if row.get('located_contact')]
         if located:
             projection = max(row['located_contact']['mapping'][end]['projection_distance_um']
@@ -1016,7 +1471,7 @@ class GenericExperimentAdapter:
                 "stimuli",
                 "Stimulus translation",
                 CheckState.PASS if stimuli_ok else CheckState.FAIL,
-                "Step, pulse-train and continuous linear-ramp clamps use the mapped region; total current is divided equally over its target edges."
+                "Step, pulse-train and continuous linear-ramp clamps use the mapped region; total current is apportioned by membrane area for uniform current density."
                 if stimuli_ok
                 else "Choose a mapped region with Pulse train, Single step or Ramp.",
                 blocking=True,
@@ -1678,17 +2133,37 @@ class GenericExperimentAdapter:
         target_errors = experiment.target_errors(circuit)
         if target_errors:
             raise ValueError(target_errors[0])
-        integrity_error = _morphology_integrity_error(circuit, morphology_by_id)
-        if integrity_error:
-            raise ValueError(
-                "Cannot build a simulator request because morphology integrity checks failed: "
-                f"{integrity_error}. Reload affected SWCs in Circuit Builder and use the "
-                "SWC quality/healer workflow for non-positive radii."
-            )
-        edge_manifest = self._edge_manifest(circuit, morphology_by_id.values())
+        if experiment.engine == "point_hh":
+            edge_manifest = self._point_edge_manifest(circuit)
+            native_sources: dict[str, dict[str, str]] = {}
+        else:
+            integrity_error = _morphology_integrity_error(circuit, morphology_by_id)
+            if integrity_error:
+                raise ValueError(
+                    "Cannot build a simulator request because morphology integrity checks failed: "
+                    f"{integrity_error}. Reload affected SWCs in Circuit Builder and use the "
+                    "SWC quality/healer workflow for non-positive radii."
+                )
+            edge_manifest = self._edge_manifest(circuit, morphology_by_id.values())
+            native_sources = self.native_channel_sources(circuit)
         neuron_gap_manifest = (
             self.neuron_gap_mechanism_path(output_root, engine=experiment.engine) / _NEURON_GAP_MANIFEST_FILE
         )
+        point_hh_parameters: dict[str, Any] = {}
+        if experiment.engine == "point_hh":
+            area_components = {
+                neuron_id: _point_hh_area_components_cm2(morphology_by_id[neuron_id])
+                for neuron_id in circuit.neuron_ids
+                if neuron_id in morphology_by_id
+            }
+            if area_components:
+                point_hh_parameters = {
+                    "area_method": "sum_of_source_swc_frustum_segment_surfaces_by_swc_type",
+                    "effective_area_cm2": {neuron_id: values[0] for neuron_id, values in area_components.items()},
+                    "soma_area_cm2": {neuron_id: values[1] for neuron_id, values in area_components.items()},
+                    "branch_area_cm2": {neuron_id: values[2] for neuron_id, values in area_components.items()},
+                    "fallback_area_cm2": 1e-4,
+                }
         return {
             "schema_version": GENERIC_EXPERIMENT_SCHEMA_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1696,7 +2171,7 @@ class GenericExperimentAdapter:
             "output_dir": str(run_dir),
             "circuit": circuit.to_dict(),
             "experiment": experiment.to_dict(),
-            "native_channel_sources": self.native_channel_sources(circuit),
+            "native_channel_sources": native_sources,
             "arbor_channel_translator": {
                 "path": str(worker_path("arbor_channel_translation.py")),
                 "sha256": _file_sha256(worker_path("arbor_channel_translation.py")),
@@ -1725,6 +2200,7 @@ class GenericExperimentAdapter:
                 and neuron_gap_manifest.is_file()
                 else ""
             ),
+            "point_hh_parameters": point_hh_parameters,
             "morphologies": {
                 neuron_id: {
                     "path": morphology_by_id[neuron_id].record.swc_path,
@@ -1734,7 +2210,7 @@ class GenericExperimentAdapter:
                     "coordinate_transform": morphology_by_id[neuron_id].coordinate_transform,
                 }
                 for neuron_id in circuit.neuron_ids
-                if neuron_id in morphology_by_id
+                if experiment.engine != "point_hh" and neuron_id in morphology_by_id
             },
             "preflight": report.to_dict(),
         }

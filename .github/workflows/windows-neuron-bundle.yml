@@ -127,6 +127,13 @@ jobs:
           if ($p.ExitCode -ne 0) { Get-Content "$report/receipt.json","$report/thread-stacks.txt",packaged-ui-stderr.txt -ErrorAction Continue; throw 'Native packaged setup/Run check failed' }
           $receipt = Get-Content "$report/receipt.json" | ConvertFrom-Json
           if (-not $receipt.ok) { throw 'Packaged UI receipt did not pass' }
+          $reducedReport = "$env:GITHUB_WORKSPACE/reduced-hh-ui-evidence"
+          $rhh = Start-Process -FilePath $exe -ArgumentList @('--package-reduced-hh-test', ('"' + $reducedReport + '"'), ('"' + $receipt.installed_python + '"')) -RedirectStandardOutput reduced-hh-ui-stdout.txt -RedirectStandardError reduced-hh-ui-stderr.txt -PassThru
+          if (-not $rhh.WaitForExit(120000)) { taskkill /PID $rhh.Id /T /F; throw 'Packaged Reduced HH check timed out' }
+          $rhh.Refresh()
+          if ($rhh.ExitCode -ne 0) { Get-Content "$reducedReport/receipt.json",reduced-hh-ui-stderr.txt -ErrorAction Continue; throw 'Packaged Reduced HH Run or Results check failed' }
+          $rhhReceipt = Get-Content "$reducedReport/receipt.json" | ConvertFrom-Json
+          if (-not $rhhReceipt.ok -or -not $rhhReceipt.playback -or $rhhReceipt.voltage_samples -ne 205) { throw 'Reduced HH receipt is incomplete' }
           $libraryReport = "$env:GITHUB_WORKSPACE/swc-library-ui-evidence"
           $libraryCheck = Start-Process -FilePath $exe -ArgumentList @('--package-library-test', $libraryReport) -RedirectStandardOutput packaged-library-ui-stdout.txt -RedirectStandardError packaged-library-ui-stderr.txt -PassThru
           if (-not $libraryCheck.WaitForExit(180000)) { taskkill /PID $libraryCheck.Id /T /F; throw 'Packaged SWC library check timed out' }
@@ -161,6 +168,9 @@ jobs:
             dist/*.sha256
             dist/failed-compile-inputs.json
             neuron-source-tests.xml
+            reduced-hh-ui-evidence/receipt.json
+            reduced-hh-ui-stdout.txt
+            reduced-hh-ui-stderr.txt
             connected-model-source-tests.xml
             results-review-source-tests.xml
             wizard-current-loading-source-tests.xml
