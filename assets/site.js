@@ -165,7 +165,14 @@ if (workbench) {
       } catch {
         // A private browsing session can still open the connection.
       }
-      location.assign(new URL("/vnc.html?autoconnect=1&resize=scale&path=websockify", endpoint.origin).href);
+      const sessionURL = new URL("/vnc.html?autoconnect=1&resize=scale&path=websockify", endpoint.origin);
+      const sessionLink = form.querySelector("[data-open-private-session]");
+      sessionLink.href = sessionURL.href;
+      sessionLink.hidden = false;
+      privateSite.href = new URL("/app/#workbench", endpoint.origin).href;
+      privateSite.hidden = false;
+      status.textContent = "The website stays open in this tab.";
+      sessionLink.click();
     });
   }
 }
