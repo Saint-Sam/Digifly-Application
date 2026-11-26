@@ -13,7 +13,7 @@ until xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; do
 done
 openbox &
 x11vnc -display "$DISPLAY" -listen 127.0.0.1 -rfbport 5900 -forever -shared -nopw -noxdamage &
-websockify --web /usr/share/novnc 6080 127.0.0.1:5900 &
+websockify --web /opt/digifly-web 6080 127.0.0.1:5900 &
 python - <<'PYTHON'
 from PySide6.QtCore import QSettings
 settings = QSettings("Digifly", "Digifly Workstation")

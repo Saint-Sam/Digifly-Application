@@ -5,8 +5,8 @@ The startup command starts the desktop and noVNC on forwarded port 6080.
 Keep port 6080 **Private**. The Codespaces HTTPS tunnel is the authentication
 boundary for the session. The VNC listener is internal to the container.
 
-Open the **DigiFly Workstation** port in a browser and append
-`/vnc.html?autoconnect=1&resize=scale` to the forwarded host URL. A phone can
+Open the **DigiFly Workstation** port in a browser to load the entire site.
+Choose **DigiFly App** to open the embedded Workstation. A phone can
 open that same HTTPS address while signed into the GitHub account that owns
 the running codespace. Resume the codespace after an idle stop.
 

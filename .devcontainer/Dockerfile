@@ -21,6 +21,9 @@ RUN python3 -m venv /opt/digifly-venv \
        "NEURON==9.0.1" "arbor==0.12.2" "bmtk>=1.1,<2" "h5py>=3.11,<4"
 ENV PATH=/opt/digifly-venv/bin:$PATH
 RUN useradd --create-home --uid 10001 digifly
+COPY .devcontainer/site/ /opt/digifly-web/
+RUN mkdir -p /opt/digifly-web/session \
+    && cp -aL /usr/share/novnc/. /opt/digifly-web/session/
 COPY .devcontainer/entrypoint.sh /usr/local/bin/run-digifly
 RUN chmod 755 /usr/local/bin/run-digifly
 USER digifly
