@@ -106,7 +106,7 @@ if (workbench) {
   const notice = workbench.querySelector("[data-session-notice]");
   const form = workbench.querySelector("[data-codespace-form]");
 
-  function showSession(session, keepSetup = false) {
+  function showSession(session) {
     frame.src = session.href;
     frame.hidden = false;
     for (const link of document.querySelectorAll("[data-session-link]")) {
@@ -114,7 +114,7 @@ if (workbench) {
       link.hidden = false;
     }
     launch.hidden = false;
-    notice.hidden = !keepSetup;
+    notice.hidden = true;
   }
 
   if (codespaceHost(location.hostname)) {
@@ -133,7 +133,18 @@ if (workbench) {
   if (form) {
     const address = form.elements.namedItem("address");
     const status = form.querySelector("[data-connect-status]");
-    const privateSite = launch.querySelector("[data-codespace-site]");
+    const privateSite = form.querySelector("[data-codespace-site]");
+    const rememberKey = "digifly-codespace-origin";
+    try {
+      const savedOrigin = new URL(localStorage.getItem(rememberKey));
+      if (savedOrigin.protocol === "https:" && !savedOrigin.port && codespaceHost(savedOrigin.hostname)) {
+        address.value = savedOrigin.origin;
+        privateSite.href = new URL("/app/#workbench", savedOrigin.origin).href;
+        privateSite.hidden = false;
+      }
+    } catch {
+      // The address can still be entered when browser storage is unavailable.
+    }
     form.addEventListener("submit", event => {
       event.preventDefault();
       let endpoint;
@@ -149,10 +160,12 @@ if (workbench) {
         return;
       }
 
-      showSession(new URL("/vnc.html?autoconnect=1&resize=scale&path=websockify", endpoint.origin), true);
-      privateSite.href = new URL("/app/#workbench", endpoint.origin).href;
-      privateSite.hidden = false;
-      status.textContent = "If the embedded window cannot sign in, open the full-window session. After rebuilding the Codespace, Open site inside Codespace provides the embedded view under the same sign-in.";
+      try {
+        localStorage.setItem(rememberKey, endpoint.origin);
+      } catch {
+        // A private browsing session can still open the connection.
+      }
+      location.assign(new URL("/vnc.html?autoconnect=1&resize=scale&path=websockify", endpoint.origin).href);
     });
   }
 }

@@ -29,14 +29,14 @@
       <label for="codespace-address">Private Codespaces port URL</label>
       <div class="session-connect-controls">
         <input id="codespace-address" name="address" type="url" placeholder="https://your-codespace-6080.app.github.dev" required>
-        <button class="action primary" type="submit">Connect Workstation</button>
+        <button class="action primary" type="submit">Open private session</button>
       </div>
       <p data-connect-status role="status"></p>
+      <a class="action system-button" data-codespace-site hidden>Open full site inside Codespace</a>
     </form>
   </div>
   <div class="session-launch" data-session-launch hidden>
     <a class="action primary" data-session-link target="_blank" rel="noopener">Open full-window session</a>
-    <a class="action system-button" data-codespace-site target="_blank" rel="noopener" hidden>Open site inside Codespace</a>
   </div>
   <iframe data-session-frame loading="lazy" title="DigiFly Workstation remote desktop" allow="fullscreen" hidden></iframe>
 </section>
